@@ -52,6 +52,7 @@ def sanitize_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "approved_at": user["approved_at"],
         "property_customer_id": user.get("property_customer_id"),
         "property_name": user.get("property_name"),
+        "theme_enabled": bool(user.get("theme_enabled", 0)),
     }
 
 

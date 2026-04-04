@@ -19,7 +19,7 @@
       <h1>TicketGal Service Portal</h1>
       <p class="muted">Log in to continue. All accounts are password-protected. New user registrations require admin approval.</p>
 
-      <div class="auth-panels">
+      <div class="auth-single">
         <form id="login-form" class="card auth-card">
           <p class="card-kicker">ACCESS</p>
           <h2>Sign In</h2>
@@ -33,22 +33,7 @@
           </label>
           <button type="submit">Sign In</button>
           <p id="login-status" class="muted"></p>
-        </form>
-
-        <form id="register-form" class="card auth-card">
-          <p class="card-kicker">ONBOARDING</p>
-          <h2>Register User Account</h2>
-          <label>
-            Company Email
-            <input id="register-email" type="email" required>
-          </label>
-          <label>
-            Password
-            <input id="register-password" type="password" minlength="8" required>
-          </label>
-          <button type="submit">Register</button>
-          <p class="muted">Allowed domains: @eternalhotels.com or @redlionpasco.com</p>
-          <p id="register-status" class="muted"></p>
+          <p class="muted register-link">Need an account? <a href="/register">Register here</a></p>
         </form>
       </div>
     </section>
@@ -62,6 +47,18 @@
         </div>
         <button id="logout-btn" type="button">Logout</button>
       </header>
+
+      <aside id="alerts-feed" class="card">
+        <div class="list-header">
+          <div>
+            <p class="card-kicker">ATERA ALERTS</p>
+            <h2>Notifications</h2>
+          </div>
+          <button id="alerts-refresh-btn" type="button">Refresh</button>
+        </div>
+        <p id="alerts-status" class="muted">Loading alerts...</p>
+        <div id="alerts-list" class="alerts-list"></div>
+      </aside>
 
       <section id="user-shell" class="hidden">
         <section class="card">
@@ -171,6 +168,7 @@
           <button type="button" class="nav-btn" data-admin-page="admin-page-create">Create Ticket</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-status">Ticket Statuses</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-users">User Management</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-settings">Settings</button>
         </aside>
 
         <div class="admin-content">
@@ -197,6 +195,11 @@
                 Description
                 <textarea id="admin-ticket-description" rows="6" required></textarea>
               </label>
+
+              <div class="span-2 actions">
+                <button id="admin-ticket-ai-assist" type="button">Recompose</button>
+                <span id="admin-ticket-ai-status" class="muted"></span>
+              </div>
 
               <label>
                 Priority
@@ -282,6 +285,10 @@
             <h2>User Management</h2>
             <p class="muted">Approve, promote/demote, reset passwords, and remove user accounts.</p>
 
+            <div class="user-search-bar">
+              <input id="user-search" type="search" placeholder="Filter users by email..." autocomplete="off">
+            </div>
+
             <div class="admin-grid">
               <div>
                 <h3>Pending Approvals</h3>
@@ -302,9 +309,33 @@
               </div>
             </div>
           </section>
+
+          <section id="admin-page-settings" class="admin-page card hidden">
+            <p class="card-kicker">PREFERENCES</p>
+            <h2>Settings</h2>
+
+            <div class="settings-section">
+              <h3>Theme</h3>
+              <label class="theme-toggle-label">
+                <input id="admin-theme-toggle" type="checkbox">
+                <span>Enable premium rose theme</span>
+              </label>
+              <p id="theme-status" class="muted"></p>
+            </div>
+
+            <div class="settings-section">
+              <h3>User Registration</h3>
+              <label class="theme-toggle-label">
+                <input id="admin-signups-toggle" type="checkbox">
+                <span>Allow new user signups</span>
+              </label>
+              <p id="signups-status" class="muted"></p>
+            </div>
+          </section>
         </div>
       </section>
     </section>
+
   </main>
 
   <div id="ticket-viewer" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="ticket-viewer-title">

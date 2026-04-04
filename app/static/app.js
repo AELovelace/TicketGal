@@ -6,11 +6,9 @@ const adminShell = document.getElementById("admin-shell");
 const welcomeText = document.getElementById("welcome-text");
 
 const loginForm = document.getElementById("login-form");
-const registerForm = document.getElementById("register-form");
 const logoutBtn = document.getElementById("logout-btn");
 
 const loginStatus = document.getElementById("login-status");
-const registerStatus = document.getElementById("register-status");
 
 const userCreateForm = document.getElementById("create-ticket-form");
 const userTicketsBody = document.getElementById("tickets-body");
@@ -21,6 +19,8 @@ const userStatusFilter = document.getElementById("user-status-filter");
 
 const userDropZone = document.getElementById("drop-zone");
 const userDropHint = document.getElementById("drop-hint");
+const userAiAssistBtn = document.getElementById("ticket-ai-assist");
+const userAiAssistStatus = document.getElementById("ticket-ai-status");
 
 const adminCreateForm = document.getElementById("admin-create-ticket-form");
 const adminStatusBody = document.getElementById("admin-status-body");
@@ -31,11 +31,31 @@ const adminStatusFilter = document.getElementById("admin-status-filter");
 
 const adminDropZone = document.getElementById("admin-drop-zone");
 const adminDropHint = document.getElementById("admin-drop-hint");
+const adminAiAssistBtn = document.getElementById("admin-ticket-ai-assist");
+const adminAiAssistStatus = document.getElementById("admin-ticket-ai-status");
 
 const refreshUsersBtn = document.getElementById("refresh-users-btn");
 const pendingUsersEl = document.getElementById("pending-users");
 const userResetListEl = document.getElementById("user-reset-list");
 const userManagementListEl = document.getElementById("user-management-list");
+const userSearchInput = document.getElementById("user-search");
+const alertsFeed = document.getElementById("alerts-feed");
+const alertsStatus = document.getElementById("alerts-status");
+const alertsList = document.getElementById("alerts-list");
+const alertsRefreshBtn = document.getElementById("alerts-refresh-btn");
+
+if (userSearchInput) {
+  userSearchInput.addEventListener("input", () => {
+    const query = userSearchInput.value.trim().toLowerCase();
+    [pendingUsersEl, userResetListEl, userManagementListEl].forEach((container) => {
+      if (!container) return;
+      container.querySelectorAll(".pending-row").forEach((row) => {
+        const email = (row.textContent || "").toLowerCase();
+        row.style.display = !query || email.includes(query) ? "" : "none";
+      });
+    });
+  });
+}
 
 const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
 const adminPages = Array.from(document.querySelectorAll(".admin-page"));
@@ -55,6 +75,36 @@ let currentUser = null;
 let currentAdminPage = "admin-page-create";
 let cachedTickets = [];
 let cachedProperties = [];
+let alertsPollTimer = null;
+
+const DISMISSED_ALERTS_KEY = "ticketgal.dismissed_alert_ids";
+
+function getDismissedAlertIds() {
+  try {
+    const raw = localStorage.getItem(DISMISSED_ALERTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map((value) => safeText(value)));
+  } catch {
+    return new Set();
+  }
+}
+
+function setDismissedAlertIds(ids) {
+  try {
+    localStorage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify(Array.from(ids)));
+  } catch {
+    // Ignore localStorage errors.
+  }
+}
+
+function dismissAlert(alertId) {
+  const id = safeText(alertId).trim();
+  if (!id) return;
+  const ids = getDismissedAlertIds();
+  ids.add(id);
+  setDismissedAlertIds(ids);
+}
 
 function safeText(value) {
   if (value === null || value === undefined) return "";
@@ -89,6 +139,218 @@ function htmlToReadableText(value) {
   text = text.replace(cssDeclarationsPrefix, "").trim();
 
   return text;
+}
+
+function toTimestamp(value) {
+  const text = safeText(value).trim();
+  if (!text) return null;
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function formatAlertTime(value) {
+  const timestamp = toTimestamp(value);
+  if (timestamp === null) return "";
+
+  const elapsedMs = Date.now() - timestamp;
+  if (elapsedMs < 60_000) return "just now";
+  if (elapsedMs < 3_600_000) return `${Math.max(1, Math.floor(elapsedMs / 60_000))}m ago`;
+  if (elapsedMs < 86_400_000) return `${Math.max(1, Math.floor(elapsedMs / 3_600_000))}h ago`;
+
+  return new Date(timestamp).toLocaleString();
+}
+
+function formatAbsoluteAlertTime(value) {
+  const timestamp = toTimestamp(value);
+  if (timestamp === null) return "";
+  return new Date(timestamp).toLocaleString();
+}
+
+function alertSeverityClass(value) {
+  const severity = safeText(value).trim().toLowerCase();
+  if (!severity) return "alert-severity-info";
+  if (severity.includes("critical")) return "alert-severity-critical";
+  if (severity.includes("high")) return "alert-severity-high";
+  if (severity.includes("warn")) return "alert-severity-warning";
+  if (severity.includes("medium")) return "alert-severity-medium";
+  if (severity.includes("low")) return "alert-severity-low";
+  if (severity.includes("info")) return "alert-severity-info";
+  return "alert-severity-info";
+}
+
+function normalizeAlertItem(alert) {
+  const rawAlertId =
+    alert?.AlertID ??
+    alert?.AlertId ??
+    alert?.Id ??
+    alert?.ID ??
+    null;
+
+  const title =
+    safeText(alert?.AlertTitle) ||
+    safeText(alert?.Title) ||
+    safeText(alert?.AlertType) ||
+    safeText(alert?.DeviceName) ||
+    safeText(alert?.CustomerName) ||
+    "Atera Alert";
+
+  const message =
+    safeText(alert?.AlertMessage) ||
+    safeText(alert?.Message) ||
+    safeText(alert?.Description) ||
+    "";
+
+  const severity =
+    safeText(alert?.AlertSeverity) ||
+    safeText(alert?.Severity) ||
+    safeText(alert?.Priority) ||
+    "Info";
+
+  const machineName =
+    safeText(alert?.DeviceName) ||
+    safeText(alert?.AgentName) ||
+    safeText(alert?.MachineName) ||
+    "";
+
+  const machineId =
+    safeText(alert?.AgentId) ||
+    safeText(alert?.DeviceGuid) ||
+    safeText(alert?.DeviceID) ||
+    safeText(alert?.MachineId) ||
+    "";
+
+  const source = safeText(alert?.CustomerName) || "";
+  const createdAt =
+    safeText(alert?.CreatedDate) ||
+    safeText(alert?.Created) ||
+    safeText(alert?.CreationTime) ||
+    safeText(alert?.CreatedAt) ||
+    safeText(alert?.LastUpdated) ||
+    "";
+
+  const alertId = safeText(rawAlertId).trim() || `${title}|${createdAt}|${machineName}|${machineId}`;
+
+  return { title, message, severity, source, createdAt, machineName, machineId, alertId };
+}
+
+function stopAlertsPolling() {
+  if (alertsPollTimer) {
+    clearInterval(alertsPollTimer);
+    alertsPollTimer = null;
+  }
+}
+
+function startAlertsPolling() {
+  stopAlertsPolling();
+  alertsPollTimer = setInterval(() => {
+    loadAlerts({ silent: true });
+  }, 60_000);
+}
+
+async function loadAlerts(options = {}) {
+  const silent = options.silent === true;
+  if (!alertsFeed || !alertsStatus || !alertsList || !currentUser) return;
+
+  if (currentUser.role !== "admin") {
+    stopAlertsPolling();
+    alertsList.innerHTML = "";
+    alertsStatus.textContent = "Alerts are available to admins only.";
+    return;
+  }
+
+  if (!silent) {
+    alertsStatus.textContent = "Loading alerts...";
+  }
+
+  try {
+    const result = await api("/api/alerts");
+    const items = Array.isArray(result?.items) ? result.items : [];
+    const dismissedIds = getDismissedAlertIds();
+    const normalized = items
+      .map(normalizeAlertItem)
+      .filter((entry) => !dismissedIds.has(safeText(entry.alertId)));
+
+    normalized.sort((a, b) => {
+      const at = toTimestamp(a.createdAt) ?? 0;
+      const bt = toTimestamp(b.createdAt) ?? 0;
+      return bt - at;
+    });
+
+    const topAlerts = normalized.slice(0, 30);
+    alertsList.innerHTML = "";
+
+    if (!topAlerts.length) {
+      alertsStatus.textContent = "No alerts right now.";
+      return;
+    }
+
+    topAlerts.forEach((entry) => {
+      const item = document.createElement("article");
+      item.className = "alert-item";
+
+      const severityTag = document.createElement("span");
+      severityTag.className = `alert-severity ${alertSeverityClass(entry.severity)}`;
+      severityTag.textContent = safeText(entry.severity || "Info");
+
+      const title = document.createElement("h3");
+      title.textContent = entry.title;
+
+      const meta = document.createElement("div");
+      meta.className = "alert-meta";
+      const parts = [entry.source, formatAlertTime(entry.createdAt)].filter(Boolean);
+      meta.textContent = parts.join(" • ");
+
+      const eventTime = document.createElement("div");
+      eventTime.className = "alert-meta";
+      const absoluteTime = formatAbsoluteAlertTime(entry.createdAt);
+      eventTime.textContent = absoluteTime ? `Event Time: ${absoluteTime}` : "";
+
+      const machine = document.createElement("div");
+      machine.className = "alert-meta";
+      const machineParts = [];
+      if (entry.machineName) {
+        machineParts.push(`Machine: ${entry.machineName}`);
+      }
+      if (entry.machineId) {
+        machineParts.push(`ID: ${entry.machineId}`);
+      }
+      machine.textContent = machineParts.join(" • ");
+
+      const message = document.createElement("div");
+      message.textContent = entry.message;
+
+      const dismissBtn = document.createElement("button");
+      dismissBtn.type = "button";
+      dismissBtn.className = "alert-dismiss-btn";
+      dismissBtn.textContent = "Dismiss";
+      dismissBtn.addEventListener("click", () => {
+        dismissAlert(entry.alertId);
+        item.remove();
+        if (!alertsList.children.length) {
+          alertsStatus.textContent = "No alerts right now.";
+        }
+      });
+
+      const actions = document.createElement("div");
+      actions.className = "alert-actions";
+      actions.appendChild(dismissBtn);
+
+      item.appendChild(severityTag);
+      item.appendChild(title);
+      if (meta.textContent) item.appendChild(meta);
+      if (eventTime.textContent) item.appendChild(eventTime);
+      if (machine.textContent) item.appendChild(machine);
+      if (entry.message) item.appendChild(message);
+      item.appendChild(actions);
+      alertsList.appendChild(item);
+    });
+
+    alertsStatus.textContent = `Showing ${topAlerts.length} alerts.`;
+  } catch (error) {
+    if (!silent) {
+      alertsStatus.textContent = `Failed to load alerts: ${error.message}`;
+    }
+  }
 }
 
 async function api(path, options = {}) {
@@ -254,6 +516,18 @@ function applyRoleView() {
 
   if (shell) {
     shell.classList.toggle("admin-mode", isAdmin);
+  }
+
+  if (alertsFeed) {
+    alertsFeed.classList.toggle("hidden", !isAdmin);
+  }
+
+  if (appView) {
+    appView.classList.toggle("alerts-enabled", isAdmin);
+  }
+
+  if (userAiAssistBtn) {
+    userAiAssistBtn.classList.toggle("hidden", !isAdmin);
   }
 
   welcomeText.textContent = isAdmin
@@ -454,6 +728,97 @@ function readCreateForm(prefix) {
     ticket_status: document.getElementById(`${prefix}ticket-status`).value,
     technician_contact_id: document.getElementById(`${prefix}technician-id`).value,
   };
+}
+
+function applyAiAssistToForm(prefix, aiResult) {
+  const title = document.getElementById(`${prefix}ticket-title`);
+  const description = document.getElementById(`${prefix}ticket-description`);
+  const priority = document.getElementById(`${prefix}ticket-priority`);
+  const type = document.getElementById(`${prefix}ticket-type`);
+  let changed = false;
+
+  if (title && aiResult.ticket_title) {
+    const nextValue = safeText(aiResult.ticket_title).slice(0, 160);
+    if (title.value !== nextValue) {
+      title.value = nextValue;
+      changed = true;
+    }
+  }
+  if (description && aiResult.description) {
+    const nextValue = safeText(aiResult.description).slice(0, 4000);
+    if (description.value !== nextValue) {
+      description.value = nextValue;
+      changed = true;
+    }
+  }
+
+  const allowedPriorities = ["", "Low", "Medium", "High", "Critical"];
+  const priorityValue = safeText(aiResult.ticket_priority);
+  if (priority instanceof HTMLSelectElement && allowedPriorities.includes(priorityValue)) {
+    if (priority.value !== priorityValue) {
+      priority.value = priorityValue;
+      changed = true;
+    }
+  }
+
+  const allowedTypes = ["", "Incident", "Problem", "Request", "Change"];
+  const typeValue = safeText(aiResult.ticket_type);
+  if (type instanceof HTMLSelectElement && allowedTypes.includes(typeValue)) {
+    if (type.value !== typeValue) {
+      type.value = typeValue;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+async function runAiAssist(prefix, isAdmin) {
+  const statusEl = isAdmin ? adminAiAssistStatus : userAiAssistStatus;
+  if (!statusEl) return;
+
+  const descriptionEl = document.getElementById(`${prefix}ticket-description`);
+  const titleEl = document.getElementById(`${prefix}ticket-title`);
+  const descriptionValue = safeText(descriptionEl?.value).trim();
+  const titleValue = safeText(titleEl?.value).trim();
+
+  if (!descriptionValue) {
+    statusEl.textContent = "Enter a description first.";
+    return;
+  }
+
+  statusEl.textContent = "Rewriting and extracting fields...";
+
+  try {
+    const aiResult = await api("/api/tickets/ai-assist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description: descriptionValue,
+        ticket_title: titleValue,
+      }),
+    });
+
+    const changed = applyAiAssistToForm(prefix, aiResult || {});
+    const fallbackUsed = Boolean(aiResult?.fallback_used);
+    const fallbackReason = safeText(aiResult?.fallback_reason).trim();
+
+    if (changed && fallbackUsed) {
+      statusEl.textContent = fallbackReason
+        ? `Fallback rewrite applied. ${fallbackReason}. Review before creating ticket.`
+        : "Fallback rewrite applied. Review before creating ticket.";
+    } else if (changed) {
+      statusEl.textContent = "AI draft applied. Review before creating ticket.";
+    } else if (fallbackUsed) {
+      statusEl.textContent = fallbackReason
+        ? `Fallback rewrite was used, but it did not change any fields. ${fallbackReason}.`
+        : "Fallback rewrite was used, but it did not change any fields.";
+    } else {
+      statusEl.textContent = "AI draft received, but it did not change any fields.";
+    }
+  } catch (error) {
+    statusEl.textContent = `AI assist failed: ${error.message}`;
+  }
 }
 
 function applyEmlToForm(prefix, parsed) {
@@ -783,10 +1148,15 @@ async function loadTickets() {
 async function loadUsers() {
   if (currentUser?.role !== "admin") return;
 
+  // Clear any active search filter so newly loaded data is fully visible.
+  if (userSearchInput) {
+    userSearchInput.value = "";
+  }
+
   try {
     const pending = await api("/api/admin/users?pending_only=true");
     pendingUsersEl.innerHTML = "";
-    const pendingItems = pending?.items || [];
+    const pendingItems = (pending?.items || []).sort((a, b) => (a.email || "").localeCompare(b.email || ""));
     if (!pendingItems.length) {
       pendingUsersEl.textContent = "No pending users.";
     } else {
@@ -807,7 +1177,7 @@ async function loadUsers() {
     }
 
     const all = await api("/api/admin/users");
-    const items = all?.items || [];
+    const items = (all?.items || []).sort((a, b) => (a.email || "").localeCompare(b.email || ""));
 
     userResetListEl.innerHTML = "";
     userManagementListEl.innerHTML = "";
@@ -1038,24 +1408,6 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   await loadTickets();
 }
 
-async function refreshMe() {
-  try {
-    const result = await api("/auth/me");
-    currentUser = result.user;
-    applyRoleView();
-    if (currentUser.role === "admin") {
-      await loadProperties();
-    }
-    await loadTickets();
-    if (currentUser.role === "admin") {
-      await loadUsers();
-    }
-  } catch {
-    currentUser = null;
-    showAuth();
-  }
-}
-
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginStatus.textContent = "Signing in...";
@@ -1076,28 +1428,18 @@ loginForm.addEventListener("submit", async (event) => {
   }
 });
 
-registerForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  registerStatus.textContent = "Submitting registration...";
-
-  try {
-    const result = await api("/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: document.getElementById("register-email").value.trim(),
-        password: document.getElementById("register-password").value,
-      }),
-    });
-    registerStatus.textContent = result.message;
-  } catch (error) {
-    registerStatus.textContent = `Registration failed: ${error.message}`;
-  }
-});
 
 logoutBtn.addEventListener("click", async () => {
   await api("/auth/logout", { method: "POST" });
   currentUser = null;
+  stopAlertsPolling();
+  if (alertsList) {
+    alertsList.innerHTML = "";
+  }
+  if (alertsStatus) {
+    alertsStatus.textContent = "Sign in to view alerts.";
+  }
+  applyTheme(false);
   showAuth();
 });
 
@@ -1119,11 +1461,31 @@ adminCreateForm.addEventListener("submit", async (event) => {
   }
 });
 
+if (userAiAssistBtn) {
+  userAiAssistBtn.addEventListener("click", async () => {
+    if (currentUser?.role !== "admin") {
+      return;
+    }
+    await runAiAssist("", false);
+  });
+}
+
+if (adminAiAssistBtn) {
+  adminAiAssistBtn.addEventListener("click", async () => {
+    await runAiAssist("admin-", true);
+  });
+}
+
 userRefreshBtn.addEventListener("click", loadTickets);
 if (adminStatusRefreshBtn) {
-  adminStatusRefreshBtn.addEventListener("click", loadTickets);
+  adminStatusRefreshBtn.addEventListener("click", async () => {
+    await Promise.all([loadTickets(), loadAlerts()]);
+  });
 }
 refreshUsersBtn.addEventListener("click", loadUsers);
+if (alertsRefreshBtn) {
+  alertsRefreshBtn.addEventListener("click", () => loadAlerts());
+}
 
 if (userStatusFilter) {
   userStatusFilter.addEventListener("change", loadTickets);
@@ -1234,5 +1596,130 @@ document.addEventListener("keydown", (event) => {
     closeTicketViewer();
   }
 });
+
+// Theme preference for admins
+function applyTheme(enabled) {
+  if (enabled) {
+    document.body.classList.add("theme-premium");
+  } else {
+    document.body.classList.remove("theme-premium");
+  }
+}
+
+function loadAdminThemePreference() {
+  if (currentUser?.role !== "admin") {
+    return;
+  }
+  applyTheme(Boolean(currentUser.theme_enabled));
+}
+
+const adminThemeToggle = document.getElementById("admin-theme-toggle");
+if (adminThemeToggle) {
+  adminThemeToggle.addEventListener("change", async () => {
+    try {
+      const result = await api("/api/admin/theme", { method: "PATCH" });
+      const enabled = Boolean(result.theme_enabled);
+      applyTheme(enabled);
+      adminThemeToggle.checked = enabled;
+      const statusEl = document.getElementById("theme-status");
+      if (statusEl) {
+        statusEl.textContent = enabled ? "Theme enabled." : "Theme disabled.";
+      }
+    } catch (error) {
+      const statusEl = document.getElementById("theme-status");
+      if (statusEl) {
+        statusEl.textContent = `Failed to update theme: ${error.message}`;
+      }
+    }
+  });
+}
+
+const adminSignupsToggle = document.getElementById("admin-signups-toggle");
+if (adminSignupsToggle) {
+  adminSignupsToggle.addEventListener("change", async () => {
+    try {
+      const result = await api("/api/admin/signups", { method: "PATCH" });
+      const enabled = Boolean(result.signups_enabled);
+      adminSignupsToggle.checked = enabled;
+      const statusEl = document.getElementById("signups-status");
+      if (statusEl) {
+        statusEl.textContent = enabled ? "New user signups are open." : "New user signups are disabled.";
+      }
+    } catch (error) {
+      const statusEl = document.getElementById("signups-status");
+      if (statusEl) {
+        statusEl.textContent = `Failed to update signups setting: ${error.message}`;
+      }
+    }
+  });
+}
+
+async function loadAdminSignupsPreference() {
+  try {
+    const result = await api("/api/settings/signups");
+    const enabled = Boolean(result.signups_enabled);
+    if (adminSignupsToggle) {
+      adminSignupsToggle.checked = enabled;
+    }
+  } catch {
+    // Ignore — non-admin or network error.
+  }
+}
+
+async function checkSignupsEnabled() {
+  const registerLink = document.querySelector(".register-link");
+  if (!registerLink) return;
+  try {
+    const result = await fetch("/api/settings/signups", { credentials: "include" });
+    const data = await result.json();
+    if (!data.signups_enabled) {
+      registerLink.innerHTML = '<span class="muted">New user registration is currently disabled.</span>';
+    }
+  } catch {
+    // If we can't check, leave the link visible.
+  }
+}
+
+async function refreshMe() {
+  try {
+    const result = await api("/auth/me");
+    currentUser = result.user;
+    applyRoleView();
+    loadAdminThemePreference();
+    if (currentUser.role === "admin") {
+      await loadProperties();
+      const adminThemeToggle = document.getElementById("admin-theme-toggle");
+      if (adminThemeToggle) {
+        adminThemeToggle.checked = Boolean(currentUser.theme_enabled);
+      }
+      await loadAdminSignupsPreference();
+    }
+    await loadTickets();
+    if (currentUser.role === "admin") {
+      await loadAlerts();
+      startAlertsPolling();
+      await loadUsers();
+    } else {
+      stopAlertsPolling();
+      if (alertsList) {
+        alertsList.innerHTML = "";
+      }
+      if (alertsStatus) {
+        alertsStatus.textContent = "Alerts are available to admins only.";
+      }
+    }
+  } catch {
+    currentUser = null;
+    stopAlertsPolling();
+    if (alertsList) {
+      alertsList.innerHTML = "";
+    }
+    if (alertsStatus) {
+      alertsStatus.textContent = "Sign in to view alerts.";
+    }
+    showAuth();
+    checkSignupsEnabled();
+  }
+}
 
 refreshMe();

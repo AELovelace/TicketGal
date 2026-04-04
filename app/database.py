@@ -52,6 +52,21 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN property_customer_id INTEGER")
         if "property_name" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN property_name TEXT")
+        if "theme_enabled" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN theme_enabled INTEGER NOT NULL DEFAULT 0")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS site_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        # Default: signups enabled
+        conn.execute(
+            "INSERT OR IGNORE INTO site_settings(key, value) VALUES('signups_enabled', '1')"
+        )
         conn.commit()
 
 
@@ -144,6 +159,45 @@ def assign_user_property(user_id: int, property_customer_id: Optional[int], prop
         )
         conn.commit()
     return cur.rowcount > 0
+
+
+def get_site_setting(key: str, default: str = "") -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM site_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_site_setting(key: str, value: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO site_settings(key, value) VALUES(?, ?)",
+            (key, value),
+        )
+        conn.commit()
+
+
+def get_signups_enabled() -> bool:
+    return get_site_setting("signups_enabled", "1") == "1"
+
+
+def set_signups_enabled(enabled: bool) -> None:
+    set_site_setting("signups_enabled", "1" if enabled else "0")
+
+
+def set_user_theme_enabled(user_id: int, enabled: bool) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET theme_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, user_id),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def get_user_theme_enabled(user_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute("SELECT theme_enabled FROM users WHERE id = ?", (user_id,)).fetchone()
+    return bool(row["theme_enabled"]) if row else False
 
 
 def create_session(user_id: int, token: str) -> Dict[str, Any]:

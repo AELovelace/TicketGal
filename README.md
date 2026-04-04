@@ -46,6 +46,24 @@ TicketGal is a FastAPI web application for managing Atera tickets with role-base
 3. Create .env from .env.example and fill values.
 4. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env for first admin seed.
 
+### Optional AI Assist Configuration
+
+To enable AI rewrite + ticket field suggestions in the create-ticket form, set:
+
+- `OPENAI_API_KEY` (optional for local OpenAI-compatible endpoints such as Ollama)
+- `OPENAI_MODEL` (optional, default: `gpt-4o-mini`)
+- `OPENAI_BASE_URL` (optional, default: `https://api.openai.com/v1`)
+- `OPENAI_TIMEOUT_SECONDS` (optional, default: `300`)
+
+Example `.env` values for local Ollama:
+
+```env
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_MODEL=llama3.1
+OPENAI_TIMEOUT_SECONDS=300
+# OPENAI_API_KEY is optional for local Ollama
+```
+
 ## Run (Development)
 
 ```bash
@@ -70,6 +88,8 @@ Or on PowerShell:
 - New user registrations remain pending until approved in the admin panel.
 - Registration requires a password (minimum 8 characters).
 - Admins can reset any user's password in the admin panel.
+- In the create-ticket form, technicians can click **AI Rewrite & Auto-Fill** to rewrite description and suggest title/priority/type.
+- AI assist intentionally does not set initial status or end user email; those remain technician-controlled.
 
 ## Atera Integration
 

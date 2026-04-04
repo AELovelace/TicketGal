@@ -53,6 +53,20 @@ class CreateTicketRequest(BaseModel):
     customer_id: Optional[int] = None
 
 
+class TicketAiAssistRequest(BaseModel):
+    description: str = Field(..., min_length=1)
+    ticket_title: Optional[str] = None
+
+
+class TicketAiAssistResponse(BaseModel):
+    ticket_title: Optional[str] = None
+    description: str
+    ticket_priority: Optional[str] = None
+    ticket_type: Optional[str] = None
+    fallback_used: bool = False
+    fallback_reason: Optional[str] = None
+
+
 class TicketStatusUpdateRequest(BaseModel):
     ticket_status: str = Field(..., pattern="^(Open|Pending|Closed|Resolved)$")
 

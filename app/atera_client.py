@@ -75,6 +75,9 @@ class AteraClient:
         params = {"page": page, "itemsInPage": items_in_page}
         return await self._request("GET", "/api/v3/customers", params=params)
 
+    async def list_alerts(self) -> Any:
+        return await self._request("GET", "/api/v3/alerts")
+
     async def create_ticket(self, payload: Dict[str, Any]) -> Any:
         return await self._request("POST", "/api/v3/tickets", json=payload)
 

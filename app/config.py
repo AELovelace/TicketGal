@@ -27,6 +27,10 @@ class Settings:
         ]
         self.admin_email = os.getenv("ADMIN_EMAIL", "")
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
+        self.openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.openai_timeout_seconds = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "300"))
 
 
 settings = Settings()

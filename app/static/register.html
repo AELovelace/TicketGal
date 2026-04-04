@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TicketGal &mdash; Register</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="brand-strip">
+    <span>USA &amp; CANADA</span>
+    <span class="dot">|</span>
+    <span>HOTEL MANAGEMENT COMPANY</span>
+  </div>
+
+  <main class="shell">
+    <section class="auth-shell">
+      <p class="eyebrow">PROVEN HOTEL OPERATION STRATEGIES</p>
+      <h1>TicketGal Service Portal</h1>
+      <p class="muted">Create a new account. Admin approval is required before first login.</p>
+
+      <div class="auth-single">
+        <form id="register-form" class="card auth-card">
+          <p class="card-kicker">ONBOARDING</p>
+          <h2>Register User Account</h2>
+          <label>
+            Company Email
+            <input id="register-email" type="email" required>
+          </label>
+          <label>
+            Password
+            <input id="register-password" type="password" minlength="8" required>
+          </label>
+          <button type="submit">Register</button>
+          <p class="muted">Allowed domains: @eternalhotels.com or @redlionpasco.com</p>
+          <p id="register-status" class="muted"></p>
+          <p class="muted register-link">Already have an account? <a href="/">Sign in here</a></p>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/register.js"></script>
+</body>
+</html>

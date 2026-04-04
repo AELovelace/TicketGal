@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import secrets
 import tempfile
@@ -9,6 +10,7 @@ from html import unescape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,11 +35,15 @@ from .database import (
     create_user,
     delete_user,
     delete_session,
+    get_signups_enabled,
     get_user_by_email,
+    get_user_theme_enabled,
     init_db,
     list_users,
     reset_user_password,
     seed_admin,
+    set_signups_enabled,
+    set_user_theme_enabled,
     update_user_role,
 )
 from .schemas import (
@@ -48,6 +54,8 @@ from .schemas import (
     CreateTicketRequest,
     LoginRequest,
     RegisterRequest,
+    TicketAiAssistRequest,
+    TicketAiAssistResponse,
     TicketStatusUpdateRequest,
 )
 
@@ -76,6 +84,11 @@ async def index() -> FileResponse:
     return FileResponse(static_dir / "index.html")
 
 
+@app.get("/register")
+async def register_page() -> FileResponse:
+    return FileResponse(static_dir / "register.html")
+
+
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
@@ -83,6 +96,9 @@ async def health() -> Dict[str, str]:
 
 @app.post("/auth/register")
 def register(request: RegisterRequest) -> Dict[str, Any]:
+    if not get_signups_enabled():
+        raise HTTPException(status_code=403, detail="New user registration is currently disabled by the administrator.")
+
     email = normalize_email(request.email)
 
     if not allowed_email_domain(email):
@@ -187,6 +203,16 @@ def admin_update_user_role(
     return {"message": "User role updated"}
 
 
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int, user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
+    require_admin(user)
+    if int(user["id"]) == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    if not delete_user(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User deleted"}
+
+
 @app.post("/api/admin/users/{user_id}/reset-password")
 def admin_reset_user_password(
     user_id: int,
@@ -208,16 +234,32 @@ def admin_reset_user_password(
     }
 
 
-@app.delete("/api/admin/users/{user_id}")
-def admin_delete_user(user_id: int, user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
+@app.patch("/api/admin/theme")
+def toggle_admin_theme(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
     require_admin(user)
-    if int(user["id"]) == user_id:
-        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    user_id = int(user["id"])
+    current_enabled = get_user_theme_enabled(user_id)
+    new_enabled = not current_enabled
+    set_user_theme_enabled(user_id, new_enabled)
+    return {"theme_enabled": new_enabled, "message": "Theme preference updated"}
 
-    if not delete_user(user_id):
-        raise HTTPException(status_code=404, detail="User not found")
 
-    return {"message": "User deleted"}
+@app.get("/api/settings/signups")
+def check_signups_status() -> Dict[str, Any]:
+    return {"signups_enabled": get_signups_enabled()}
+
+
+@app.patch("/api/admin/signups")
+def toggle_signups(
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    current = get_signups_enabled()
+    new_state = not current
+    set_signups_enabled(new_state)
+    return {"signups_enabled": new_state, "message": "Signups " + ("enabled" if new_state else "disabled")}
 
 
 @app.get("/api/admin/properties")
@@ -392,6 +434,219 @@ def _parse_msg_bytes(content: bytes) -> Dict[str, str]:
                 pass
 
 
+def _coerce_ai_text(value: Any, max_length: int = 4000) -> str:
+    text = _normalize_parsed_text(str(value or ""))
+    return text[:max_length]
+
+
+def _coerce_ai_priority(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().title()
+    return normalized if normalized in {"Low", "Medium", "High", "Critical"} else None
+
+
+def _coerce_ai_type(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().title()
+    return normalized if normalized in {"Incident", "Problem", "Request", "Change"} else None
+
+
+def _extract_json_object(raw_content: str) -> Dict[str, Any]:
+    value = raw_content.strip()
+    if not value:
+        return {}
+
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        pass
+
+    start = value.find("{")
+    end = value.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+
+    maybe_json = value[start : end + 1]
+    try:
+        parsed = json.loads(maybe_json)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _extract_ai_message_content(body: Any) -> str:
+    if not isinstance(body, dict):
+        return ""
+
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            if isinstance(content, list):
+                return "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+            return str(content or "")
+
+    message = body.get("message")
+    if isinstance(message, dict):
+        content = message.get("content", "")
+        if content:
+            return str(content)
+        # qwen3 / reasoning models put output in 'thinking' when think:true and content is empty
+        thinking = message.get("thinking", "")
+        if thinking:
+            return str(thinking)
+
+    response = body.get("response")
+    if response is not None:
+        return str(response)
+
+    return ""
+
+
+def _looks_like_ollama_base_url(base_url: str) -> bool:
+    lowered = base_url.strip().lower()
+    return "11434" in lowered or "ollama" in lowered
+
+
+def _get_ollama_native_endpoint(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3]
+    return f"{normalized}/api/chat"
+
+
+def _sanitize_professional_language(text: str) -> str:
+    cleaned = _normalize_parsed_text(text)
+    replacements = [
+        (r"\bfucked\s+up\b", "not functioning correctly"),
+        (r"\bfuck(?:ing)?\b", ""),
+        (r"\bfucked\b", "not functioning correctly"),
+        (r"\bshit\b", "issue"),
+        (r"\bcrap\b", "issue"),
+        (r"\bdammit\b", ""),
+        (r"\bdamn\b", ""),
+        (r"\bpissed\s+off\b", "frustrated"),
+        (r"\bsucks\b", "is not working well"),
+        (r"\bwtf\b", "unexpected behavior"),
+    ]
+
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+
+    cleaned = re.sub(r"[!?.]{2,}", ".", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\bASAP\b", "as soon as possible", cleaned, flags=re.IGNORECASE)
+    return _normalize_parsed_text(cleaned)
+
+
+def _rewrite_fallback_description(text: str) -> str:
+    cleaned = _sanitize_professional_language(text)
+    lowered = cleaned.lower()
+
+    repeat_incident = bool(re.search(r"\bagain\b|\brepeat\b|\brecurring\b", lowered))
+
+    if re.search(r"\bfork\b", lowered) and re.search(r"\boutlet\b|\bsocket\b", lowered):
+        lines = [
+            "Assist the user with diagnosing the computer after a fork was inserted into the electrical outlet.",
+        ]
+        if repeat_incident:
+            lines.append("This appears to be a repeat incident.")
+        return "\n".join(lines)
+
+    if re.search(r"\bspill(?:ed|ing)?\b|\bwater\b|\bcoffee\b|\bliquid\b", lowered):
+        lines = [
+            "Assist the user with diagnosing the affected equipment after liquid exposure was reported.",
+        ]
+        if repeat_incident:
+            lines.append("This appears to be a repeat incident.")
+        return "\n".join(lines)
+
+    lines = [line.strip(" -\t") for line in cleaned.split("\n") if line.strip()]
+    if not lines:
+        return ""
+
+    rewritten_lines: List[str] = []
+    for index, line in enumerate(lines):
+        normalized_line = line
+        normalized_line = re.sub(r"\bmy\b", "the user's", normalized_line, flags=re.IGNORECASE)
+        normalized_line = re.sub(r"\buser says\b", "The user reports", normalized_line, flags=re.IGNORECASE)
+        normalized_line = re.sub(r"\bcan'?t\b", "cannot", normalized_line, flags=re.IGNORECASE)
+        normalized_line = re.sub(r"\bwon'?t\b", "will not", normalized_line, flags=re.IGNORECASE)
+        normalized_line = re.sub(r"\bit'?s\b", "it is", normalized_line, flags=re.IGNORECASE)
+        normalized_line = normalized_line.strip(" .")
+        if not normalized_line:
+            continue
+
+        normalized_line = normalized_line[0].upper() + normalized_line[1:]
+        if normalized_line[-1] not in ".!?":
+            normalized_line = f"{normalized_line}."
+
+        if index == 0 and not re.match(r"^(Assist|Diagnose|Investigate|Reported issue|Issue summary)\b", normalized_line, flags=re.IGNORECASE):
+            normalized_line = f"Assist the user with diagnosing the issue: {normalized_line[0].lower() + normalized_line[1:]}"
+            normalized_line = normalized_line[0].upper() + normalized_line[1:]
+
+        rewritten_lines.append(normalized_line)
+
+    if repeat_incident and not any("repeat incident" in line.lower() for line in rewritten_lines):
+        rewritten_lines.append("This appears to be a repeat incident.")
+
+    return "\n".join(rewritten_lines)
+
+
+def _ensure_professional_description(text: str) -> str:
+    return _rewrite_fallback_description(text)
+
+
+def _infer_ticket_title(description: str, fallback_title: str) -> str:
+    if fallback_title.strip():
+        cleaned = _sanitize_professional_language(fallback_title).strip()
+        words = cleaned.split()
+        if len(words) > 5:
+            cleaned = " ".join(words[:5]).rstrip(" ,;:-")
+        return cleaned[:160]
+
+    lowered = description.lower()
+    if "fork" in lowered and ("outlet" in lowered or "socket" in lowered):
+        return "Fork in Outlet Incident"
+    if any(term in lowered for term in ["liquid", "water", "coffee", "spill"]):
+        return "Equipment Liquid Exposure Incident"
+
+    first_line = next((line.strip() for line in description.split("\n") if line.strip()), "")
+    first_line = re.sub(r"^(Assist the user with diagnosing the issue:\s*|Assist the user with diagnosing\s*|Reported issue:|Issue summary:)\s*", "", first_line, flags=re.IGNORECASE).strip()
+    if not first_line:
+        return "Diagnose and Fix Reported Issue"
+
+    sentence = re.split(r"[.!?]", first_line, maxsplit=1)[0].strip()
+    sentence = re.sub(r"^the user\s+", "", sentence, flags=re.IGNORECASE)
+    words = sentence.split()
+    if len(words) > 2:
+        sentence = " ".join(words[:2]).rstrip(" ,;:-")
+    sentence = sentence[0].upper() + sentence[1:] if sentence else "Reported Issue"
+    return f"Diagnose and Fix {sentence}"[:160]
+
+
+def _infer_ticket_priority(description: str) -> Optional[str]:
+    lowered = description.lower()
+    if any(term in lowered for term in ["outage", "site down", "system down", "all users", "entire property", "everyone is affected"]):
+        return "Critical"
+    if any(term in lowered for term in ["cannot work", "can't work", "unable to", "down", "urgent", "as soon as possible", "blocked"]):
+        return "High"
+    if any(term in lowered for term in ["request", "access", "install", "setup", "password", "new user"]):
+        return "Medium"
+    return None
+
+
+def _infer_ticket_type(description: str) -> Optional[str]:
+    lowered = description.lower()
+    if any(term in lowered for term in ["change window", "change request", "modify configuration", "update configuration"]):
+        return "Change"
+    if any(term in lowered for term in ["request", "need access", "new user", "install", "setup", "password reset"]):
+        return "Request"
+    if any(term in lowered for term in ["recurring", "keeps happening", "root cause", "intermittent over time"]):
+        return "Problem"
+    return "Incident"
+
+
 @app.post("/api/emails/parse-drop")
 async def parse_dropped_email(
     file: UploadFile = File(...),
@@ -417,6 +672,158 @@ async def parse_dropped_email(
         "subject": _normalize_parsed_text(parsed.get("subject") or ""),
         "from": _normalize_parsed_text(parsed.get("from") or ""),
         "body": _normalize_parsed_text(parsed.get("body") or ""),
+    }
+
+
+@app.post("/api/tickets/ai-assist")
+async def ai_assist_ticket(
+    request: TicketAiAssistRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> TicketAiAssistResponse:
+    require_admin(user)
+
+    description = _coerce_ai_text(request.description, max_length=6000)
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required")
+
+    current_title = _coerce_ai_text(request.ticket_title or "", max_length=160)
+    user_prompt = (
+        "Rewrite the ticket description in professional, concise IT helpdesk language and infer useful fields. "
+        "Remove profanity, slang, insults, and emotionally charged wording while preserving the technical facts. "
+        "Prefer action-oriented phrasing such as 'Diagnose and Fix ...' or 'Assist the user with diagnosing ...'. "
+        "Do not include markdown. Return JSON only with these keys: "
+        "ticket_title, description, ticket_priority, ticket_type. "
+        "ticket_title must be 4 to 5 words maximum — short and action-oriented. "
+        "Allowed ticket_priority values: Low, Medium, High, Critical, or empty string. "
+        "Allowed ticket_type values: Incident, Problem, Request, Change, or empty string.\n\n"
+        "Example rewrite style:\n"
+        "Input: user stuck a fork in the outlet again\n"
+        "Output description: Assist the user with diagnosing the computer after a fork was inserted into the electrical outlet. This appears to be a repeat incident.\n"
+        "Output title: Fork in Outlet Repeat\n\n"
+        f"Current title: {current_title or '(none)'}\n"
+        f"Original description:\n{description}"
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an IT service desk assistant. Produce a clean professional rewrite and infer fields "
+                "from the user description. Never include status or end-user email in output. Return JSON only. "
+                "ticket_title must be 4 to 5 words maximum."
+            ),
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+
+    payload: Dict[str, Any] = {
+        "model": settings.openai_model,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": False,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    if settings.openai_api_key:
+        headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+
+    response: Optional[httpx.Response] = None
+    body: Dict[str, Any] = {}
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
+            if _looks_like_ollama_base_url(settings.openai_base_url):
+                native_payload: Dict[str, Any] = {
+                    "model": settings.openai_model,
+                    "messages": messages,
+                    "stream": False,
+                    "format": "json",
+                    "think": False,
+                    "options": {
+                        "temperature": 0.2,
+                        "num_ctx": 131072,
+                    },
+                }
+                response = await http_client.post(
+                    _get_ollama_native_endpoint(settings.openai_base_url),
+                    headers=headers,
+                    json=native_payload,
+                )
+                if response.status_code < 400:
+                    body = response.json() if response.content else {}
+                else:
+                    response = await http_client.post(
+                        f"{settings.openai_base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    body = response.json() if response.content else {}
+            else:
+                response = await http_client.post(
+                    f"{settings.openai_base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                body = response.json() if response.content else {}
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"AI provider request failed: {str(exc)}") from exc
+
+    if response is None:
+        raise HTTPException(status_code=502, detail="AI provider did not return a response")
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"AI provider error: {response.text}")
+
+    content = _extract_ai_message_content(body)
+
+    parsed = _extract_json_object(str(content))
+    raw_content = _coerce_ai_text(content, max_length=4000)
+
+    description_value = (
+        parsed.get("description")
+        or parsed.get("rewritten_description")
+        or parsed.get("professional_description")
+        or parsed.get("body")
+        or (raw_content if raw_content and raw_content != description else description)
+    )
+    title_value = parsed.get("ticket_title") or parsed.get("title") or parsed.get("subject") or current_title
+    priority_value = parsed.get("ticket_priority") or parsed.get("priority")
+    type_value = parsed.get("ticket_type") or parsed.get("type")
+
+    ai_rewritten_description = _ensure_professional_description(_coerce_ai_text(description_value, max_length=4000))
+    fallback_description = _ensure_professional_description(description)
+    fallback_used = False
+    fallback_reason: Optional[str] = None
+
+    rewritten_description = ai_rewritten_description
+    if not rewritten_description:
+        rewritten_description = fallback_description
+        fallback_used = True
+        fallback_reason = "AI response did not include a usable description"
+    elif rewritten_description == fallback_description:
+        fallback_used = True
+        fallback_reason = "Rule-based professional rewrite matched or replaced the AI draft"
+
+    ticket_title = _coerce_ai_text(title_value, max_length=160)
+    if not ticket_title:
+        ticket_title = _infer_ticket_title(rewritten_description, current_title)
+    else:
+        ticket_title = _sanitize_professional_language(ticket_title).strip()
+        words = ticket_title.split()
+        if len(words) > 5:
+            ticket_title = " ".join(words[:5]).rstrip(" ,;:-")
+        ticket_title = ticket_title[:160]
+
+    ticket_priority = _coerce_ai_priority(priority_value) or _infer_ticket_priority(rewritten_description)
+    ticket_type = _coerce_ai_type(type_value) or _infer_ticket_type(rewritten_description)
+
+    return {
+        "ticket_title": ticket_title or None,
+        "description": rewritten_description,
+        "ticket_priority": ticket_priority,
+        "ticket_type": ticket_type,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -454,6 +861,25 @@ async def list_tickets(
         result["items"] = filtered_items
         result["totalItemCount"] = len(filtered_items)
     return result
+
+
+@app.get("/api/alerts")
+async def list_alerts(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    require_admin(user)
+    try:
+        result = await client.list_alerts()
+    except AteraApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    if isinstance(result, dict):
+        items = result.get("items")
+        if isinstance(items, list):
+            return {"items": items}
+
+    if isinstance(result, list):
+        return {"items": result}
+
+    return {"items": []}
 
 
 @app.post("/api/tickets")
