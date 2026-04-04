@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TicketGal</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="brand-strip">
+    <span>USA &amp; CANADA</span>
+    <span class="dot">|</span>
+    <span>HOTEL MANAGEMENT COMPANY</span>
+  </div>
+
+  <main class="shell">
+    <section id="auth-view" class="auth-shell">
+      <p class="eyebrow">PROVEN HOTEL OPERATION STRATEGIES</p>
+      <h1>TicketGal Service Portal</h1>
+      <p class="muted">Log in to continue. All accounts are password-protected. New user registrations require admin approval.</p>
+
+      <div class="auth-panels">
+        <form id="login-form" class="card auth-card">
+          <p class="card-kicker">ACCESS</p>
+          <h2>Sign In</h2>
+          <label>
+            Company Email
+            <input id="login-email" type="email" required>
+          </label>
+          <label>
+            Password
+            <input id="login-password" type="password" required>
+          </label>
+          <button type="submit">Sign In</button>
+          <p id="login-status" class="muted"></p>
+        </form>
+
+        <form id="register-form" class="card auth-card">
+          <p class="card-kicker">ONBOARDING</p>
+          <h2>Register User Account</h2>
+          <label>
+            Company Email
+            <input id="register-email" type="email" required>
+          </label>
+          <label>
+            Password
+            <input id="register-password" type="password" minlength="8" required>
+          </label>
+          <button type="submit">Register</button>
+          <p class="muted">Allowed domains: @eternalhotels.com or @redlionpasco.com</p>
+          <p id="register-status" class="muted"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="app-view" class="hidden">
+      <header class="hero">
+        <div>
+          <p class="eyebrow light">ETERNAL HOTELS IT</p>
+          <h1>TicketGal Operations Desk</h1>
+          <p id="welcome-text">Portal</p>
+        </div>
+        <button id="logout-btn" type="button">Logout</button>
+      </header>
+
+      <section id="user-shell" class="hidden">
+        <section class="card">
+          <p class="card-kicker">SERVICE INTAKE</p>
+          <h2>Create Ticket</h2>
+          <div id="drop-zone" class="drop-zone" aria-label="Drop email file here">
+            Drop a .eml email file here to auto-fill fields
+          </div>
+          <p id="drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+          <form id="create-ticket-form" class="grid">
+            <label>
+              Title
+              <input id="ticket-title" type="text" required>
+            </label>
+
+            <label>
+              End User Email
+              <input id="end-user-email" type="email" placeholder="user@company.com">
+            </label>
+
+            <label class="span-2">
+              Description
+              <textarea id="ticket-description" rows="6" required></textarea>
+            </label>
+
+            <label>
+              Priority
+              <select id="ticket-priority">
+                <option value="">Default</option>
+                <option>Low</option>
+                <option>Medium</option>
+                <option>High</option>
+                <option>Critical</option>
+              </select>
+            </label>
+
+            <label>
+              Type
+              <select id="ticket-type">
+                <option value="">Default</option>
+                <option>Incident</option>
+                <option>Problem</option>
+                <option>Request</option>
+                <option>Change</option>
+              </select>
+            </label>
+
+            <label>
+              Technician ID (admin optional)
+              <input id="technician-id" type="number" min="1">
+            </label>
+
+            <label>
+              Initial Status
+              <select id="ticket-status"></select>
+            </label>
+
+            <div class="span-2 actions">
+              <button type="submit">Create Ticket</button>
+              <span id="create-status" class="muted"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="list-header">
+            <div>
+              <p class="card-kicker">ACTIVE WORK</p>
+              <h2>Tickets</h2>
+            </div>
+            <div class="actions">
+              <label>
+                Status
+                <select id="user-status-filter">
+                  <option value="">All</option>
+                  <option value="Open">Open</option>
+                  <option value="Pending">Pending</option>
+                  <option value="Resolved">Resolved</option>
+                  <option value="Closed">Closed</option>
+                </select>
+              </label>
+              <button id="refresh-btn" type="button">Refresh</button>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Company</th>
+                <th>End User</th>
+                <th>Update</th>
+              </tr>
+            </thead>
+            <tbody id="tickets-body"></tbody>
+          </table>
+          <p id="list-status" class="muted"></p>
+        </section>
+      </section>
+
+      <section id="admin-shell" class="hidden admin-shell">
+        <aside class="admin-sidenav card">
+          <p class="card-kicker">ADMIN NAVIGATION</p>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-create">Create Ticket</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-status">Ticket Statuses</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-users">User Management</button>
+        </aside>
+
+        <div class="admin-content">
+          <section id="admin-page-create" class="admin-page card hidden">
+            <p class="card-kicker">SERVICE INTAKE</p>
+            <h2>Create Ticket</h2>
+            <div id="admin-drop-zone" class="drop-zone" aria-label="Drop email file here">
+              Drop a .eml email file here to auto-fill fields
+            </div>
+            <p id="admin-drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+            <form id="admin-create-ticket-form" class="grid">
+              <label>
+                Title
+                <input id="admin-ticket-title" type="text" required>
+              </label>
+
+              <label>
+                End User Email
+                <input id="admin-end-user-email" type="email" placeholder="user@company.com">
+              </label>
+
+              <label class="span-2">
+                Description
+                <textarea id="admin-ticket-description" rows="6" required></textarea>
+              </label>
+
+              <label>
+                Priority
+                <select id="admin-ticket-priority">
+                  <option value="">Default</option>
+                  <option>Low</option>
+                  <option>Medium</option>
+                  <option>High</option>
+                  <option>Critical</option>
+                </select>
+              </label>
+
+              <label>
+                Type
+                <select id="admin-ticket-type">
+                  <option value="">Default</option>
+                  <option>Incident</option>
+                  <option>Problem</option>
+                  <option>Request</option>
+                  <option>Change</option>
+                </select>
+              </label>
+
+              <label>
+                Technician ID
+                <input id="admin-technician-id" type="number" min="1" value="1">
+              </label>
+
+              <label>
+                Property
+                <select id="admin-ticket-property"></select>
+              </label>
+
+              <label>
+                Initial Status
+                <select id="admin-ticket-status"></select>
+              </label>
+
+              <div class="span-2 actions">
+                <button type="submit">Create Ticket</button>
+                <span id="admin-create-status" class="muted"></span>
+              </div>
+            </form>
+          </section>
+
+          <section id="admin-page-status" class="admin-page card hidden">
+            <div class="list-header">
+              <div>
+                <p class="card-kicker">STATUS GOVERNANCE</p>
+                <h2>Ticket Statuses</h2>
+              </div>
+              <div class="actions">
+                <label>
+                  Status
+                  <select id="admin-status-filter">
+                    <option value="">All</option>
+                    <option value="Open">Open</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Resolved">Resolved</option>
+                    <option value="Closed">Closed</option>
+                  </select>
+                </label>
+                <button id="admin-status-refresh-btn" type="button">Refresh</button>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Current Status</th>
+                  <th>New Status</th>
+                </tr>
+              </thead>
+              <tbody id="admin-status-body"></tbody>
+            </table>
+            <p id="admin-status-message" class="muted"></p>
+          </section>
+
+          <section id="admin-page-users" class="admin-page card hidden">
+            <p class="card-kicker">CONTROL CENTER</p>
+            <h2>User Management</h2>
+            <p class="muted">Approve, promote/demote, reset passwords, and remove user accounts.</p>
+
+            <div class="admin-grid">
+              <div>
+                <h3>Pending Approvals</h3>
+                <button id="refresh-users-btn" type="button">Refresh Users</button>
+                <div id="pending-users"></div>
+              </div>
+
+              <div>
+                <h3>Password Reset</h3>
+                <p class="muted">Set a new password for any user account.</p>
+                <div id="user-reset-list"></div>
+              </div>
+
+              <div class="span-2">
+                <h3>Role &amp; Account Controls</h3>
+                <p class="muted">Assign a property to a user to auto-assign their future tickets.</p>
+                <div id="user-management-list"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="ticket-viewer" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="ticket-viewer-title">
+    <div class="ticket-viewer-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="ticket-viewer-title">Ticket Viewer</h2>
+        <button id="ticket-viewer-close" type="button">Close</button>
+      </div>
+      <div id="ticket-viewer-meta" class="ticket-viewer-meta"></div>
+      <div id="ticket-viewer-update" class="ticket-viewer-update"></div>
+      <p id="ticket-viewer-update-status" class="muted"></p>
+      <div id="ticket-viewer-history" class="ticket-viewer-history"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
