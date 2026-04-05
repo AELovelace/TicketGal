@@ -213,6 +213,11 @@ h3 {
 }
 
 #alerts-feed {
+  display: none;
+}
+
+#app-view.alerts-enabled #alerts-feed {
+  display: block;
   grid-column: 2;
   grid-row: 2;
   position: sticky;

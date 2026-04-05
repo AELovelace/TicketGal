@@ -43,6 +43,7 @@ const alertsFeed = document.getElementById("alerts-feed");
 const alertsStatus = document.getElementById("alerts-status");
 const alertsList = document.getElementById("alerts-list");
 const alertsRefreshBtn = document.getElementById("alerts-refresh-btn");
+const adminAlertsToggle = document.getElementById("admin-alerts-toggle");
 
 if (userSearchInput) {
   userSearchInput.addEventListener("input", () => {
@@ -523,7 +524,12 @@ function applyRoleView() {
   }
 
   if (appView) {
-    appView.classList.toggle("alerts-enabled", isAdmin);
+    const alertsEnabledInStorage = localStorage.getItem("ticketgal.alerts_enabled") !== "false";
+    const shouldShowAlerts = isAdmin && alertsEnabledInStorage;
+    appView.classList.toggle("alerts-enabled", shouldShowAlerts);
+    if (adminAlertsToggle) {
+      adminAlertsToggle.checked = alertsEnabledInStorage;
+    }
   }
 
   if (userAiAssistBtn) {
@@ -1650,6 +1656,20 @@ if (adminSignupsToggle) {
       if (statusEl) {
         statusEl.textContent = `Failed to update signups setting: ${error.message}`;
       }
+    }
+  });
+}
+
+if (adminAlertsToggle) {
+  adminAlertsToggle.addEventListener("change", () => {
+    const enabled = adminAlertsToggle.checked;
+    if (appView) {
+      appView.classList.toggle("alerts-enabled", enabled);
+    }
+    localStorage.setItem("ticketgal.alerts_enabled", enabled ? "true" : "false");
+    const statusEl = document.getElementById("alerts-toggle-status");
+    if (statusEl) {
+      statusEl.textContent = enabled ? "Atera Alerts enabled." : "Atera Alerts disabled.";
     }
   });
 }
