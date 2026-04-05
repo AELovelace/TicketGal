@@ -459,7 +459,8 @@ td select {
 
 .pending-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.55rem;
   align-items: center;
   border: 1px solid #e2d8c3;

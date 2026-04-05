@@ -296,12 +296,6 @@
                 <div id="pending-users"></div>
               </div>
 
-              <div>
-                <h3>Password Reset</h3>
-                <p class="muted">Set a new password for any user account.</p>
-                <div id="user-reset-list"></div>
-              </div>
-
               <div class="span-2">
                 <h3>Role &amp; Account Controls</h3>
                 <p class="muted">Assign a property to a user to auto-assign their future tickets.</p>
@@ -357,6 +351,26 @@
       <div id="ticket-viewer-update" class="ticket-viewer-update"></div>
       <p id="ticket-viewer-update-status" class="muted"></p>
       <div id="ticket-viewer-history" class="ticket-viewer-history"></div>
+    </div>
+  </div>
+
+  <div id="password-reset-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="password-reset-title">
+    <div class="ticket-viewer-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="password-reset-title">Reset Password</h2>
+        <button id="password-reset-close" type="button">Close</button>
+      </div>
+      <div class="password-reset-content">
+        <p>User: <span id="password-reset-user-email"></span></p>
+        <label>
+          New Password
+          <input id="password-reset-input" type="password" placeholder="Min 8 characters" minlength="8" required>
+        </label>
+        <div class="actions">
+          <button id="password-reset-submit" type="button">Set Password</button>
+          <span id="password-reset-status" class="muted"></span>
+        </div>
+      </div>
     </div>
   </div>
 

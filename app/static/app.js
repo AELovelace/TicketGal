@@ -36,7 +36,6 @@ const adminAiAssistStatus = document.getElementById("admin-ticket-ai-status");
 
 const refreshUsersBtn = document.getElementById("refresh-users-btn");
 const pendingUsersEl = document.getElementById("pending-users");
-const userResetListEl = document.getElementById("user-reset-list");
 const userManagementListEl = document.getElementById("user-management-list");
 const userSearchInput = document.getElementById("user-search");
 const alertsFeed = document.getElementById("alerts-feed");
@@ -45,10 +44,20 @@ const alertsList = document.getElementById("alerts-list");
 const alertsRefreshBtn = document.getElementById("alerts-refresh-btn");
 const adminAlertsToggle = document.getElementById("admin-alerts-toggle");
 
+// Password reset modal elements
+const passwordResetModal = document.getElementById("password-reset-modal");
+const passwordResetClose = document.getElementById("password-reset-close");
+const passwordResetUserEmail = document.getElementById("password-reset-user-email");
+const passwordResetInput = document.getElementById("password-reset-input");
+const passwordResetSubmit = document.getElementById("password-reset-submit");
+const passwordResetStatus = document.getElementById("password-reset-status");
+
+let currentResetUserId = null;
+
 if (userSearchInput) {
   userSearchInput.addEventListener("input", () => {
     const query = userSearchInput.value.trim().toLowerCase();
-    [pendingUsersEl, userResetListEl, userManagementListEl].forEach((container) => {
+    [pendingUsersEl, userManagementListEl].forEach((container) => {
       if (!container) return;
       container.querySelectorAll(".pending-row").forEach((row) => {
         const email = (row.textContent || "").toLowerCase();
@@ -393,6 +402,49 @@ function closeTicketViewer() {
   if (ticketViewerUpdate) ticketViewerUpdate.innerHTML = "";
   if (ticketViewerUpdateStatus) ticketViewerUpdateStatus.textContent = "";
   if (ticketViewerHistory) ticketViewerHistory.innerHTML = "";
+}
+
+function closePasswordResetModal() {
+  if (!passwordResetModal) return;
+  passwordResetModal.classList.add("hidden");
+  passwordResetInput.value = "";
+  passwordResetStatus.textContent = "";
+  currentResetUserId = null;
+}
+
+async function openPasswordResetModal(userId, userEmail) {
+  if (!passwordResetModal) return;
+  currentResetUserId = userId;
+  passwordResetUserEmail.textContent = safeText(userEmail);
+  passwordResetInput.value = "";
+  passwordResetStatus.textContent = "";
+  passwordResetModal.classList.remove("hidden");
+  passwordResetInput.focus();
+}
+
+async function submitPasswordReset() {
+  if (!currentResetUserId) return;
+  const password = passwordResetInput.value.trim();
+  if (password.length < 8) {
+    passwordResetStatus.textContent = "Password must be at least 8 characters.";
+    return;
+  }
+  
+  try {
+    passwordResetStatus.textContent = "Resetting password...";
+    await api(`/api/admin/users/${currentResetUserId}/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_password: password }),
+    });
+    passwordResetStatus.textContent = "Password reset successfully!";
+    setTimeout(() => {
+      closePasswordResetModal();
+      loadUsers();
+    }, 1500);
+  } catch (error) {
+    passwordResetStatus.textContent = `Error: ${error.message}`;
+  }
 }
 
 async function openTicketViewer(ticketId) {
@@ -1185,42 +1237,14 @@ async function loadUsers() {
     const all = await api("/api/admin/users");
     const items = (all?.items || []).sort((a, b) => (a.email || "").localeCompare(b.email || ""));
 
-    userResetListEl.innerHTML = "";
     userManagementListEl.innerHTML = "";
 
     if (!items.length) {
-      userResetListEl.textContent = "No users found.";
       userManagementListEl.textContent = "No users found.";
       return;
     }
 
     items.forEach((user) => {
-      const resetRow = document.createElement("div");
-      resetRow.className = "pending-row";
-      const label = document.createElement("span");
-      label.textContent = safeText(user.email);
-      const passInput = document.createElement("input");
-      passInput.type = "password";
-      passInput.placeholder = "New password (min 8)";
-      passInput.minLength = 8;
-      const resetBtn = document.createElement("button");
-      resetBtn.type = "button";
-      resetBtn.textContent = "Reset Password";
-      resetBtn.addEventListener("click", async () => {
-        const password = passInput.value.trim();
-        if (password.length < 8) return;
-        await api(`/api/admin/users/${user.id}/reset-password`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ new_password: password }),
-        });
-        passInput.value = "";
-      });
-      resetRow.appendChild(label);
-      resetRow.appendChild(passInput);
-      resetRow.appendChild(resetBtn);
-      userResetListEl.appendChild(resetRow);
-
       const mgmtRow = document.createElement("div");
       mgmtRow.className = "pending-row";
       const info = document.createElement("span");
@@ -1281,6 +1305,13 @@ async function loadUsers() {
         await loadUsers();
       });
 
+      const resetPasswordBtn = document.createElement("button");
+      resetPasswordBtn.type = "button";
+      resetPasswordBtn.textContent = "Reset Password";
+      resetPasswordBtn.addEventListener("click", () => {
+        openPasswordResetModal(user.id, user.email);
+      });
+
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.textContent = "Delete User";
@@ -1295,12 +1326,12 @@ async function loadUsers() {
       mgmtRow.appendChild(assignPropertyBtn);
       mgmtRow.appendChild(roleSelect);
       mgmtRow.appendChild(applyRoleBtn);
+      mgmtRow.appendChild(resetPasswordBtn);
       mgmtRow.appendChild(deleteBtn);
       userManagementListEl.appendChild(mgmtRow);
     });
   } catch (error) {
     pendingUsersEl.textContent = `Failed: ${error.message}`;
-    userResetListEl.textContent = `Failed: ${error.message}`;
     userManagementListEl.textContent = `Failed: ${error.message}`;
   }
 }
@@ -1597,9 +1628,33 @@ if (ticketViewer) {
     }
   });
 }
+
+// Password reset modal handlers
+if (passwordResetClose) {
+  passwordResetClose.addEventListener("click", closePasswordResetModal);
+}
+if (passwordResetModal) {
+  passwordResetModal.addEventListener("click", (event) => {
+    if (event.target === passwordResetModal) {
+      closePasswordResetModal();
+    }
+  });
+}
+if (passwordResetSubmit) {
+  passwordResetSubmit.addEventListener("click", submitPasswordReset);
+}
+if (passwordResetInput) {
+  passwordResetInput.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") {
+      submitPasswordReset();
+    }
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeTicketViewer();
+    closePasswordResetModal();
   }
 });
 
