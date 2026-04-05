@@ -7,9 +7,7 @@ TicketGal is a FastAPI web application for managing Atera tickets with role-base
 - Default page is a login/registration portal.
 - User accounts are passwordless and require admin approval before first login.
 - All accounts are password-protected.
-- Registration only allows:
-  - @eternalhotels.com
-  - @redlionpasco.com
+- Registration only allows emails specified in .env
 
 ## Roles
 
