@@ -5,8 +5,8 @@ TicketGal is a FastAPI web application for managing Atera tickets with role-base
 ## Access Model
 
 - Default page is a login/registration portal.
-- User accounts are passwordless and require admin approval before first login.
-- All accounts are password-protected.
+- User accounts can sign in either with a local password or with Microsoft 365.
+- New accounts created by self-registration or first-time Microsoft sign-in require admin approval before access.
 - Registration only allows emails specified in .env
 
 ## Roles
@@ -44,6 +44,60 @@ TicketGal is a FastAPI web application for managing Atera tickets with role-base
 3. Create .env from .env.example and fill values.
 4. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env for first admin seed.
 
+### Optional SQLite At-Rest Protection
+
+To protect sensitive SQLite-backed values at rest, set:
+
+- `DATA_ENCRYPTION_KEY` (Fernet key)
+
+Generate a key with Python:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Notes:
+
+- With a key configured, TicketGal encrypts stored password hashes at rest.
+- Session tokens are stored as SHA-256 hashes instead of plaintext.
+- Keep this key in a secure secret store. Rotating it requires data migration planning.
+
+### Optional Microsoft 365 SSO Configuration
+
+To enable Microsoft sign-in, register a web app in Microsoft Entra ID and add these env vars:
+
+- `MICROSOFT_CLIENT_ID`
+- `MICROSOFT_CLIENT_SECRET`
+- `MICROSOFT_TENANT_ID`
+- `ALLOWED_MICROSOFT_TENANT_IDS` (optional, comma-separated explicit tenant allowlist)
+- `PUBLIC_BASE_URL`
+- `MICROSOFT_SCOPES` (optional, defaults to `User.Read,email`)
+- `MICROSOFT_PROMPT` (optional, default `select_account` to force account picker)
+- `USER_PASSWORD_AUTH_ENABLED` (optional, default `0`; when `0`, user password login/register is disabled)
+
+Recommended Entra app settings:
+
+- Platform: Web
+- Redirect URI: `https://your-public-host/auth/microsoft/callback`
+- Supported account type: multi-tenant if you plan to use `ALLOWED_MICROSOFT_TENANT_IDS`
+- Delegated permissions: `openid`, `profile`, `email`, `offline_access`, `User.Read`
+
+Multi-tenant allowlist pattern:
+
+- Set `MICROSOFT_TENANT_ID=organizations` to keep the Microsoft login endpoint multi-tenant.
+- Set `ALLOWED_MICROSOFT_TENANT_IDS=tid1,tid2,...` to restrict which returned tenant IDs are accepted after callback.
+- Set `MICROSOFT_SCOPES` to delegated API scopes only. Do not include reserved OIDC scopes such as `openid`, `profile`, or `offline_access`.
+- Any Microsoft sign-in whose `tid` claim is not in that allowlist is rejected before TicketGal links or creates a user.
+
+Behavior:
+
+- Existing TicketGal users are matched by email and linked to their Microsoft identity on first successful sign-in.
+- If no local user exists yet, TicketGal creates a local `user` account tied to that Microsoft identity.
+- New Microsoft-created accounts still follow the existing admin approval workflow.
+- Once an account is linked, a different Microsoft object ID cannot sign in as that same TicketGal user.
+- The configured `ADMIN_EMAIL` is auto-elevated to admin on Microsoft sign-in if that account somehow exists as `user`.
+- When `USER_PASSWORD_AUTH_ENABLED=0`, non-admin local password login is rejected and users must sign in with Microsoft 365. Admin password login remains available.
+
 ### Optional AI Assist Configuration
 
 To enable AI rewrite + ticket field suggestions in the create-ticket form, set:
@@ -80,11 +134,34 @@ Or on PowerShell:
 .\start-prod.ps1
 ```
 
+If the configured port is already occupied, you can auto-stop the listener process:
+
+```powershell
+.\start-prod.ps1 -AutoKillPort
+```
+
+Or set `AUTO_KILL_PORT=1` in `.env` to make this behavior the default.
+
+### Optional HTTPS for Local Testing
+
+`start-prod.ps1` supports optional direct HTTPS with a self-signed certificate.
+
+- `HTTPS_ENABLED=1` enables uvicorn TLS mode.
+- `AUTO_GENERATE_DEV_CERT=1` generates a self-signed cert automatically if missing.
+- `TICKETGAL_SSL_CERT_FILE` and `TICKETGAL_SSL_KEY_FILE` set certificate file paths.
+
+When running behind nginx (or another reverse proxy doing TLS termination), keep direct app TLS disabled:
+
+- `HTTPS_ENABLED=0`
+- Configure nginx to send `X-Forwarded-Proto: https`
+- Set `PUBLIC_BASE_URL` to your external HTTPS URL if you want fixed callback URLs, otherwise leave it blank to derive from request host.
+
 ## Workflow Notes
 
 - On startup, the app initializes SQLite tables and seeds the admin account from ADMIN_EMAIL/ADMIN_PASSWORD if it does not already exist.
 - New user registrations remain pending until approved in the admin panel.
 - Registration requires a password (minimum 8 characters).
+- Microsoft 365 sign-in creates or links a local TicketGal account by email and then issues the same app session cookie used by password login.
 - Admins can reset any user's password in the admin panel.
 - In the create-ticket form, technicians can click **AI Rewrite & Auto-Fill** to rewrite description and suggest title/priority/type.
 - AI assist intentionally does not set initial status or end user email; those remain technician-controlled.

@@ -3,4 +3,6 @@ uvicorn[standard]==0.35.0
 httpx==0.28.1
 python-multipart==0.0.20
 python-dotenv==1.1.1
+msal==1.32.3
+cryptography==45.0.7
 extract-msg==0.55.0

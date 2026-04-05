@@ -1,4 +1,6 @@
+import re
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -16,6 +18,29 @@ class AteraClient:
     def __init__(self) -> None:
         self.base_url = settings.atera_base_url
         self.api_key = settings.atera_api_key
+        # Explicit allowlist: only operations TicketGal requires.
+        self._allowed_patterns = [
+            ("GET", re.compile(r"^/api/v3/tickets$")),
+            ("POST", re.compile(r"^/api/v3/tickets$")),
+            ("GET", re.compile(r"^/api/v3/tickets/\d+$")),
+            ("PUT", re.compile(r"^/api/v3/tickets/\d+$")),
+            ("POST", re.compile(r"^/api/v3/tickets/\d+/comments$")),
+            ("GET", re.compile(r"^/api/v3/tickets/\d+/comments$")),
+            ("GET", re.compile(r"^/api/v3/customers$")),
+            ("GET", re.compile(r"^/api/v3/alerts$")),
+            ("POST", re.compile(r"^/api/v3/alerts/[^/]+/dismiss$")),
+            ("POST", re.compile(r"^/api/v3/alerts/[^/]+/resolve$")),
+            ("PUT", re.compile(r"^/api/v3/alerts/[^/]+$")),
+            ("DELETE", re.compile(r"^/api/v3/alerts/[^/]+$")),
+        ]
+
+    def _is_request_allowed(self, method: str, path: str) -> bool:
+        method_upper = method.upper()
+        normalized_path = path.split("?", 1)[0].strip()
+        return any(
+            allowed_method == method_upper and allowed_path.fullmatch(normalized_path)
+            for allowed_method, allowed_path in self._allowed_patterns
+        )
 
     def _headers(self) -> Dict[str, str]:
         if not self.api_key:
@@ -33,6 +58,12 @@ class AteraClient:
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
     ) -> Any:
+        if not self._is_request_allowed(method, path):
+            raise AteraApiError(
+                403,
+                f"Blocked by safety policy: '{method.upper()} {path}' is not an allowed Atera operation.",
+            )
+
         url = f"{self.base_url}{path}"
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.request(
@@ -77,6 +108,29 @@ class AteraClient:
 
     async def list_alerts(self) -> Any:
         return await self._request("GET", "/api/v3/alerts")
+
+    async def dismiss_alert(self, alert_id: str) -> Any:
+        encoded_alert_id = quote(str(alert_id).strip(), safe="")
+        attempts = [
+            ("POST", f"/api/v3/alerts/{encoded_alert_id}/dismiss", None),
+            ("POST", f"/api/v3/alerts/{encoded_alert_id}/resolve", None),
+            ("PUT", f"/api/v3/alerts/{encoded_alert_id}", {"AlertStatus": "Dismissed"}),
+            ("DELETE", f"/api/v3/alerts/{encoded_alert_id}", None),
+        ]
+
+        last_exc: Optional[AteraApiError] = None
+        for method, path, payload in attempts:
+            try:
+                return await self._request(method, path, json=payload)
+            except AteraApiError as exc:
+                last_exc = exc
+                if exc.status_code in {400, 404, 405, 422}:
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise AteraApiError(500, "Unable to dismiss alert")
 
     async def create_ticket(self, payload: Dict[str, Any]) -> Any:
         return await self._request("POST", "/api/v3/tickets", json=payload)

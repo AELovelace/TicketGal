@@ -3,6 +3,7 @@ import json
 import re
 import secrets
 import tempfile
+from urllib.parse import urlencode
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
@@ -11,8 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+import msal
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .atera_client import AteraApiError, AteraClient
@@ -37,8 +39,11 @@ from .database import (
     delete_session,
     get_signups_enabled,
     get_user_by_email,
+    get_user_by_id,
+    get_user_by_microsoft_identity,
     get_user_theme_enabled,
     init_db,
+    link_user_microsoft_account,
     list_users,
     reset_user_password,
     seed_admin,
@@ -63,6 +68,35 @@ from .schemas import (
 ADMIN_ALLOWED_STATUSES = {"Open", "Pending", "Closed", "Resolved"}
 USER_ALLOWED_STATUSES = {"Open", "Resolved"}
 USER_LOCKED_STATUSES = {"pending", "closed", "pending closed"}
+TICKETGAL_NEWLINE_DELIMITER = "¥"
+
+MICROSOFT_STATE_COOKIE = "ticketgal_ms_state"
+MICROSOFT_NONCE_COOKIE = "ticketgal_ms_nonce"
+MICROSOFT_FLOW_COOKIE_MAX_AGE = 600
+MICROSOFT_RESERVED_SCOPES = {"openid", "profile", "offline_access"}
+CSRF_COOKIE_NAME = "ticketgal_csrf"
+CSRF_HEADER_NAME = "x-csrf-token"
+CSRF_EXEMPT_PATHS = {
+    "/auth/login",
+    "/auth/register",
+    "/auth/microsoft/login",
+    "/auth/logout",
+}
+CONTENT_SECURITY_POLICY = "; ".join(
+    [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "font-src 'self'",
+        "form-action 'self'",
+        "upgrade-insecure-requests",
+    ]
+)
 
 
 app = FastAPI(title="TicketGal", version="0.2.0")
@@ -70,6 +104,188 @@ client = AteraClient()
 
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.middleware("http")
+async def csrf_protect(request: Request, call_next: Any) -> Response:
+    if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+        path = request.url.path
+        session_token = request.cookies.get(settings.session_cookie_name)
+        exempt = path in CSRF_EXEMPT_PATHS or path == settings.microsoft_redirect_path
+
+        if session_token and not exempt:
+            csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+            csrf_header = request.headers.get(CSRF_HEADER_NAME, "")
+            if not csrf_cookie or not csrf_header or not secrets.compare_digest(csrf_cookie, csrf_header):
+                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if _session_cookie_secure(request):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+def _session_cookie_secure(request: Request) -> bool:
+    if settings.public_base_url:
+        return settings.public_base_url.lower().startswith("https://")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if forwarded_proto:
+        return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def _set_user_session(response: Response, request: Request, user: Dict[str, Any]) -> None:
+    token = create_session_token()
+    session = create_session(int(user["id"]), token)
+    secure = _session_cookie_secure(request)
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=session["token"],
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=settings.session_hours * 3600,
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=secrets.token_urlsafe(32),
+        httponly=False,
+        secure=secure,
+        samesite="lax",
+        max_age=settings.session_hours * 3600,
+    )
+
+
+def _microsoft_authority() -> str:
+    return f"https://login.microsoftonline.com/{settings.microsoft_tenant_id}"
+
+
+def _require_microsoft_auth() -> None:
+    if not settings.microsoft_enabled:
+        raise HTTPException(status_code=503, detail="Microsoft 365 authentication is not configured")
+
+
+def _get_microsoft_app() -> msal.ConfidentialClientApplication:
+    _require_microsoft_auth()
+    return msal.ConfidentialClientApplication(
+        settings.microsoft_client_id,
+        authority=_microsoft_authority(),
+        client_credential=settings.microsoft_client_secret,
+    )
+
+
+def _get_public_base_url(request: Request) -> str:
+    if settings.public_base_url:
+        return settings.public_base_url
+    return str(request.base_url).rstrip("/")
+
+
+def _get_microsoft_redirect_uri(request: Request) -> str:
+    return f"{_get_public_base_url(request)}{settings.microsoft_redirect_path}"
+
+
+def _get_microsoft_auth_scopes() -> List[str]:
+    scopes = [scope for scope in settings.microsoft_scopes if scope.lower() not in MICROSOFT_RESERVED_SCOPES]
+    if scopes:
+        return scopes
+    # Keep at least one non-reserved delegated scope so MSAL can build the request URL.
+    return ["User.Read"]
+
+
+def _microsoft_tenant_allowed(microsoft_tenant_id: Optional[str]) -> bool:
+    allowed_tenants = settings.allowed_microsoft_tenant_ids
+    if not allowed_tenants:
+        return True
+    if not microsoft_tenant_id:
+        return False
+    return microsoft_tenant_id in allowed_tenants
+
+
+def _clear_microsoft_oauth_cookies(response: Response) -> None:
+    response.delete_cookie(MICROSOFT_STATE_COOKIE)
+    response.delete_cookie(MICROSOFT_NONCE_COOKIE)
+
+
+def _build_auth_redirect(message: Optional[str] = None, success: Optional[str] = None) -> RedirectResponse:
+    query: Dict[str, str] = {}
+    if message:
+        query["auth_error"] = message
+    if success:
+        query["auth_success"] = success
+
+    url = "/"
+    if query:
+        url = f"/?{urlencode(query)}"
+
+    response = RedirectResponse(url=url, status_code=303)
+    _clear_microsoft_oauth_cookies(response)
+    return response
+
+
+def _extract_microsoft_email(claims: Dict[str, Any]) -> str:
+    candidates: List[Any] = [
+        claims.get("preferred_username"),
+        claims.get("email"),
+    ]
+    emails = claims.get("emails")
+    if isinstance(emails, list):
+        candidates.extend(emails)
+
+    for candidate in candidates:
+        text = normalize_email(str(candidate or ""))
+        if text and "@" in text:
+            return text
+    return ""
+
+
+def _resolve_microsoft_user(email: str, microsoft_oid: str, microsoft_tenant_id: Optional[str]) -> Dict[str, Any]:
+    linked_user = get_user_by_microsoft_identity(microsoft_oid, microsoft_tenant_id)
+    email_user = get_user_by_email(email)
+
+    if linked_user and email_user and int(linked_user["id"]) != int(email_user["id"]):
+        raise HTTPException(status_code=409, detail="Microsoft account is already linked to a different TicketGal user")
+
+    user = linked_user or email_user
+    if user:
+        existing_oid = (user.get("microsoft_oid") or "").strip()
+        existing_tid = (user.get("microsoft_tenant_id") or "").strip()
+        if existing_oid:
+            if existing_oid != microsoft_oid:
+                raise HTTPException(status_code=403, detail="Microsoft account does not match the linked TicketGal user")
+            if existing_tid and microsoft_tenant_id and existing_tid != microsoft_tenant_id:
+                raise HTTPException(status_code=403, detail="Microsoft tenant does not match the linked TicketGal user")
+        elif not link_user_microsoft_account(int(user["id"]), microsoft_oid, microsoft_tenant_id):
+            raise HTTPException(status_code=500, detail="Failed to link Microsoft account")
+
+        refreshed_user = get_user_by_id(int(user["id"]))
+        if not refreshed_user:
+            raise HTTPException(status_code=500, detail="Linked user could not be reloaded")
+        return refreshed_user
+
+    if not allowed_email_domain(email):
+        raise HTTPException(status_code=403, detail="Microsoft account email is not allowed for this portal")
+
+    if not get_signups_enabled():
+        raise HTTPException(status_code=403, detail="New user signups are currently disabled")
+
+    return create_user(
+        email=email,
+        role="user",
+        password_hash=None,
+        approved=False,
+        microsoft_oid=microsoft_oid,
+        microsoft_tenant_id=microsoft_tenant_id,
+    )
 
 
 @app.on_event("startup")
@@ -94,8 +310,24 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/auth/providers")
+def auth_providers() -> Dict[str, Any]:
+    return {
+        "microsoft_enabled": settings.microsoft_enabled,
+        "microsoft_label": "Sign in with Microsoft 365",
+        "user_password_auth_enabled": settings.user_password_auth_enabled,
+        "password_login_admin_only": not settings.user_password_auth_enabled,
+    }
+
+
 @app.post("/auth/register")
 def register(request: RegisterRequest) -> Dict[str, Any]:
+    if not settings.user_password_auth_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="User password registration is disabled. Use Microsoft 365 sign-in.",
+        )
+
     if not get_signups_enabled():
         raise HTTPException(status_code=403, detail="New user registration is currently disabled by the administrator.")
 
@@ -125,11 +357,17 @@ def register(request: RegisterRequest) -> Dict[str, Any]:
 
 
 @app.post("/auth/login")
-def login(request: LoginRequest, response: Response) -> Dict[str, Any]:
-    email = normalize_email(request.email)
+def login(login_request: LoginRequest, request: Request, response: Response) -> Dict[str, Any]:
+    email = normalize_email(login_request.email)
     user = get_user_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if user.get("role") != "admin" and not settings.user_password_auth_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="User password login is disabled. Sign in with Microsoft 365.",
+        )
 
     if not bool(user["is_active"]):
         raise HTTPException(status_code=403, detail="Account is inactive")
@@ -140,22 +378,131 @@ def login(request: LoginRequest, response: Response) -> Dict[str, Any]:
     if not user["password_hash"]:
         raise HTTPException(status_code=401, detail="Account password is not configured")
 
-    if not verify_password(request.password, user["password_hash"]):
+    if not verify_password(login_request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_session_token()
-    session = create_session(int(user["id"]), token)
-
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=session["token"],
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=settings.session_hours * 3600,
-    )
+    _set_user_session(response, request, user)
 
     return {"message": "Logged in", "user": sanitize_user(user)}
+
+
+@app.get("/auth/microsoft/login")
+def microsoft_login(request: Request) -> RedirectResponse:
+    app_client = _get_microsoft_app()
+    state = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
+    request_url_kwargs: Dict[str, Any] = {
+        "scopes": _get_microsoft_auth_scopes(),
+        "state": state,
+        "nonce": nonce,
+        "redirect_uri": _get_microsoft_redirect_uri(request),
+        "response_mode": "query",
+    }
+    if settings.microsoft_prompt:
+        request_url_kwargs["prompt"] = settings.microsoft_prompt
+
+    try:
+        auth_url = app_client.get_authorization_request_url(**request_url_kwargs)
+    except ValueError:
+        return _build_auth_redirect(message="Microsoft scopes are invalid. Check MICROSOFT_SCOPES.")
+
+    response = RedirectResponse(url=auth_url, status_code=303)
+    secure = _session_cookie_secure(request)
+    response.set_cookie(
+        MICROSOFT_STATE_COOKIE,
+        state,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=MICROSOFT_FLOW_COOKIE_MAX_AGE,
+    )
+    response.set_cookie(
+        MICROSOFT_NONCE_COOKIE,
+        nonce,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=MICROSOFT_FLOW_COOKIE_MAX_AGE,
+    )
+    return response
+
+
+@app.get(settings.microsoft_redirect_path)
+def microsoft_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+) -> RedirectResponse:
+    _require_microsoft_auth()
+
+    if error:
+        message = "Microsoft sign-in was cancelled"
+        if error not in {"access_denied", "user_cancelled"}:
+            message = error_description or "Microsoft sign-in failed"
+        return _build_auth_redirect(message=message)
+
+    expected_state = request.cookies.get(MICROSOFT_STATE_COOKIE)
+    nonce = request.cookies.get(MICROSOFT_NONCE_COOKIE)
+    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        return _build_auth_redirect(message="Microsoft sign-in state validation failed")
+
+    if not code or not nonce:
+        return _build_auth_redirect(message="Microsoft sign-in response was incomplete")
+
+    app_client = _get_microsoft_app()
+    result = app_client.acquire_token_by_authorization_code(
+        code=code,
+        scopes=_get_microsoft_auth_scopes(),
+        redirect_uri=_get_microsoft_redirect_uri(request),
+        nonce=nonce,
+    )
+
+    if "error" in result:
+        message = str(result.get("error_description") or result.get("error") or "Microsoft sign-in failed")
+        return _build_auth_redirect(message=message)
+
+    claims = result.get("id_token_claims") if isinstance(result, dict) else None
+    if not isinstance(claims, dict):
+        return _build_auth_redirect(message="Microsoft sign-in did not return identity claims")
+
+    email = _extract_microsoft_email(claims)
+    microsoft_oid = str(claims.get("oid") or claims.get("sub") or "").strip()
+    microsoft_tenant_id = str(claims.get("tid") or "").strip() or None
+
+    if not email:
+        return _build_auth_redirect(message="Microsoft account did not provide an email address")
+    if not microsoft_oid:
+        return _build_auth_redirect(message="Microsoft account did not provide a stable identity")
+    if not _microsoft_tenant_allowed(microsoft_tenant_id):
+        return _build_auth_redirect(message="Microsoft tenant is not allowed for this portal")
+
+    try:
+        user = _resolve_microsoft_user(email, microsoft_oid, microsoft_tenant_id)
+    except HTTPException as exc:
+        return _build_auth_redirect(message=str(exc.detail))
+
+    # Keep configured bootstrap admin identity authoritative even if this account
+    # was previously created as a standard user before admin seeding finalized.
+    if settings.admin_email and normalize_email(email) == normalize_email(settings.admin_email):
+        if user.get("role") != "admin":
+            update_user_role(int(user["id"]), "admin")
+        if not bool(user.get("approved")):
+            approve_user(int(user["id"]))
+        refreshed = get_user_by_id(int(user["id"]))
+        if refreshed:
+            user = refreshed
+
+    if not bool(user.get("is_active")):
+        return _build_auth_redirect(message="Account is inactive")
+
+    if not bool(user.get("approved")):
+        return _build_auth_redirect(message="Account pending admin approval")
+
+    response = _build_auth_redirect(success="microsoft")
+    _set_user_session(response, request, user)
+    return response
 
 
 @app.post("/auth/logout")
@@ -165,6 +512,7 @@ def logout(request: Request, response: Response) -> Dict[str, str]:
         delete_session(token)
 
     response.delete_cookie(settings.session_cookie_name)
+    response.delete_cookie(CSRF_COOKIE_NAME)
     return {"message": "Logged out"}
 
 
@@ -221,17 +569,10 @@ def admin_reset_user_password(
 ) -> Dict[str, str]:
     require_admin(user)
 
-    plain_password = request.new_password or secrets.token_urlsafe(12)
-    if len(plain_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-
-    if not reset_user_password(user_id, hash_password(plain_password)):
+    if not reset_user_password(user_id, hash_password(request.new_password)):
         raise HTTPException(status_code=404, detail="User not found")
 
-    return {
-        "message": "User password reset",
-        "temporary_password": plain_password,
-    }
+    return {"message": "User password reset"}
 
 
 @app.patch("/api/admin/theme")
@@ -329,6 +670,12 @@ def _normalize_status_input(status: str) -> str:
 
 def _normalize_parsed_text(value: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", value.replace("\r\n", "\n")).strip()
+
+
+def _encode_ticketgal_newlines(value: Any) -> str:
+    text = str(value or "")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.replace("\n", TICKETGAL_NEWLINE_DELIMITER)
 
 
 def _html_to_text(html: str) -> str:
@@ -506,6 +853,11 @@ def _extract_ai_message_content(body: Any) -> str:
 def _looks_like_ollama_base_url(base_url: str) -> bool:
     lowered = base_url.strip().lower()
     return "11434" in lowered or "ollama" in lowered
+
+
+def _provider_requires_api_key(base_url: str) -> bool:
+    lowered = base_url.strip().lower()
+    return "api.openai.com" in lowered
 
 
 def _get_ollama_native_endpoint(base_url: str) -> str:
@@ -687,6 +1039,20 @@ async def ai_assist_ticket(
         raise HTTPException(status_code=400, detail="Description is required")
 
     current_title = _coerce_ai_text(request.ticket_title or "", max_length=160)
+
+    # Provide a graceful, deterministic fallback when using OpenAI-hosted endpoints
+    # without credentials instead of bubbling raw provider errors to the UI.
+    if _provider_requires_api_key(settings.openai_base_url) and not settings.openai_api_key:
+        rewritten_description = _ensure_professional_description(description)
+        return {
+            "ticket_title": _infer_ticket_title(rewritten_description, current_title) or None,
+            "description": rewritten_description,
+            "ticket_priority": _infer_ticket_priority(rewritten_description),
+            "ticket_type": _infer_ticket_type(rewritten_description),
+            "fallback_used": True,
+            "fallback_reason": "AI provider API key is not configured; using local fallback rewrite.",
+        }
+
     user_prompt = (
         "Rewrite the ticket description in professional, concise IT helpdesk language and infer useful fields. "
         "Remove profanity, slang, insults, and emotionally charged wording while preserving the technical facts. "
@@ -772,7 +1138,15 @@ async def ai_assist_ticket(
         raise HTTPException(status_code=502, detail="AI provider did not return a response")
 
     if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"AI provider error: {response.text}")
+        if response.status_code in {401, 403}:
+            raise HTTPException(
+                status_code=502,
+                detail="AI provider authentication failed. Check OPENAI_API_KEY and OPENAI_BASE_URL.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed. Review AI provider configuration and server logs.",
+        )
 
     content = _extract_ai_message_content(body)
 
@@ -880,6 +1254,22 @@ async def list_alerts(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[
         return {"items": result}
 
     return {"items": []}
+
+
+@app.post("/api/alerts/{alert_id}/dismiss")
+async def dismiss_alert(alert_id: str, user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    require_admin(user)
+
+    cleaned_alert_id = str(alert_id or "").strip()
+    if not cleaned_alert_id:
+        raise HTTPException(status_code=400, detail="Alert ID is required")
+
+    try:
+        result = await client.dismiss_alert(cleaned_alert_id)
+    except AteraApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    return {"message": "Alert dismissed", "result": result}
 
 
 @app.post("/api/tickets")

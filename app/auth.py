@@ -53,6 +53,7 @@ def sanitize_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "property_customer_id": user.get("property_customer_id"),
         "property_name": user.get("property_name"),
         "theme_enabled": bool(user.get("theme_enabled", 0)),
+        "microsoft_linked": bool(user.get("microsoft_oid")),
     }
 
 

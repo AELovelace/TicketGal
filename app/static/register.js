@@ -1,5 +1,6 @@
 const registerForm = document.getElementById("register-form");
 const registerStatus = document.getElementById("register-status");
+let userPasswordAuthEnabled = true;
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "include", ...options });
@@ -27,6 +28,26 @@ async function api(path, options = {}) {
     return;
   } catch {
     // Not logged in — show the form.
+  }
+
+  try {
+    const result = await fetch("/auth/providers", { credentials: "include" });
+    if (result.ok) {
+      const data = await result.json();
+      userPasswordAuthEnabled = data?.user_password_auth_enabled !== false;
+    }
+  } catch {
+    // If provider info fails, keep existing behavior.
+  }
+
+  if (!userPasswordAuthEnabled) {
+    registerForm.innerHTML = `
+      <p class="card-kicker">REGISTRATION</p>
+      <h2>Microsoft 365 Required</h2>
+      <p class="muted">User password registration is disabled. Use Microsoft 365 sign-in on the main page.</p>
+      <p class="muted register-link"><a href="/">Back to Sign In</a></p>
+    `;
+    return;
   }
 
   // Check if signups are enabled

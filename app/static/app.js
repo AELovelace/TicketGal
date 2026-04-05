@@ -7,6 +7,12 @@ const welcomeText = document.getElementById("welcome-text");
 
 const loginForm = document.getElementById("login-form");
 const logoutBtn = document.getElementById("logout-btn");
+const microsoftLoginBtn = document.getElementById("microsoft-login-btn");
+const microsoftAuthBlock = document.getElementById("microsoft-auth-block");
+const localLoginBlock = document.getElementById("local-login-block");
+const localLoginDivider = document.getElementById("local-login-divider");
+const localLoginBtn = document.getElementById("local-login-btn");
+const registerLink = document.getElementById("register-link");
 
 const loginStatus = document.getElementById("login-status");
 
@@ -80,12 +86,19 @@ const ticketViewerHistory = document.getElementById("ticket-viewer-history");
 const ADMIN_STATUSES = ["Open", "Pending", "Closed", "Resolved"];
 const USER_STATUSES = ["Open", "Resolved"];
 const USER_LOCKED_CURRENT = ["pending", "closed", "pending closed"];
+const DEFAULT_TICKET_PRIORITY = "Low";
+const DEFAULT_TICKET_TYPE = "Incident";
+const DEFAULT_PROPERTY_NAME = "Eternal Hotels";
 
 let currentUser = null;
 let currentAdminPage = "admin-page-create";
 let cachedTickets = [];
 let cachedProperties = [];
 let alertsPollTimer = null;
+let userPasswordAuthEnabled = true;
+let microsoftAuthEnabled = false;
+
+const authRedirectState = readAndClearAuthRedirectState();
 
 const DISMISSED_ALERTS_KEY = "ticketgal.dismissed_alert_ids";
 
@@ -108,6 +121,26 @@ function setDismissedAlertIds(ids) {
   }
 }
 
+function applyAuthModeVisibility() {
+  const showMicrosoft = microsoftAuthEnabled;
+  const showLocal = userPasswordAuthEnabled;
+  const showLocalDivider = showMicrosoft && showLocal;
+
+  if (localLoginBlock) {
+    localLoginBlock.classList.toggle("hidden", !showLocal);
+  }
+  if (localLoginDivider) {
+    localLoginDivider.classList.toggle("hidden", !showLocalDivider);
+  }
+  if (registerLink) {
+    registerLink.classList.toggle("hidden", !showLocal);
+  }
+
+  if (microsoftAuthBlock) {
+    microsoftAuthBlock.classList.toggle("hidden", !showMicrosoft);
+  }
+}
+
 function dismissAlert(alertId) {
   const id = safeText(alertId).trim();
   if (!id) return;
@@ -121,8 +154,37 @@ function safeText(value) {
   return String(value);
 }
 
+function readCookie(name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function isStateChangingMethod(method) {
+  const normalized = safeText(method || "GET").toUpperCase();
+  return normalized === "POST" || normalized === "PUT" || normalized === "PATCH" || normalized === "DELETE";
+}
+
+function readAndClearAuthRedirectState() {
+  const params = new URLSearchParams(window.location.search);
+  const error = safeText(params.get("auth_error")).trim();
+  const success = safeText(params.get("auth_success")).trim();
+
+  if (!error && !success) {
+    return { error: "", success: "" };
+  }
+
+  params.delete("auth_error");
+  params.delete("auth_success");
+  const nextQuery = params.toString();
+  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState({}, document.title, nextUrl);
+
+  return { error, success };
+}
+
 function htmlToReadableText(value) {
-  const raw = safeText(value);
+  const raw = decodeTicketgalNewlineDelimiter(value);
   if (!raw) return "";
 
   const parser = new DOMParser();
@@ -136,19 +198,191 @@ function htmlToReadableText(value) {
     .replace(/[ \t]{2,}/g, " ")
     .trim();
 
+  text = stripAteraCssNoise(text);
+
+  return text;
+}
+
+function decodeTicketgalNewlineDelimiter(value) {
+  return safeText(value)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\s*¥\s*/g, "\n");
+}
+
+function renderPlainCommentWithLineBreaks(wrapper, value) {
+  const text = safeText(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = text.split("\n");
+  wrapper.innerHTML = "";
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      wrapper.appendChild(document.createElement("br"));
+    }
+    wrapper.appendChild(document.createTextNode(line));
+  });
+}
+
+function stripAteraCssNoise(value) {
+  let text = safeText(value).trim();
+  if (!text) return "";
+
   // Some Atera comments can include serialized CSS text before actual message content.
-  // Remove leading CSS selector/declaration blocks if present.
+  // Remove leading selector/declaration blocks if present.
   const cssBlockPrefix = /^(?:[.#a-zA-Z0-9_\-\s,>:+*\[\]="'()]+)\{[^{}]{0,5000}\}\s*/;
   for (let i = 0; i < 5; i += 1) {
     if (!cssBlockPrefix.test(text)) break;
     text = text.replace(cssBlockPrefix, "").trim();
   }
 
+  // Remove a common malformed prefix where tag selectors are flattened to text.
+  text = text.replace(
+    /^((?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\s*,\s*)+(?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\s*\{[^{}]{0,5000}\}\s*/i,
+    "",
+  ).trim();
+
   // Remove leading bare CSS declaration runs that may survive malformed content.
   const cssDeclarationsPrefix = /^(?:[a-z-]+\s*:\s*[^;\n]+;\s*){2,}/i;
   text = text.replace(cssDeclarationsPrefix, "").trim();
 
   return text;
+}
+
+function decodeHtmlEntities(value) {
+  const text = safeText(value);
+  if (!text) return "";
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+function isSafeCommentHref(href) {
+  const value = safeText(href).trim();
+  if (!value) return false;
+  if (value.startsWith("/") || value.startsWith("#")) return true;
+  return /^(https?:|mailto:|tel:)/i.test(value);
+}
+
+function sanitizeTicketCommentNode(node) {
+  if (!node) return document.createTextNode("");
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return document.createTextNode(node.textContent || "");
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return document.createTextNode("");
+  }
+
+  const allowedTags = new Set([
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "br",
+    "strong",
+    "b",
+    "em",
+    "i",
+    "u",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "code",
+    "pre",
+    "a",
+    "img",
+    "hr",
+    "span",
+    "div",
+  ]);
+
+  const tagName = safeText(node.tagName).toLowerCase();
+
+  if (!allowedTags.has(tagName)) {
+    const fragment = document.createDocumentFragment();
+    Array.from(node.childNodes || []).forEach((child) => {
+      fragment.appendChild(sanitizeTicketCommentNode(child));
+    });
+    return fragment;
+  }
+
+  const clean = document.createElement(tagName);
+
+  if (tagName === "a") {
+    const href = safeText(node.getAttribute("href")).trim();
+    if (isSafeCommentHref(href)) {
+      clean.setAttribute("href", href);
+      clean.setAttribute("rel", "noopener noreferrer nofollow");
+      if (!href.startsWith("/") && !href.startsWith("#") && !/^mailto:|^tel:/i.test(href)) {
+        clean.setAttribute("target", "_blank");
+      }
+    }
+  }
+
+  if (tagName === "img") {
+    const src = safeText(node.getAttribute("src")).trim();
+    const safeSrc = src.startsWith("/") || /^https?:/i.test(src) || /^data:image\//i.test(src);
+    if (safeSrc) {
+      clean.setAttribute("src", src);
+    }
+    const alt = safeText(node.getAttribute("alt")).trim();
+    if (alt) {
+      clean.setAttribute("alt", alt);
+    }
+    clean.setAttribute("loading", "lazy");
+  }
+
+  Array.from(node.childNodes || []).forEach((child) => {
+    clean.appendChild(sanitizeTicketCommentNode(child));
+  });
+
+  return clean;
+}
+
+function renderTicketCommentContent(value) {
+  const raw = decodeTicketgalNewlineDelimiter(value);
+  const wrapper = document.createElement("div");
+  wrapper.className = "history-comment";
+
+  if (!raw.trim()) {
+    return wrapper;
+  }
+
+  const decoded = /&lt;\/?[a-z][^&]*&gt;/i.test(raw) ? decodeHtmlEntities(raw) : raw;
+  const candidate = stripAteraCssNoise(decoded);
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(candidate, "text/html");
+  doc.querySelectorAll("script, style, link, iframe, object, embed, form, input, button, textarea, select, meta")
+    .forEach((el) => el.remove());
+
+  const hasSupportedElements = Boolean(
+    doc.body?.querySelector("h1,h2,h3,h4,h5,h6,p,br,strong,b,em,i,u,ul,ol,li,blockquote,code,pre,a,img,hr,span,div"),
+  );
+
+  if (!hasSupportedElements) {
+    renderPlainCommentWithLineBreaks(wrapper, htmlToReadableText(candidate));
+    return wrapper;
+  }
+
+  let appended = false;
+  Array.from(doc.body?.childNodes || []).forEach((child) => {
+    const sanitized = sanitizeTicketCommentNode(child);
+    if (!sanitized) return;
+    if (sanitized.nodeType === Node.TEXT_NODE && !safeText(sanitized.textContent).trim()) return;
+    wrapper.appendChild(sanitized);
+    appended = true;
+  });
+
+  if (!appended) {
+    renderPlainCommentWithLineBreaks(wrapper, htmlToReadableText(candidate));
+  }
+
+  return wrapper;
 }
 
 function toTimestamp(value) {
@@ -238,9 +472,244 @@ function normalizeAlertItem(alert) {
     safeText(alert?.LastUpdated) ||
     "";
 
-  const alertId = safeText(rawAlertId).trim() || `${title}|${createdAt}|${machineName}|${machineId}`;
+  const remoteAlertId = safeText(rawAlertId).trim();
+  const alertId = remoteAlertId || `${title}|${createdAt}|${machineName}|${machineId}`;
 
-  return { title, message, severity, source, createdAt, machineName, machineId, alertId };
+  return { title, message, severity, source, createdAt, machineName, machineId, alertId, remoteAlertId };
+}
+
+function normalizeForMatch(value) {
+  return safeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function inferPriorityFromAlert(entry) {
+  const severity = safeText(entry?.severity).toLowerCase();
+  const context = [entry?.title, entry?.message, entry?.source, entry?.machineName]
+    .map((value) => safeText(value).toLowerCase())
+    .join(" ");
+
+  if (
+    severity.includes("critical") ||
+    /ransom|malware|virus|security breach|compromised|data loss|disk full/i.test(context)
+  ) {
+    return "Critical";
+  }
+  if (
+    severity.includes("high") ||
+    /outage|down|offline|unreachable|not responding|service unavailable|failed login storm/i.test(context)
+  ) {
+    return "High";
+  }
+  if (severity.includes("medium") || severity.includes("warn") || /degraded|latency|slow/i.test(context)) {
+    return "Medium";
+  }
+  if (severity.includes("low") || severity.includes("info")) {
+    return "Low";
+  }
+  return "";
+}
+
+function inferTypeFromAlert(entry) {
+  const context = [entry?.title, entry?.message]
+    .map((value) => safeText(value).toLowerCase())
+    .join(" ");
+
+  if (/request|new user|access|permission|onboard|install|setup|reset password/i.test(context)) {
+    return "Request";
+  }
+  if (/repeat|recurring|intermittent|keeps happening|again/i.test(context)) {
+    return "Problem";
+  }
+  if (/change|maintenance|upgrade|patch|migration|rollout/i.test(context)) {
+    return "Change";
+  }
+  return "Incident";
+}
+
+function inferPropertyFromAlert(entry) {
+  if (!Array.isArray(cachedProperties) || !cachedProperties.length) {
+    return null;
+  }
+
+  const source = normalizeForMatch(entry?.source);
+  const haystack = normalizeForMatch(
+    [entry?.source, entry?.title, entry?.message, entry?.machineName, entry?.machineId].join(" "),
+  );
+
+  let best = null;
+  let bestScore = 0;
+
+  cachedProperties.forEach((property) => {
+    const name = safeText(property?.customer_name);
+    const normalizedName = normalizeForMatch(name);
+    if (!normalizedName) return;
+
+    let score = 0;
+    if (source && (source === normalizedName || source.includes(normalizedName) || normalizedName.includes(source))) {
+      score += 10;
+    }
+    if (haystack.includes(normalizedName)) {
+      score += 6;
+    }
+
+    const tokens = normalizedName.split(" ").filter((token) => token.length >= 3);
+    tokens.forEach((token) => {
+      if (haystack.includes(token)) {
+        score += 1;
+      }
+    });
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = property;
+    }
+  });
+
+  if (!best || bestScore < 3) {
+    return null;
+  }
+
+  return {
+    customer_id: Number(best.customer_id),
+    customer_name: safeText(best.customer_name),
+  };
+}
+
+function buildAlertTicketDraft(entry) {
+  const title = safeText(entry?.title).trim().slice(0, 160) || "Atera Alert Follow-Up";
+  const lines = [
+    "Atera alert details:",
+    `Title: ${safeText(entry?.title) || "(none)"}`,
+    `Severity: ${safeText(entry?.severity) || "Info"}`,
+  ];
+
+  if (entry?.source) {
+    lines.push(`Customer: ${safeText(entry.source)}`);
+  }
+  if (entry?.machineName) {
+    lines.push(`Machine: ${safeText(entry.machineName)}`);
+  }
+  if (entry?.machineId) {
+    lines.push(`Machine ID: ${safeText(entry.machineId)}`);
+  }
+  const absoluteTime = formatAbsoluteAlertTime(entry?.createdAt);
+  if (absoluteTime) {
+    lines.push(`Event Time: ${absoluteTime}`);
+  }
+  if (entry?.message) {
+    lines.push("", "Alert Message:", safeText(entry.message));
+  }
+
+  const guessedPriority = inferPriorityFromAlert(entry);
+  const guessedType = inferTypeFromAlert(entry);
+  const guessedProperty = inferPropertyFromAlert(entry);
+
+  return {
+    ticket_title: title,
+    description: lines.join("\n").slice(0, 4000),
+    ticket_priority: guessedPriority,
+    ticket_type: guessedType,
+    property_customer_id: guessedProperty?.customer_id ?? null,
+    property_name: guessedProperty?.customer_name ?? "",
+  };
+}
+
+function ensureAdminCreateTicketPage() {
+  if (currentUser?.role !== "admin") {
+    throw new Error("Only admins can create ticket drafts from alerts.");
+  }
+  setAdminPage("admin-page-create");
+}
+
+async function createTicketDraftFromAlert(entry, triggerButton) {
+  const button = triggerButton instanceof HTMLButtonElement ? triggerButton : null;
+  const statusTarget = adminAiAssistStatus || alertsStatus;
+  const adminTitle = document.getElementById("admin-ticket-title");
+  const adminDescription = document.getElementById("admin-ticket-description");
+  const adminPriority = document.getElementById("admin-ticket-priority");
+  const adminType = document.getElementById("admin-ticket-type");
+
+  if (!(adminTitle instanceof HTMLInputElement) || !(adminDescription instanceof HTMLTextAreaElement)) {
+    throw new Error("Create ticket fields are unavailable.");
+  }
+
+  const draft = buildAlertTicketDraft(entry);
+
+  ensureAdminCreateTicketPage();
+  adminTitle.value = draft.ticket_title;
+  adminDescription.value = draft.description;
+
+  if (adminPriority instanceof HTMLSelectElement && draft.ticket_priority) {
+    adminPriority.value = draft.ticket_priority;
+  }
+  if (adminType instanceof HTMLSelectElement && draft.ticket_type) {
+    adminType.value = draft.ticket_type;
+  }
+  if (
+    adminPropertySelect instanceof HTMLSelectElement &&
+    draft.property_customer_id !== null &&
+    Array.from(adminPropertySelect.options).some((option) => option.value === String(draft.property_customer_id))
+  ) {
+    adminPropertySelect.value = String(draft.property_customer_id);
+  }
+
+  if (statusTarget) {
+    const guessedParts = [];
+    if (draft.ticket_priority) guessedParts.push(`priority ${draft.ticket_priority}`);
+    if (draft.ticket_type) guessedParts.push(`type ${draft.ticket_type}`);
+    if (draft.property_name) guessedParts.push(`property ${draft.property_name}`);
+    statusTarget.textContent = guessedParts.length
+      ? `Guessing ${guessedParts.join(", ")} and generating AI draft...`
+      : "Generating ticket draft from alert...";
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Creating...";
+  }
+
+  try {
+    const aiResult = await api("/api/tickets/ai-assist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description: draft.description,
+        ticket_title: draft.ticket_title,
+      }),
+    });
+
+    const changed = applyAiAssistToForm("admin-", aiResult || {}, true);
+    const fallbackUsed = Boolean(aiResult?.fallback_used);
+    const fallbackReason = safeText(aiResult?.fallback_reason).trim();
+
+    if (statusTarget) {
+      if (changed && fallbackUsed) {
+        statusTarget.textContent = fallbackReason
+          ? `Ticket draft created with fallback rewrite. ${fallbackReason}.`
+          : "Ticket draft created with fallback rewrite.";
+      } else if (changed) {
+        statusTarget.textContent = "Ticket draft created from alert. Review and submit.";
+      } else if (fallbackUsed) {
+        statusTarget.textContent = fallbackReason
+          ? `Ticket draft loaded from alert, fallback rewrite made no field changes. ${fallbackReason}.`
+          : "Ticket draft loaded from alert, fallback rewrite made no field changes.";
+      } else {
+        statusTarget.textContent = "Ticket draft loaded from alert. Review and submit.";
+      }
+    }
+
+    const createSection = document.getElementById("admin-page-create");
+    if (createSection) {
+      createSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Create Ticket";
+    }
+  }
 }
 
 function stopAlertsPolling() {
@@ -333,16 +802,60 @@ async function loadAlerts(options = {}) {
       dismissBtn.type = "button";
       dismissBtn.className = "alert-dismiss-btn";
       dismissBtn.textContent = "Dismiss";
-      dismissBtn.addEventListener("click", () => {
-        dismissAlert(entry.alertId);
-        item.remove();
-        if (!alertsList.children.length) {
-          alertsStatus.textContent = "No alerts right now.";
+      dismissBtn.disabled = !entry.remoteAlertId;
+      if (!entry.remoteAlertId) {
+        dismissBtn.title = "This alert does not expose a dismissible Atera ID.";
+      }
+      dismissBtn.addEventListener("click", async () => {
+        if (!entry.remoteAlertId) {
+          if (alertsStatus) {
+            alertsStatus.textContent = "This alert cannot be dismissed in Atera because no AlertID was provided.";
+          }
+          return;
+        }
+
+        const previousLabel = dismissBtn.textContent;
+        dismissBtn.disabled = true;
+        dismissBtn.textContent = "Dismissing...";
+
+        try {
+          await api(`/api/alerts/${encodeURIComponent(entry.remoteAlertId)}/dismiss`, {
+            method: "POST",
+          });
+
+          dismissAlert(entry.alertId);
+          item.remove();
+          if (!alertsList.children.length) {
+            alertsStatus.textContent = "No alerts right now.";
+          } else if (alertsStatus) {
+            alertsStatus.textContent = "Alert dismissed in Atera.";
+          }
+        } catch (error) {
+          dismissBtn.disabled = false;
+          dismissBtn.textContent = previousLabel;
+          if (alertsStatus) {
+            alertsStatus.textContent = `Failed to dismiss alert in Atera: ${error.message}`;
+          }
+        }
+      });
+
+      const createTicketBtn = document.createElement("button");
+      createTicketBtn.type = "button";
+      createTicketBtn.className = "alert-create-ticket-btn";
+      createTicketBtn.textContent = "Create Ticket";
+      createTicketBtn.addEventListener("click", async () => {
+        try {
+          await createTicketDraftFromAlert(entry, createTicketBtn);
+        } catch (error) {
+          if (alertsStatus) {
+            alertsStatus.textContent = `Failed to build ticket draft: ${safeText(error.message)}`;
+          }
         }
       });
 
       const actions = document.createElement("div");
       actions.className = "alert-actions";
+      actions.appendChild(createTicketBtn);
       actions.appendChild(dismissBtn);
 
       item.appendChild(severityTag);
@@ -364,9 +877,20 @@ async function loadAlerts(options = {}) {
 }
 
 async function api(path, options = {}) {
+  const method = safeText(options.method || "GET").toUpperCase();
+  const headers = new Headers(options.headers || {});
+  if (isStateChangingMethod(method)) {
+    const csrfToken = readCookie("ticketgal_csrf");
+    if (csrfToken) {
+      headers.set("X-CSRF-Token", csrfToken);
+    }
+  }
+
   const response = await fetch(path, {
     credentials: "include",
     ...options,
+    method,
+    headers,
   });
 
   if (!response.ok) {
@@ -501,8 +1025,7 @@ async function openTicketViewer(ticketId) {
       date.className = "muted";
       date.textContent = safeText(entry.Date || "");
 
-      const comment = document.createElement("div");
-      comment.textContent = htmlToReadableText(entry.Comment || "");
+      const comment = renderTicketCommentContent(entry.Comment || "");
 
       el.appendChild(author);
       el.appendChild(date);
@@ -540,15 +1063,47 @@ function setCreateFormStatusOptions(prefix, statuses) {
   });
 }
 
+function applyCreateFormDefaults(prefix) {
+  const prioritySelect = document.getElementById(`${prefix}ticket-priority`);
+  if (prioritySelect instanceof HTMLSelectElement) {
+    if (Array.from(prioritySelect.options).some((option) => option.value === DEFAULT_TICKET_PRIORITY)) {
+      prioritySelect.value = DEFAULT_TICKET_PRIORITY;
+    } else if (prioritySelect.options.length) {
+      prioritySelect.selectedIndex = 0;
+    }
+  }
+
+  const typeSelect = document.getElementById(`${prefix}ticket-type`);
+  if (typeSelect instanceof HTMLSelectElement) {
+    if (Array.from(typeSelect.options).some((option) => option.value === DEFAULT_TICKET_TYPE)) {
+      typeSelect.value = DEFAULT_TICKET_TYPE;
+    } else if (typeSelect.options.length) {
+      typeSelect.selectedIndex = 0;
+    }
+  }
+}
+
+function selectDefaultAdminProperty() {
+  if (!(adminPropertySelect instanceof HTMLSelectElement)) return;
+  if (!adminPropertySelect.options.length) return;
+
+  const normalizedTarget = DEFAULT_PROPERTY_NAME.toLowerCase();
+  const preferredOption = Array.from(adminPropertySelect.options).find((option) =>
+    safeText(option.textContent).trim().toLowerCase() === normalizedTarget,
+  );
+
+  if (preferredOption) {
+    adminPropertySelect.value = preferredOption.value;
+    return;
+  }
+
+  adminPropertySelect.selectedIndex = 0;
+}
+
 function populatePropertySelects() {
   if (!adminPropertySelect) return;
 
   adminPropertySelect.innerHTML = "";
-
-  const noneOption = document.createElement("option");
-  noneOption.value = "";
-  noneOption.textContent = "No Property";
-  adminPropertySelect.appendChild(noneOption);
 
   cachedProperties.forEach((property) => {
     const option = document.createElement("option");
@@ -556,6 +1111,8 @@ function populatePropertySelects() {
     option.textContent = safeText(property.customer_name || `Property ${property.customer_id}`);
     adminPropertySelect.appendChild(option);
   });
+
+  selectDefaultAdminProperty();
 }
 
 function applyRoleView() {
@@ -603,6 +1160,9 @@ function applyRoleView() {
 
   setCreateFormStatusOptions("", USER_STATUSES);
   setCreateFormStatusOptions("admin-", ADMIN_STATUSES);
+  applyCreateFormDefaults("");
+  applyCreateFormDefaults("admin-");
+  selectDefaultAdminProperty();
 
   if (isAdmin) {
     setAdminPage(currentAdminPage);
@@ -788,7 +1348,7 @@ function readCreateForm(prefix) {
   };
 }
 
-function applyAiAssistToForm(prefix, aiResult) {
+function applyAiAssistToForm(prefix, aiResult, appendDescription = false) {
   const title = document.getElementById(`${prefix}ticket-title`);
   const description = document.getElementById(`${prefix}ticket-description`);
   const priority = document.getElementById(`${prefix}ticket-priority`);
@@ -803,10 +1363,21 @@ function applyAiAssistToForm(prefix, aiResult) {
     }
   }
   if (description && aiResult.description) {
-    const nextValue = safeText(aiResult.description).slice(0, 4000);
-    if (description.value !== nextValue) {
-      description.value = nextValue;
-      changed = true;
+    const aiSummary = safeText(aiResult.description).slice(0, 4000);
+    if (appendDescription) {
+      // Append AI summary to existing fallback report
+      const separator = description.value ? "\n\n" : "";
+      const nextValue = (description.value + separator + aiSummary).slice(0, 4000);
+      if (description.value !== nextValue) {
+        description.value = nextValue;
+        changed = true;
+      }
+    } else {
+      // Replace description (original behavior)
+      if (description.value !== aiSummary) {
+        description.value = aiSummary;
+        changed = true;
+      }
     }
   }
 
@@ -1029,11 +1600,17 @@ async function parseDroppedDataTransfer(dataTransfer) {
 async function parseDroppedFileViaApi(file) {
   const formData = new FormData();
   formData.append("file", file);
+  const headers = new Headers();
+  const csrfToken = readCookie("ticketgal_csrf");
+  if (csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
 
   const response = await fetch("/api/emails/parse-drop", {
     method: "POST",
     body: formData,
     credentials: "include",
+    headers,
   });
 
   if (!response.ok) {
@@ -1371,10 +1948,13 @@ async function submitCreateForm(prefix, isAdmin) {
       adminTechInput.value = "1";
     }
     setCreateFormStatusOptions("admin-", ADMIN_STATUSES);
+    applyCreateFormDefaults("admin-");
+    selectDefaultAdminProperty();
   } else {
     userCreateForm.reset();
     document.getElementById("end-user-email").value = currentUser.email;
     setCreateFormStatusOptions("", USER_STATUSES);
+    applyCreateFormDefaults("");
   }
   await loadTickets();
 }
@@ -1447,6 +2027,12 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+
+  if (!userPasswordAuthEnabled) {
+    loginStatus.textContent = "Use Sign in with Microsoft 365.";
+    return;
+  }
+
   loginStatus.textContent = "Signing in...";
 
   try {
@@ -1464,6 +2050,13 @@ loginForm.addEventListener("submit", async (event) => {
     loginStatus.textContent = `Login failed: ${error.message}`;
   }
 });
+
+if (microsoftLoginBtn) {
+  microsoftLoginBtn.addEventListener("click", () => {
+    loginStatus.textContent = "Redirecting to Microsoft 365...";
+    window.location.assign("/auth/microsoft/login");
+  });
+}
 
 
 logoutBtn.addEventListener("click", async () => {
@@ -1742,8 +2335,15 @@ async function loadAdminSignupsPreference() {
 }
 
 async function checkSignupsEnabled() {
-  const registerLink = document.querySelector(".register-link");
   if (!registerLink) return;
+
+  if (!userPasswordAuthEnabled) {
+    registerLink.classList.add("hidden");
+    return;
+  }
+
+  registerLink.classList.remove("hidden");
+
   try {
     const result = await fetch("/api/settings/signups", { credentials: "include" });
     const data = await result.json();
@@ -1752,6 +2352,35 @@ async function checkSignupsEnabled() {
     }
   } catch {
     // If we can't check, leave the link visible.
+  }
+}
+
+async function loadAuthProviders() {
+  if (!microsoftAuthBlock || !microsoftLoginBtn) return;
+
+  try {
+    const result = await fetch("/auth/providers", { credentials: "include" });
+    if (!result.ok) {
+      microsoftAuthEnabled = false;
+      applyAuthModeVisibility();
+      return;
+    }
+
+    const data = await result.json();
+    microsoftAuthEnabled = Boolean(data?.microsoft_enabled);
+    userPasswordAuthEnabled = data?.user_password_auth_enabled !== false;
+    if (microsoftAuthEnabled && data?.microsoft_label) {
+      microsoftLoginBtn.textContent = safeText(data.microsoft_label);
+    }
+    applyAuthModeVisibility();
+
+    const passwordInput = document.getElementById("login-password");
+    if (passwordInput instanceof HTMLInputElement) {
+      passwordInput.placeholder = userPasswordAuthEnabled ? "" : "Admin password only";
+    }
+  } catch {
+    microsoftAuthEnabled = false;
+    applyAuthModeVisibility();
   }
 }
 
@@ -1793,7 +2422,11 @@ async function refreshMe() {
       alertsStatus.textContent = "Sign in to view alerts.";
     }
     showAuth();
+    if (authRedirectState.error) {
+      loginStatus.textContent = authRedirectState.error;
+    }
     checkSignupsEnabled();
+    loadAuthProviders();
   }
 }
 

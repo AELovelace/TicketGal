@@ -10,11 +10,15 @@ load_dotenv(project_root / ".env", override=True)
 
 class Settings:
     def __init__(self) -> None:
+        user_password_flag = os.getenv("USER_PASSWORD_AUTH_ENABLED", "0").strip().lower()
+        self.user_password_auth_enabled = user_password_flag in {"1", "true", "yes"}
         self.atera_api_key = os.getenv("ATERA_API_KEY", "")
         self.atera_base_url = os.getenv("ATERA_BASE_URL", "https://app.atera.com").rstrip("/")
         self.host = os.getenv("HOST", "127.0.0.1")
         self.port = int(os.getenv("PORT", "8000"))
+        self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
         self.db_path = os.getenv("DB_PATH", str(project_root / "ticketgal.db"))
+        self.data_encryption_key = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
         self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "ticketgal_session")
         self.session_hours = int(os.getenv("SESSION_HOURS", "12"))
         self.allowed_domains = [
@@ -31,6 +35,25 @@ class Settings:
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.openai_timeout_seconds = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "300"))
+        self.microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID", "")
+        self.microsoft_client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "")
+        self.microsoft_tenant_id = os.getenv("MICROSOFT_TENANT_ID", "common").strip() or "common"
+        self.allowed_microsoft_tenant_ids = [
+            tenant_id.strip()
+            for tenant_id in os.getenv("ALLOWED_MICROSOFT_TENANT_IDS", "").split(",")
+            if tenant_id.strip()
+        ]
+        self.microsoft_redirect_path = os.getenv("MICROSOFT_REDIRECT_PATH", "/auth/microsoft/callback")
+        self.microsoft_prompt = os.getenv("MICROSOFT_PROMPT", "select_account").strip()
+        self.microsoft_scopes = [
+            scope.strip()
+            for scope in os.getenv(
+                "MICROSOFT_SCOPES",
+                "User.Read,email",
+            ).split(",")
+            if scope.strip()
+        ]
+        self.microsoft_enabled = bool(self.microsoft_client_id and self.microsoft_client_secret)
 
 
 settings = Settings()

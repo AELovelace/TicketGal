@@ -37,11 +37,17 @@ The app is a single deployable service that serves both backend APIs and fronten
 
 - Module: app/auth.py
 - Responsibilities:
-  - Password hashing/verification for admin accounts
+  - Password hashing/verification for local accounts
   - Session token generation
   - Email/domain normalization and validation
   - Current-user resolution from session cookie
   - Role and ownership checks
+
+- Module: app/main.py
+- Additional auth responsibilities:
+  - Microsoft Entra OAuth callback handling with MSAL
+  - Linking Microsoft identities to local users on first successful SSO
+  - Creating the same app session cookie for either password auth or Microsoft auth
 
 ### 2.4 Persistence Layer (Local App State)
 
@@ -87,6 +93,13 @@ Configuration is loaded from environment variables (including .env loaded at sta
 - ALLOWED_EMAIL_DOMAINS
 - ADMIN_EMAIL
 - ADMIN_PASSWORD
+- PUBLIC_BASE_URL
+- MICROSOFT_CLIENT_ID
+- MICROSOFT_CLIENT_SECRET
+- MICROSOFT_TENANT_ID
+- ALLOWED_MICROSOFT_TENANT_IDS
+- MICROSOFT_REDIRECT_PATH
+- MICROSOFT_SCOPES
 
 ### 3.3 Startup Initialization
 
@@ -100,10 +113,12 @@ On startup, the app:
 ### 4.1 User Types
 
 - user
-  - Passwordless login (email only) after admin approval
+  - Local password login after admin approval
+  - Microsoft 365 login after admin approval if linked or provisioned
   - Restricted to own tickets
 - admin
   - Email + password login
+  - Optional Microsoft 365 login when linked to the same local account
   - Full ticket visibility and management
   - Can approve pending users
 
@@ -113,9 +128,19 @@ On startup, the app:
   - @eternalhotels.com
   - @redlionpasco.com
 - New registrations are created as role=user, approved=false
+- First-time Microsoft sign-in can also create a role=user local account when signups are enabled
 - Login blocked until approved by admin
 
-### 4.3 Session Security Model
+### 4.3 Microsoft Identity Linking
+
+- Microsoft auth uses OAuth 2.0 / OpenID Connect via MSAL
+- TicketGal extracts the work-account email plus stable Entra object ID from the returned ID token claims
+- TicketGal can optionally enforce an explicit tenant allowlist using the returned `tid` claim before account linking or provisioning
+- If a local user with the same email exists and has no Microsoft link yet, the Microsoft identity is attached on first successful SSO
+- If the Microsoft identity is already linked, subsequent SSO logins must come from that same Entra object ID and tenant
+- If no local user exists, TicketGal can create a pending local user account and link it immediately
+
+### 4.4 Session Security Model
 
 - Session token stored server-side in sessions table
 - Session token sent to browser via HttpOnly cookie
@@ -216,6 +241,8 @@ Role-specific rules:
 - is_active (0/1)
 - created_at (ISO timestamp)
 - approved_at (ISO timestamp, nullable)
+- microsoft_oid (nullable)
+- microsoft_tenant_id (nullable)
 
 ### 8.2 sessions
 

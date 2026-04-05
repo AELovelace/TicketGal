@@ -87,7 +87,7 @@ body {
 }
 
 .hidden {
-  display: none;
+  display: none !important;
 }
 
 .eyebrow {
@@ -156,6 +156,44 @@ h3 {
 .auth-card {
   display: grid;
   gap: 0.65rem;
+}
+
+.auth-alt {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #d8cfbc, transparent);
+}
+
+.microsoft-login-btn {
+  background: linear-gradient(180deg, #f8fafc, #e8eef5);
+  color: #132235;
+  border: 1px solid #c7d4e3;
+}
+
+.microsoft-login-btn:hover {
+  background: linear-gradient(180deg, #ffffff, #dee8f3);
+}
+
+.auth-note {
+  margin-top: -0.2rem;
+  font-size: 0.82rem;
 }
 
 .card-kicker {
@@ -253,9 +291,15 @@ h3 {
 .alert-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.45rem;
 }
 
 .alert-dismiss-btn {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+.alert-create-ticket-btn {
   padding: 0.35rem 0.6rem;
   font-size: 0.82rem;
 }
@@ -542,6 +586,69 @@ td select {
   background: #fff;
 }
 
+.history-comment {
+  margin-top: 0.45rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.history-comment p,
+.history-comment div {
+  margin: 0.25rem 0 0.55rem;
+}
+
+.history-comment h1,
+.history-comment h2,
+.history-comment h3,
+.history-comment h4,
+.history-comment h5,
+.history-comment h6 {
+  margin: 0.35rem 0 0.55rem;
+  line-height: 1.25;
+}
+
+.history-comment ul,
+.history-comment ol {
+  margin: 0.35rem 0 0.6rem 1.25rem;
+  padding: 0;
+}
+
+.history-comment li {
+  margin: 0.15rem 0;
+}
+
+.history-comment pre {
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.5rem;
+  border: 1px solid #e4dcc9;
+  border-radius: 8px;
+  background: #f6f3ea;
+  overflow: auto;
+}
+
+.history-comment code {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 0.86em;
+}
+
+.history-comment a {
+  color: #1f3f66;
+  text-decoration: underline;
+}
+
+.history-comment hr {
+  border: 0;
+  border-top: 1px solid #e2d8c3;
+  margin: 0.65rem 0;
+}
+
+.history-comment img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.4rem 0;
+}
+
 @media (max-width: 860px) {
   #app-view:not(.hidden) {
     grid-template-columns: 1fr;
@@ -789,6 +896,19 @@ body.theme-premium .ticket-viewer-update {
 
 body.theme-premium .history-entry {
   border-color: #e0c0c4;
+}
+
+body.theme-premium .history-comment pre {
+  border-color: #e0c0c4;
+  background: #f8e8ea;
+}
+
+body.theme-premium .history-comment a {
+  color: #5c2e3e;
+}
+
+body.theme-premium .history-comment hr {
+  border-top-color: #e0c0c4;
 }
 
 body.theme-premium .register-link a {
