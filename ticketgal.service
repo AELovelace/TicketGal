@@ -1,0 +1,30 @@
+[Unit]
+Description=TicketGal Application Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=ticketgal
+Group=ticketgal
+WorkingDirectory=/home/ticketgal/TicketGal
+ExecStart=/home/ticketgal/TicketGal/start-prod.sh --screen
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ticketgal
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security settings
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=partial
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
