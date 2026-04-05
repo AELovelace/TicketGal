@@ -4,3 +4,5 @@ __pycache__/
 .env
 *.db
 certs/
+ticketgal.db
+logs/
