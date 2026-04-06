@@ -44,6 +44,25 @@ TicketGal is a FastAPI web application for managing Atera tickets with role-base
 3. Create .env from .env.example and fill values.
 4. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env for first admin seed.
 
+### Optional Pre-Commit Secret Scanning
+
+To block accidental secret commits, this repo includes `.pre-commit-config.yaml`.
+
+Install and enable hooks:
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+What it checks on commit:
+
+- Private keys
+- Common credential patterns
+- High-entropy secrets
+- Unexpectedly large files
+
 ### Optional SQLite At-Rest Protection
 
 To protect sensitive SQLite-backed values at rest, set:
