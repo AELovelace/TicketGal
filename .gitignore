@@ -6,3 +6,4 @@ __pycache__/
 certs/
 ticketgal.db
 logs/
+ticketgal.cookies.txt
