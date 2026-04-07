@@ -135,18 +135,14 @@
               <p class="card-kicker">ACTIVE WORK</p>
               <h2>Tickets</h2>
             </div>
-            <div class="actions">
-              <label>
-                Status
-                <select id="user-status-filter">
-                  <option value="">All</option>
-                  <option value="Open">Open</option>
-                  <option value="Pending">Pending</option>
-                  <option value="Resolved">Resolved</option>
-                  <option value="Closed">Closed</option>
-                </select>
-              </label>
-              <button id="refresh-btn" type="button">Refresh</button>
+              <div class="actions">
+                <button id="refresh-btn" type="button">Refresh</button>
+                <div id="user-status-filter" class="status-filter-checks">
+                  <label><input type="checkbox" value="Open" checked> Open</label>
+                  <label><input type="checkbox" value="Pending" checked> Pending</label>
+                  <label><input type="checkbox" value="Resolved" checked> Resolved</label>
+                  <label><input type="checkbox" value="Closed" checked> Closed</label>
+                </div>
             </div>
           </div>
 
@@ -255,17 +251,13 @@
                 <h2>Ticket Statuses</h2>
               </div>
               <div class="actions">
-                <label>
-                  Status
-                  <select id="admin-status-filter">
-                    <option value="">All</option>
-                    <option value="Open">Open</option>
-                    <option value="Pending">Pending</option>
-                    <option value="Resolved">Resolved</option>
-                    <option value="Closed">Closed</option>
-                  </select>
-                </label>
                 <button id="admin-status-refresh-btn" type="button">Refresh</button>
+                <div id="admin-status-filter" class="status-filter-checks">
+                  <label><input type="checkbox" value="Open" checked> Open</label>
+                  <label><input type="checkbox" value="Pending" checked> Pending</label>
+                  <label><input type="checkbox" value="Resolved" checked> Resolved</label>
+                  <label><input type="checkbox" value="Closed" checked> Closed</label>
+                </div>
               </div>
             </div>
 

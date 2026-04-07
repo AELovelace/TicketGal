@@ -214,6 +214,7 @@ class AddTicketCommentRequest(BaseModel):
     technician_email: Optional[str] = Field(None, max_length=254)
     enduser_id: Optional[int] = Field(None, gt=0)
     mark_resolved: bool = False
+    ticket_status: Optional[str] = Field(None, pattern="^(Open|Pending|Closed|Resolved)$")
 
     @field_validator("comment_text")
     @classmethod

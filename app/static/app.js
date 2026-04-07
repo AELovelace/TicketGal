@@ -995,7 +995,7 @@ async function openTicketViewer(ticketId) {
     if (ticketViewerUpdate) {
       const heading = document.createElement("h3");
       heading.textContent = "Post Update";
-      const controls = buildUpdateControls(ticket, currentUser?.role === "admin");
+      const controls = buildUpdateControls(ticket, currentUser?.role === "admin", true);
       controls.classList.add("viewer-update-form");
 
       ticketViewerUpdate.innerHTML = "";
@@ -1200,7 +1200,7 @@ function buildStatusReadOnlyCell(ticket) {
   return wrap;
 }
 
-function buildUpdateControls(ticket, isAdminTable) {
+function buildUpdateControls(ticket, isAdminTable, includeStatusSelect = false) {
   const wrap = document.createElement("div");
 
   const comment = document.createElement("textarea");
@@ -1234,6 +1234,21 @@ function buildUpdateControls(ticket, isAdminTable) {
   resolveLabel.appendChild(resolve);
   resolveLabel.appendChild(document.createTextNode(" Mark Resolved with update"));
 
+  const statusSelect = document.createElement("select");
+  statusSelect.dataset.role = "update-status-select";
+  statusSelect.dataset.currentStatus = safeText(ticket.TicketStatus || "Open");
+  const allowedStatuses = isAdminTable ? ADMIN_STATUSES : USER_STATUSES;
+  allowedStatuses.forEach((status) => {
+    const option = document.createElement("option");
+    option.value = status;
+    option.textContent = status;
+    option.selected = status.toLowerCase() === safeText(ticket.TicketStatus || "Open").toLowerCase();
+    statusSelect.appendChild(option);
+  });
+  if (!isAdminTable && USER_LOCKED_CURRENT.includes((ticket.TicketStatus || "").toLowerCase())) {
+    statusSelect.disabled = true;
+  }
+
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.dataset.role = "comment-save";
@@ -1243,7 +1258,10 @@ function buildUpdateControls(ticket, isAdminTable) {
   wrap.appendChild(comment);
   wrap.appendChild(tech);
   wrap.appendChild(internalLabel);
-  if (!isAdminTable) {
+  if (includeStatusSelect) {
+    wrap.appendChild(statusSelect);
+  }
+  if (!isAdminTable && !includeStatusSelect) {
     wrap.appendChild(resolveLabel);
   }
   wrap.appendChild(saveBtn);
@@ -1253,6 +1271,7 @@ function buildUpdateControls(ticket, isAdminTable) {
 
 function ticketListRow(ticket, isAdminTable) {
   const tr = document.createElement("tr");
+  tr.dataset.ticketStatus = safeText(ticket.TicketStatus || "Open");
 
   const idTd = document.createElement("td");
   idTd.textContent = safeText(ticket.TicketID);
@@ -1289,6 +1308,7 @@ function ticketListRow(ticket, isAdminTable) {
 
 function statusManagementRow(ticket) {
   const tr = document.createElement("tr");
+  tr.dataset.ticketStatus = safeText(ticket.TicketStatus || "Open");
 
   const idTd = document.createElement("td");
   idTd.textContent = safeText(ticket.TicketID);
@@ -1406,6 +1426,9 @@ async function runAiAssist(prefix, isAdmin) {
   const statusEl = isAdmin ? adminAiAssistStatus : userAiAssistStatus;
   if (!statusEl) return;
 
+  const btn = isAdmin ? adminAiAssistBtn : userAiAssistBtn;
+  const form = isAdmin ? adminCreateForm : userCreateForm;
+
   const descriptionEl = document.getElementById(`${prefix}ticket-description`);
   const titleEl = document.getElementById(`${prefix}ticket-title`);
   const descriptionValue = safeText(descriptionEl?.value).trim();
@@ -1416,6 +1439,14 @@ async function runAiAssist(prefix, isAdmin) {
     return;
   }
 
+  // Lock UI while the AI request is in-flight
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Recomposing…";
+  }
+  if (form) {
+    Array.from(form.elements).forEach((el) => { el.disabled = true; });
+  }
   statusEl.textContent = "Rewriting and extracting fields...";
 
   try {
@@ -1447,6 +1478,22 @@ async function runAiAssist(prefix, isAdmin) {
     }
   } catch (error) {
     statusEl.textContent = `AI assist failed: ${error.message}`;
+  } finally {
+    // Restore UI regardless of success or failure
+    if (form) {
+      Array.from(form.elements).forEach((el) => { el.disabled = false; });
+    }
+    // Re-apply any fields that should stay read-only for non-admin users
+    if (!isAdmin) {
+      const emailEl = document.getElementById("end-user-email");
+      if (emailEl) { emailEl.readOnly = true; }
+      const techEl = document.getElementById("technician-id");
+      if (techEl) { techEl.disabled = true; }
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Recompose";
+    }
   }
 }
 
@@ -1703,12 +1750,33 @@ function bindDropZone(zone, hint, prefix) {
   });
 }
 
+function applyStatusFilter() {
+  const isAdmin = currentUser?.role === "admin";
+  const filterEl = isAdmin ? adminStatusFilter : userStatusFilter;
+  const tbody = isAdmin ? adminStatusBody : userTicketsBody;
+  if (!tbody) return;
+
+  const normalizeStatus = (value) => {
+    const normalized = safeText(value).trim().toLowerCase();
+    if (normalized === "pending closed") return "pending";
+    return normalized;
+  };
+
+  const visibleStatuses = new Set();
+  if (filterEl) {
+    filterEl.querySelectorAll("input[type='checkbox']").forEach((cb) => {
+      if (cb.checked) visibleStatuses.add(normalizeStatus(cb.value));
+    });
+  }
+
+  tbody.querySelectorAll("tr").forEach((row) => {
+    const status = normalizeStatus(row.dataset.ticketStatus || "");
+    row.style.display = !filterEl || !status || visibleStatuses.has(status) ? "" : "none";
+  });
+}
+
 async function loadTickets() {
   try {
-    const statusFilter = currentUser?.role === "admin"
-      ? (adminStatusFilter?.value || "")
-      : (userStatusFilter?.value || "");
-
     const pageSize = 50;
     const maxPages = 200;
     const allTickets = [];
@@ -1720,9 +1788,6 @@ async function loadTickets() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("items_in_page", String(pageSize));
-      if (statusFilter) {
-        params.set("ticket_status", statusFilter);
-      }
 
       const result = await api(`/api/tickets?${params.toString()}`);
       const items = Array.isArray(result?.items) ? result.items : [];
@@ -1761,6 +1826,8 @@ async function loadTickets() {
         userTicketsBody.appendChild(ticketListRow(ticket, false));
       }
     });
+
+    applyStatusFilter();
 
     const pagesText = pagesFetched === 1 ? "1 page" : `${pagesFetched} pages`;
 
@@ -1913,11 +1980,43 @@ async function loadUsers() {
   }
 }
 
+function validateCreateFormFields(prefix, formData, isAdmin) {
+  const missing = [];
+  if (!formData.ticket_title) missing.push("Title");
+  if (!formData.description) missing.push("Description");
+  if (!formData.end_user_email) missing.push("End User Email");
+  if (isAdmin) {
+    if (!formData.technician_contact_id) missing.push("Technician ID");
+    if (!adminPropertySelect?.value) missing.push("Property");
+  }
+  return missing;
+}
+
 async function submitCreateForm(prefix, isAdmin) {
   const statusEl = isAdmin ? adminCreateStatus : userCreateStatus;
-  statusEl.textContent = "Creating ticket...";
 
   const formData = readCreateForm(prefix);
+
+  // Default end-user email to the IT fallback if left blank
+  if (!formData.end_user_email) {
+    formData.end_user_email = "it@eternalhotels.com";
+    const emailEl = document.getElementById(`${prefix}end-user-email`);
+    if (emailEl instanceof HTMLInputElement) {
+      emailEl.value = formData.end_user_email;
+    }
+  }
+
+  // Pre-flight validation — report every missing field before touching the API
+  const missing = validateCreateFormFields(prefix, formData, isAdmin);
+  if (missing.length > 0) {
+    statusEl.textContent = `Please complete the following fields before submitting: ${missing.join(", ")}.`;
+    statusEl.classList.add("warning");
+    return;
+  }
+  statusEl.classList.remove("warning");
+
+  statusEl.textContent = "Creating ticket...";
+
   const payload = {
     ticket_title: formData.ticket_title,
     description: formData.description,
@@ -1976,6 +2075,7 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   const techId = row.querySelector("[data-role='tech-id']");
   const internal = row.querySelector("[data-role='internal']");
   const resolve = row.querySelector("[data-role='resolve-with-update']");
+  const statusSelect = row.querySelector("[data-role='update-status-select']");
 
   if (!(comment instanceof HTMLTextAreaElement) || !(techId instanceof HTMLInputElement) || !(internal instanceof HTMLInputElement)) {
     return;
@@ -1993,6 +2093,12 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   if (!isAdmin && resolve instanceof HTMLInputElement) {
     payload.mark_resolved = resolve.checked;
   }
+  if (statusSelect instanceof HTMLSelectElement) {
+    const currentStatus = safeText(statusSelect.dataset.currentStatus).toLowerCase();
+    if (statusSelect.value && statusSelect.value.toLowerCase() !== currentStatus) {
+      payload.ticket_status = statusSelect.value;
+    }
+  }
 
   await api(`/api/tickets/${ticketId}/updates`, {
     method: "POST",
@@ -2001,15 +2107,20 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   });
 
   if (isAdmin) {
+    const text = payload.ticket_status
+      ? `Posted update and set ticket ${ticketId} to ${payload.ticket_status}.`
+      : `Posted update for ticket ${ticketId}.`;
     if (statusTarget) {
-      statusTarget.textContent = `Posted update for ticket ${ticketId}.`;
+      statusTarget.textContent = text;
     } else if (adminStatusMessage) {
-      adminStatusMessage.textContent = `Posted update for ticket ${ticketId}.`;
+      adminStatusMessage.textContent = text;
     }
   } else {
-    const text = payload.mark_resolved
-      ? `Posted update and marked ticket ${ticketId} as Resolved.`
-      : `Posted update for ticket ${ticketId}.`;
+    const text = payload.ticket_status
+      ? `Posted update and set ticket ${ticketId} to ${payload.ticket_status}.`
+      : payload.mark_resolved
+        ? `Posted update and marked ticket ${ticketId} as Resolved.`
+        : `Posted update for ticket ${ticketId}.`;
     if (statusTarget) {
       statusTarget.textContent = text;
     } else {
@@ -2118,10 +2229,10 @@ if (alertsRefreshBtn) {
 }
 
 if (userStatusFilter) {
-  userStatusFilter.addEventListener("change", loadTickets);
+  userStatusFilter.addEventListener("change", applyStatusFilter);
 }
 if (adminStatusFilter) {
-  adminStatusFilter.addEventListener("change", loadTickets);
+  adminStatusFilter.addEventListener("change", applyStatusFilter);
 }
 
 navButtons.forEach((button) => {

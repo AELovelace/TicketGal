@@ -1384,18 +1384,34 @@ async def add_ticket_update(
             )
         payload["EnduserCommentDetails"] = {"EnduserId": end_user_id}
 
-    try:
-        comment_result = await client.add_comment(ticket_id=ticket_id, payload=payload)
+    requested_status = _normalize_status_input(request.ticket_status) if request.ticket_status else None
+    if request.mark_resolved and requested_status and requested_status != "Resolved":
+        raise HTTPException(
+            status_code=400,
+            detail="mark_resolved cannot be combined with a different ticket_status",
+        )
 
-        if user["role"] != "admin" and request.mark_resolved:
-            current_status = (ticket.get("TicketStatus") or "").strip().lower()
+    current_status = (ticket.get("TicketStatus") or "").strip().lower()
+    effective_status = requested_status or ("Resolved" if request.mark_resolved else None)
+
+    if effective_status:
+        if user["role"] == "admin":
+            if effective_status not in ADMIN_ALLOWED_STATUSES:
+                raise HTTPException(status_code=400, detail="Unsupported admin status")
+        else:
+            if effective_status not in USER_ALLOWED_STATUSES:
+                raise HTTPException(status_code=403, detail="Users can only set Open or Resolved")
             if current_status in USER_LOCKED_STATUSES:
                 raise HTTPException(
                     status_code=403,
                     detail="Ticket status is locked for users when current status is Pending or Closed",
                 )
 
-            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": "Resolved"})
+    try:
+        comment_result = await client.add_comment(ticket_id=ticket_id, payload=payload)
+
+        if effective_status:
+            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": effective_status})
 
         return comment_result
     except AteraApiError as exc:
