@@ -2,6 +2,9 @@ import os
 import json
 import re
 import secrets
+import math
+import time
+import asyncio
 import tempfile
 from urllib.parse import urlencode
 from email import policy
@@ -37,16 +40,21 @@ from .database import (
     create_user,
     delete_user,
     delete_session,
+    get_session,
     get_signups_enabled,
     get_user_by_email,
     get_user_by_id,
     get_user_by_microsoft_identity,
     get_user_theme_enabled,
     init_db,
+    list_cached_tickets,
     link_user_microsoft_account,
     list_users,
+    log_audit_event,
+    replace_ticket_cache_snapshot,
     reset_user_password,
     seed_admin,
+    set_site_setting,
     set_signups_enabled,
     set_user_theme_enabled,
     update_user_role,
@@ -98,12 +106,114 @@ CONTENT_SECURITY_POLICY = "; ".join(
     ]
 )
 
+TICKET_CACHE_PAGE_SIZE = 50
+STARTUP_TICKET_RATE_LIMIT_PER_MINUTE = 500
+REFRESH_REQUESTS_PER_MINUTE = 200
+REFRESH_INTERVAL_SECONDS = 60
+
+ticket_cache_refresh_task: Optional[asyncio.Task[Any]] = None
+ticket_cache_sync_lock = asyncio.Lock()
+
+
+async def run_initial_ticket_cache_sync() -> None:
+    try:
+        await sync_ticket_cache_full(request_limit_per_minute=_startup_requests_per_minute())
+    except Exception as exc:
+        set_site_setting("ticket_cache_last_error", f"Startup sync failed: {exc}")
+
 
 app = FastAPI(title="TicketGal", version="0.2.0")
 client = AteraClient()
 
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+class MinuteRateLimiter:
+    def __init__(self, limit_per_minute: int) -> None:
+        self.limit_per_minute = max(1, int(limit_per_minute))
+        self.window_started = time.monotonic()
+        self.used_in_window = 0
+
+    async def wait_for_slot(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self.window_started
+        if elapsed >= 60:
+            self.window_started = now
+            self.used_in_window = 0
+
+        if self.used_in_window >= self.limit_per_minute:
+            sleep_for = max(0.0, 60.0 - elapsed)
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+            self.window_started = time.monotonic()
+            self.used_in_window = 0
+
+        self.used_in_window += 1
+
+
+def _startup_requests_per_minute() -> int:
+    return max(1, math.ceil(STARTUP_TICKET_RATE_LIMIT_PER_MINUTE / TICKET_CACHE_PAGE_SIZE))
+
+
+async def sync_ticket_cache_full(request_limit_per_minute: int) -> Dict[str, Any]:
+    async with ticket_cache_sync_lock:
+        limiter = MinuteRateLimiter(request_limit_per_minute)
+
+        all_tickets: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        page = 1
+        requests_made = 0
+        max_pages = 2000
+
+        while page <= max_pages:
+            await limiter.wait_for_slot()
+            result = await client.list_tickets(
+                page=page,
+                items_in_page=TICKET_CACHE_PAGE_SIZE,
+                customer_id=None,
+                ticket_status=None,
+                include_relations=False,
+            )
+            requests_made += 1
+
+            items = result.get("items", []) if isinstance(result, dict) else []
+            if not items:
+                break
+
+            for ticket in items:
+                ticket_id_raw = ticket.get("TicketID")
+                try:
+                    ticket_id = int(ticket_id_raw)
+                except (TypeError, ValueError):
+                    continue
+                if ticket_id in seen_ids:
+                    continue
+                seen_ids.add(ticket_id)
+                all_tickets.append(ticket)
+
+            if len(items) < TICKET_CACHE_PAGE_SIZE:
+                break
+
+            page += 1
+
+        cached_count = replace_ticket_cache_snapshot(all_tickets)
+        set_site_setting("ticket_cache_last_success_at", str(time.time()))
+        set_site_setting("ticket_cache_last_error", "")
+
+        return {
+            "cached_count": cached_count,
+            "requests_made": requests_made,
+        }
+
+
+async def ticket_cache_refresh_loop() -> None:
+    while True:
+        await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+        try:
+            await sync_ticket_cache_full(request_limit_per_minute=REFRESH_REQUESTS_PER_MINUTE)
+        except Exception as exc:
+            set_site_setting("ticket_cache_last_error", str(exc))
 
 
 @app.middleware("http")
@@ -248,6 +358,26 @@ def _extract_microsoft_email(claims: Dict[str, Any]) -> str:
     return ""
 
 
+def _claims_indicate_mfa(claims: Dict[str, Any]) -> Optional[bool]:
+    amr = claims.get("amr")
+    if isinstance(amr, list):
+        values = {str(item).strip().lower() for item in amr}
+        return "mfa" in values
+
+    acrs = claims.get("acrs")
+    if isinstance(acrs, list):
+        values = {str(item).strip().lower() for item in acrs}
+        return "c1" in values
+
+    # No explicit MFA evidence in token claims; treat as unknown instead of hard-fail.
+    return None
+
+
+def _audit(actor_user_id: Optional[int], action: str, target_user_id: Optional[int] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
+    metadata_json = json.dumps(metadata, separators=(",", ":"), sort_keys=True) if metadata else None
+    log_audit_event(actor_user_id=actor_user_id, action=action, target_user_id=target_user_id, metadata_json=metadata_json)
+
+
 def _resolve_microsoft_user(email: str, microsoft_oid: str, microsoft_tenant_id: Optional[str]) -> Dict[str, Any]:
     linked_user = get_user_by_microsoft_identity(microsoft_oid, microsoft_tenant_id)
     email_user = get_user_by_email(email)
@@ -289,10 +419,29 @@ def _resolve_microsoft_user(email: str, microsoft_oid: str, microsoft_tenant_id:
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
+    global ticket_cache_refresh_task
+
     init_db()
     if settings.admin_email and settings.admin_password:
         seed_admin(settings.admin_email, hash_password(settings.admin_password))
+
+    asyncio.create_task(run_initial_ticket_cache_sync())
+
+    ticket_cache_refresh_task = asyncio.create_task(ticket_cache_refresh_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global ticket_cache_refresh_task
+
+    if ticket_cache_refresh_task:
+        ticket_cache_refresh_task.cancel()
+        try:
+            await ticket_cache_refresh_task
+        except asyncio.CancelledError:
+            pass
+        ticket_cache_refresh_task = None
 
 
 @app.get("/")
@@ -361,6 +510,7 @@ def login(login_request: LoginRequest, request: Request, response: Response) -> 
     email = normalize_email(login_request.email)
     user = get_user_by_email(email)
     if not user:
+        _audit(None, "auth.login.failed", metadata={"email": email, "reason": "unknown_user"})
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if user.get("role") != "admin" and not settings.user_password_auth_enabled:
@@ -379,9 +529,11 @@ def login(login_request: LoginRequest, request: Request, response: Response) -> 
         raise HTTPException(status_code=401, detail="Account password is not configured")
 
     if not verify_password(login_request.password, user["password_hash"]):
+        _audit(int(user["id"]), "auth.login.failed", metadata={"email": email, "reason": "bad_password"})
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     _set_user_session(response, request, user)
+    _audit(int(user["id"]), "auth.login.success", metadata={"method": "password"})
 
     return {"message": "Logged in", "user": sanitize_user(user)}
 
@@ -477,6 +629,9 @@ def microsoft_callback(
         return _build_auth_redirect(message="Microsoft account did not provide a stable identity")
     if not _microsoft_tenant_allowed(microsoft_tenant_id):
         return _build_auth_redirect(message="Microsoft tenant is not allowed for this portal")
+    mfa_claim = _claims_indicate_mfa(claims)
+    if settings.microsoft_require_mfa and mfa_claim is False:
+        return _build_auth_redirect(message="Microsoft sign-in must complete MFA to access this portal")
 
     try:
         user = _resolve_microsoft_user(email, microsoft_oid, microsoft_tenant_id)
@@ -502,17 +657,24 @@ def microsoft_callback(
 
     response = _build_auth_redirect(success="microsoft")
     _set_user_session(response, request, user)
+    _audit(int(user["id"]), "auth.login.success", metadata={"method": "microsoft"})
     return response
 
 
 @app.post("/auth/logout")
 def logout(request: Request, response: Response) -> Dict[str, str]:
     token = request.cookies.get(settings.session_cookie_name)
+    actor_user_id: Optional[int] = None
+    if token:
+        session = get_session(token)
+        if session:
+            actor_user_id = int(session.get("user_id"))
     if token:
         delete_session(token)
 
     response.delete_cookie(settings.session_cookie_name)
     response.delete_cookie(CSRF_COOKIE_NAME)
+    _audit(actor_user_id, "auth.logout")
     return {"message": "Logged out"}
 
 
@@ -536,6 +698,7 @@ def admin_approve_user(user_id: int, user: Dict[str, Any] = Depends(get_current_
     require_admin(user)
     if not approve_user(user_id):
         raise HTTPException(status_code=404, detail="User not found")
+    _audit(int(user["id"]), "admin.user.approve", target_user_id=user_id)
     return {"message": "User approved"}
 
 
@@ -548,6 +711,7 @@ def admin_update_user_role(
     require_admin(user)
     if not update_user_role(user_id, request.role):
         raise HTTPException(status_code=404, detail="User not found")
+    _audit(int(user["id"]), "admin.user.role_update", target_user_id=user_id, metadata={"role": request.role})
     return {"message": "User role updated"}
 
 
@@ -558,6 +722,7 @@ def admin_delete_user(user_id: int, user: Dict[str, Any] = Depends(get_current_u
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     if not delete_user(user_id):
         raise HTTPException(status_code=404, detail="User not found")
+    _audit(int(user["id"]), "admin.user.delete", target_user_id=user_id)
     return {"message": "User deleted"}
 
 
@@ -571,6 +736,8 @@ def admin_reset_user_password(
 
     if not reset_user_password(user_id, hash_password(request.new_password)):
         raise HTTPException(status_code=404, detail="User not found")
+
+    _audit(int(user["id"]), "admin.user.password_reset", target_user_id=user_id)
 
     return {"message": "User password reset"}
 
@@ -600,6 +767,7 @@ def toggle_signups(
     current = get_signups_enabled()
     new_state = not current
     set_signups_enabled(new_state)
+    _audit(int(user["id"]), "admin.signups.toggle", metadata={"enabled": new_state})
     return {"signups_enabled": new_state, "message": "Signups " + ("enabled" if new_state else "disabled")}
 
 
@@ -1132,7 +1300,7 @@ async def ai_assist_ticket(
                 )
                 body = response.json() if response.content else {}
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"AI provider request failed: {str(exc)}") from exc
+        raise HTTPException(status_code=502, detail="AI provider request failed. Please verify AI provider configuration.") from exc
 
     if response is None:
         raise HTTPException(status_code=502, detail="AI provider did not return a response")
@@ -1210,31 +1378,23 @@ async def list_tickets(
     include_relations: bool = False,
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Any:
-    try:
-        result = await client.list_tickets(
+    del include_relations
+
+    if user["role"] == "admin":
+        return list_cached_tickets(
             page=page,
             items_in_page=items_in_page,
             customer_id=customer_id,
             ticket_status=ticket_status,
-            include_relations=include_relations,
         )
-    except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    if user["role"] == "admin":
-        return result
-
-    items = result.get("items", []) if isinstance(result, dict) else []
-    filtered_items = [
-        item
-        for item in items
-        if (item.get("EndUserEmail") or "").strip().lower() == user["email"]
-    ]
-
-    if isinstance(result, dict):
-        result["items"] = filtered_items
-        result["totalItemCount"] = len(filtered_items)
-    return result
+    return list_cached_tickets(
+        page=page,
+        items_in_page=items_in_page,
+        customer_id=customer_id,
+        ticket_status=ticket_status,
+        end_user_email=user["email"],
+    )
 
 
 @app.get("/api/alerts")

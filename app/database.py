@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -76,17 +77,149 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _apply_common_pragmas(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
+
+
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
+    _apply_common_pragmas(conn)
     try:
         yield conn
     finally:
         conn.close()
 
 
+@contextmanager
+def get_ticket_cache_conn() -> Generator[sqlite3.Connection, None, None]:
+    conn = sqlite3.connect(settings.ticket_cache_db_path)
+    conn.row_factory = sqlite3.Row
+    _apply_common_pragmas(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _create_ticket_cache_schema() -> None:
+    with get_ticket_cache_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_cache (
+                ticket_id INTEGER PRIMARY KEY,
+                ticket_status TEXT,
+                customer_id INTEGER,
+                customer_name TEXT,
+                end_user_email TEXT,
+                ticket_title TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                raw_json TEXT NOT NULL,
+                last_seen_sync_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ticket_cache_status
+            ON ticket_cache(ticket_status)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ticket_cache_customer_id
+            ON ticket_cache(customer_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ticket_cache_end_user_email
+            ON ticket_cache(end_user_email)
+            """
+        )
+        conn.commit()
+
+
+def _legacy_ticket_cache_exists_in_main_db() -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ticket_cache'"
+        ).fetchone()
+    return row is not None
+
+
+def _migrate_legacy_ticket_cache_to_dedicated_db() -> None:
+    if not _legacy_ticket_cache_exists_in_main_db():
+        return
+
+    with get_conn() as conn:
+        legacy_rows = conn.execute("SELECT raw_json FROM ticket_cache").fetchall()
+
+    sync_marker = _utc_now_iso()
+    rows: List[tuple] = []
+    for legacy_row in legacy_rows:
+        raw_json = str(legacy_row["raw_json"] or "")
+        if not raw_json:
+            continue
+        try:
+            parsed = json.loads(raw_json)
+        except Exception:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        mapped = _ticket_cache_row(parsed, sync_marker)
+        if mapped is not None:
+            rows.append(mapped)
+
+    if rows:
+        with get_ticket_cache_conn() as conn:
+            conn.executemany(
+                """
+                INSERT INTO ticket_cache(
+                    ticket_id,
+                    ticket_status,
+                    customer_id,
+                    customer_name,
+                    end_user_email,
+                    ticket_title,
+                    created_at,
+                    updated_at,
+                    raw_json,
+                    last_seen_sync_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ticket_id) DO UPDATE SET
+                    ticket_status = excluded.ticket_status,
+                    customer_id = excluded.customer_id,
+                    customer_name = excluded.customer_name,
+                    end_user_email = excluded.end_user_email,
+                    ticket_title = excluded.ticket_title,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    raw_json = excluded.raw_json,
+                    last_seen_sync_at = excluded.last_seen_sync_at
+                """,
+                rows,
+            )
+            conn.commit()
+
+    with get_conn() as conn:
+        conn.execute("DROP TABLE IF EXISTS ticket_cache")
+        conn.execute("DROP INDEX IF EXISTS idx_ticket_cache_status")
+        conn.execute("DROP INDEX IF EXISTS idx_ticket_cache_customer_id")
+        conn.execute("DROP INDEX IF EXISTS idx_ticket_cache_end_user_email")
+        conn.commit()
+        conn.execute("VACUUM")
+
+
 def init_db() -> None:
+    _create_ticket_cache_schema()
+    _migrate_legacy_ticket_cache_to_dedicated_db()
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -174,11 +307,170 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER,
+                action TEXT NOT NULL,
+                target_user_id INTEGER,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+            """
+        )
         # Default: signups enabled
         conn.execute(
             "INSERT OR IGNORE INTO site_settings(key, value) VALUES('signups_enabled', '1')"
         )
         conn.commit()
+
+
+def _ticket_cache_row(ticket: Dict[str, Any], sync_marker: str) -> Optional[tuple]:
+    ticket_id_raw = ticket.get("TicketID")
+    try:
+        ticket_id = int(ticket_id_raw)
+    except (TypeError, ValueError):
+        return None
+
+    ticket_status = str(ticket.get("TicketStatus") or "").strip() or None
+    customer_id_raw = ticket.get("CustomerID")
+    try:
+        customer_id = int(customer_id_raw) if customer_id_raw is not None else None
+    except (TypeError, ValueError):
+        customer_id = None
+
+    customer_name = str(ticket.get("CustomerName") or "").strip() or None
+    end_user_email = str(ticket.get("EndUserEmail") or "").strip().lower() or None
+    ticket_title = str(ticket.get("TicketTitle") or "").strip() or None
+    created_at = str(ticket.get("CreatedDate") or ticket.get("CreationDate") or ticket.get("CreatedAt") or "").strip() or None
+    updated_at = str(ticket.get("LastUpdateDate") or ticket.get("LastActionDate") or ticket.get("UpdatedDate") or "").strip() or None
+    raw_json = json.dumps(ticket, separators=(",", ":"), ensure_ascii=True)
+
+    return (
+        ticket_id,
+        ticket_status,
+        customer_id,
+        customer_name,
+        end_user_email,
+        ticket_title,
+        created_at,
+        updated_at,
+        raw_json,
+        sync_marker,
+    )
+
+
+def replace_ticket_cache_snapshot(tickets: List[Dict[str, Any]]) -> int:
+    sync_marker = _utc_now_iso()
+    rows: List[tuple] = []
+    for ticket in tickets:
+        row = _ticket_cache_row(ticket, sync_marker)
+        if row is not None:
+            rows.append(row)
+
+    with get_ticket_cache_conn() as conn:
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO ticket_cache(
+                    ticket_id,
+                    ticket_status,
+                    customer_id,
+                    customer_name,
+                    end_user_email,
+                    ticket_title,
+                    created_at,
+                    updated_at,
+                    raw_json,
+                    last_seen_sync_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ticket_id) DO UPDATE SET
+                    ticket_status = excluded.ticket_status,
+                    customer_id = excluded.customer_id,
+                    customer_name = excluded.customer_name,
+                    end_user_email = excluded.end_user_email,
+                    ticket_title = excluded.ticket_title,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    raw_json = excluded.raw_json,
+                    last_seen_sync_at = excluded.last_seen_sync_at
+                """,
+                rows,
+            )
+
+        conn.execute(
+            "DELETE FROM ticket_cache WHERE last_seen_sync_at <> ?",
+            (sync_marker,),
+        )
+        conn.commit()
+
+    return len(rows)
+
+
+def list_cached_tickets(
+    page: int,
+    items_in_page: int,
+    customer_id: Optional[int] = None,
+    ticket_status: Optional[str] = None,
+    end_user_email: Optional[str] = None,
+) -> Dict[str, Any]:
+    where_clauses: List[str] = []
+    params: List[Any] = []
+
+    if customer_id is not None:
+        where_clauses.append("customer_id = ?")
+        params.append(customer_id)
+    if ticket_status:
+        where_clauses.append("lower(ticket_status) = lower(?)")
+        params.append(ticket_status)
+    if end_user_email:
+        where_clauses.append("lower(end_user_email) = lower(?)")
+        params.append(end_user_email)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = f" WHERE {' AND '.join(where_clauses)}"
+
+    offset = (page - 1) * items_in_page
+
+    with get_ticket_cache_conn() as conn:
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM ticket_cache{where_sql}",
+            tuple(params),
+        ).fetchone()
+        total_count = int(total_row["total"]) if total_row else 0
+
+        rows = conn.execute(
+            f"""
+            SELECT raw_json
+            FROM ticket_cache
+            {where_sql}
+            ORDER BY ticket_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [items_in_page, offset]),
+        ).fetchall()
+
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        raw = row["raw_json"]
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                items.append(parsed)
+        except Exception:
+            continue
+
+    return {
+        "items": items,
+        "totalItemCount": total_count,
+        "page": page,
+        "itemsInPage": items_in_page,
+    }
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
@@ -411,3 +703,20 @@ def seed_admin(email: str, password_hash: str) -> None:
     if existing:
         return
     create_user(email=email, role="admin", password_hash=password_hash, approved=True)
+
+
+def log_audit_event(
+    actor_user_id: Optional[int],
+    action: str,
+    target_user_id: Optional[int] = None,
+    metadata_json: Optional[str] = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_log(actor_user_id, action, target_user_id, metadata_json, created_at)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (actor_user_id, action, target_user_id, metadata_json, _utc_now_iso()),
+        )
+        conn.commit()

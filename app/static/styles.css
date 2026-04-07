@@ -44,14 +44,14 @@ body {
 }
 
 .shell {
-  width: min(1120px, 92vw);
+  width: 96vw;
   margin: 1.4rem auto 3rem;
   display: grid;
   gap: 1rem;
 }
 
 .shell.admin-mode {
-  width: min(1700px, 98vw);
+  width: 96vw;
 }
 
 .admin-shell {
@@ -477,6 +477,28 @@ td select {
 .status-wrap {
   display: grid;
   gap: 0.35rem;
+}
+
+.ticket-preview {
+  margin-top: 0.35rem;
+  line-height: 1.35;
+  font-size: 0.84rem;
+  display: -webkit-box;
+  line-clamp: 3;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.status-details {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 190px;
+  font-size: 0.84rem;
+}
+
+.status-details strong {
+  color: #213247;
 }
 
 .status-open {

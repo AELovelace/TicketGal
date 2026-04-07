@@ -31,7 +31,6 @@ class AteraClient:
             ("POST", re.compile(r"^/api/v3/alerts/[^/]+/dismiss$")),
             ("POST", re.compile(r"^/api/v3/alerts/[^/]+/resolve$")),
             ("PUT", re.compile(r"^/api/v3/alerts/[^/]+$")),
-            ("DELETE", re.compile(r"^/api/v3/alerts/[^/]+$")),
         ]
 
     def _is_request_allowed(self, method: str, path: str) -> bool:
@@ -50,6 +49,15 @@ class AteraClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+    def _safe_error_message(self, status_code: int) -> str:
+        if status_code in {401, 403}:
+            return "Atera authentication failed. Check integration credentials and permissions."
+        if status_code == 404:
+            return "Requested Atera resource was not found."
+        if status_code >= 500:
+            return "Atera service is currently unavailable."
+        return "Atera request failed."
 
     async def _request(
         self,
@@ -75,7 +83,7 @@ class AteraClient:
             )
 
         if response.status_code >= 400:
-            raise AteraApiError(response.status_code, response.text)
+            raise AteraApiError(response.status_code, self._safe_error_message(response.status_code))
 
         if not response.content:
             return {"ok": True}
@@ -115,7 +123,6 @@ class AteraClient:
             ("POST", f"/api/v3/alerts/{encoded_alert_id}/dismiss", None),
             ("POST", f"/api/v3/alerts/{encoded_alert_id}/resolve", None),
             ("PUT", f"/api/v3/alerts/{encoded_alert_id}", {"AlertStatus": "Dismissed"}),
-            ("DELETE", f"/api/v3/alerts/{encoded_alert_id}", None),
         ]
 
         last_exc: Optional[AteraApiError] = None

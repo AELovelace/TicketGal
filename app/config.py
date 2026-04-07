@@ -18,6 +18,7 @@ class Settings:
         self.port = int(os.getenv("PORT", "8000"))
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
         self.db_path = os.getenv("DB_PATH", str(project_root / "ticketgal.db"))
+        self.ticket_cache_db_path = os.getenv("TICKET_CACHE_DB_PATH", str(project_root / "ticketgal_tickets.db"))
         self.data_encryption_key = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
         self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "ticketgal_session")
         self.session_hours = int(os.getenv("SESSION_HOURS", "12"))
@@ -53,6 +54,8 @@ class Settings:
             ).split(",")
             if scope.strip()
         ]
+        require_mfa_flag = os.getenv("MICROSOFT_REQUIRE_MFA", "1").strip().lower()
+        self.microsoft_require_mfa = require_mfa_flag in {"1", "true", "yes"}
         self.microsoft_enabled = bool(self.microsoft_client_id and self.microsoft_client_secret)
 
 

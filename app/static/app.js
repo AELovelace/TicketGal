@@ -410,6 +410,152 @@ function formatAbsoluteAlertTime(value) {
   return new Date(timestamp).toLocaleString();
 }
 
+function firstPopulatedField(source, keys) {
+  if (!source || !Array.isArray(keys)) return "";
+  for (const key of keys) {
+    const value = safeText(source?.[key]).trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function formatTicketDate(value) {
+  const timestamp = toTimestamp(value);
+  if (timestamp === null) return safeText(value).trim();
+  return new Date(timestamp).toLocaleString();
+}
+
+function getTicketPreviewText(ticket) {
+  const rawDescription = firstPopulatedField(ticket, [
+    "TicketDescription",
+    "Description",
+    "IssueDescription",
+    "ProblemDescription",
+    "Details",
+    "Comment",
+  ]);
+  const normalized = htmlToReadableText(rawDescription);
+  return normalized || "No description available.";
+}
+
+function getTicketCreatedAt(ticket) {
+  return firstPopulatedField(ticket, [
+    "CreatedDate",
+    "CreationDate",
+    "CreatedAt",
+    "Created",
+    "OpenDate",
+    "Date",
+  ]);
+}
+
+function getTicketLastActionAt(ticket) {
+  return firstPopulatedField(ticket, [
+    "LastActionDate",
+    "LastUpdated",
+    "LastUpdateDate",
+    "UpdatedDate",
+    "UpdatedAt",
+    "ModifiedDate",
+    "LastCommentDate",
+    "ResolutionDate",
+    "ResolvedDate",
+    "ClosedDate",
+  ]);
+}
+
+function getTicketCommentDate(comment) {
+  return firstPopulatedField(comment, [
+    "Date",
+    "CreatedDate",
+    "CreatedAt",
+    "Created",
+    "UpdatedDate",
+    "UpdatedAt",
+  ]);
+}
+
+function getTicketCommentText(comment) {
+  return firstPopulatedField(comment, [
+    "Comment",
+    "CommentText",
+    "Text",
+    "Body",
+    "Description",
+  ]);
+}
+
+function sortCommentsByDateAscending(comments) {
+  return [...comments].sort((a, b) => {
+    const aDate = getTicketCommentDate(a);
+    const bDate = getTicketCommentDate(b);
+    const aTs = toTimestamp(aDate);
+    const bTs = toTimestamp(bDate);
+
+    if (aTs !== null && bTs !== null) {
+      return aTs - bTs;
+    }
+    if (aTs !== null) return -1;
+    if (bTs !== null) return 1;
+
+    return safeText(aDate).localeCompare(safeText(bDate));
+  });
+}
+
+async function buildTicketResponseSummary(ticketId) {
+  try {
+    const result = await api(`/api/tickets/${ticketId}/history`);
+    const comments = Array.isArray(result?.comments) ? result.comments : [];
+    if (!comments.length) {
+      return {
+        preview: "No responses yet.",
+        dateAdded: "",
+        lastAction: "",
+      };
+    }
+
+    const sorted = sortCommentsByDateAscending(comments);
+    const firstResponse = sorted[0] || null;
+    const lastResponse = sorted[sorted.length - 1] || null;
+    const firstText = htmlToReadableText(getTicketCommentText(firstResponse));
+
+    return {
+      preview: firstText || "No responses yet.",
+      dateAdded: getTicketCommentDate(firstResponse),
+      lastAction: getTicketCommentDate(lastResponse),
+    };
+  } catch {
+    return {
+      preview: "No responses yet.",
+      dateAdded: "",
+      lastAction: "",
+    };
+  }
+}
+
+async function buildAdminTicketResponseSummaries(tickets) {
+  const summaries = {};
+  const source = Array.isArray(tickets) ? tickets : [];
+  const queue = source
+    .map((ticket) => Number(ticket?.TicketID))
+    .filter((ticketId) => Number.isFinite(ticketId) && ticketId > 0);
+
+  const concurrency = 6;
+  let index = 0;
+
+  async function worker() {
+    while (index < queue.length) {
+      const current = queue[index];
+      index += 1;
+      summaries[String(current)] = await buildTicketResponseSummary(current);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, () => worker());
+  await Promise.all(workers);
+  return summaries;
+}
+
 function alertSeverityClass(value) {
   const severity = safeText(value).trim().toLowerCase();
   if (!severity) return "alert-severity-info";
@@ -1306,7 +1452,7 @@ function ticketListRow(ticket, isAdminTable) {
   return tr;
 }
 
-function statusManagementRow(ticket) {
+function statusManagementRow(ticket, responseSummary = null) {
   const tr = document.createElement("tr");
   tr.dataset.ticketStatus = safeText(ticket.TicketStatus || "Open");
 
@@ -1322,6 +1468,12 @@ function statusManagementRow(ticket) {
   openBtn.dataset.ticketId = String(ticket.TicketID);
   openBtn.textContent = safeText(ticket.TicketTitle);
   titleTd.appendChild(openBtn);
+
+  const preview = document.createElement("div");
+  preview.className = "ticket-preview muted";
+  preview.textContent = safeText(responseSummary?.preview) || getTicketPreviewText(ticket);
+  titleTd.appendChild(preview);
+
   tr.appendChild(titleTd);
 
   const currentTd = document.createElement("td");
@@ -1331,6 +1483,29 @@ function statusManagementRow(ticket) {
   }
   currentTd.textContent = safeText(ticket.TicketStatus || "Open");
   tr.appendChild(currentTd);
+
+  const detailsTd = document.createElement("td");
+  const detailsWrap = document.createElement("div");
+  detailsWrap.className = "status-details";
+
+  const createdAt = safeText(responseSummary?.dateAdded) || getTicketCreatedAt(ticket);
+  const createdLine = document.createElement("div");
+  const createdLabel = document.createElement("strong");
+  createdLabel.textContent = "Date Added:";
+  createdLine.appendChild(createdLabel);
+  createdLine.appendChild(document.createTextNode(` ${safeText(formatTicketDate(createdAt) || "Unknown")}`));
+
+  const lastActionAt = safeText(responseSummary?.lastAction) || getTicketLastActionAt(ticket);
+  const lastActionLine = document.createElement("div");
+  const lastActionLabel = document.createElement("strong");
+  lastActionLabel.textContent = "Last Action:";
+  lastActionLine.appendChild(lastActionLabel);
+  lastActionLine.appendChild(document.createTextNode(` ${safeText(formatTicketDate(lastActionAt) || "Unknown")}`));
+
+  detailsWrap.appendChild(createdLine);
+  detailsWrap.appendChild(lastActionLine);
+  detailsTd.appendChild(detailsWrap);
+  tr.appendChild(detailsTd);
 
   const actionTd = document.createElement("td");
   const select = document.createElement("select");
@@ -1819,9 +1994,16 @@ async function loadTickets() {
     userTicketsBody.innerHTML = "";
     adminStatusBody.innerHTML = "";
 
+    let adminResponseSummaries = {};
+    if (currentUser?.role === "admin") {
+      adminStatusMessage.textContent = "Loading ticket statuses and responses...";
+      adminResponseSummaries = await buildAdminTicketResponseSummaries(cachedTickets);
+    }
+
     cachedTickets.forEach((ticket) => {
       if (currentUser?.role === "admin") {
-        adminStatusBody.appendChild(statusManagementRow(ticket));
+        const summary = adminResponseSummaries[String(ticket.TicketID)] || null;
+        adminStatusBody.appendChild(statusManagementRow(ticket, summary));
       } else {
         userTicketsBody.appendChild(ticketListRow(ticket, false));
       }
