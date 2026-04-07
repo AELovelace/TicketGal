@@ -76,6 +76,7 @@ auto_kill_port_flag="$(echo "${AUTO_KILL_PORT:-}" | tr '[:upper:]' '[:lower:]' |
 auto_generate_cert="${AUTO_GENERATE_DEV_CERT:-1}"
 ssl_cert_file="${TICKETGAL_SSL_CERT_FILE:-certs/dev-cert.pem}"
 ssl_key_file="${TICKETGAL_SSL_KEY_FILE:-certs/dev-key.pem}"
+ssl_hosts="${TICKETGAL_SSL_HOSTS:-$host_addr,localhost,127.0.0.1}"
 db_path="${DB_PATH:-ticketgal.db}"
 
 https_enabled=0
@@ -101,7 +102,7 @@ if [[ "$port" =~ ^[0-9]+$ ]] && (( port < 1024 )) && [[ "${EUID:-$(id -u)}" -ne 
   if [[ "$has_bind_cap" -ne 1 ]]; then
     echo "Port $port is privileged (<1024). Run as root, use a reverse proxy, or grant cap_net_bind_service to $preferred_venv_python:" >&2
     echo "  sudo setcap 'cap_net_bind_service=+ep' $preferred_venv_python" >&2
-    exit 1
+    echo "Continuing startup; if bind fails, add AmbientCapabilities=CAP_NET_BIND_SERVICE to systemd service." >&2
   fi
 fi
 
@@ -166,8 +167,8 @@ if [[ "$https_enabled" == "1" ]]; then
       exit 1
     fi
 
-    echo "Generating self-signed development certificate..."
-    "$python_cmd" scripts/generate_self_signed_cert.py --cert-file "$ssl_cert_file" --key-file "$ssl_key_file" --hosts "$host_addr,localhost,127.0.0.1"
+    echo "Generating self-signed development certificate for hosts: $ssl_hosts"
+    "$python_cmd" scripts/generate_self_signed_cert.py --cert-file "$ssl_cert_file" --key-file "$ssl_key_file" --hosts "$ssl_hosts"
   fi
 
   if [[ ! -r "$ssl_cert_file" || ! -r "$ssl_key_file" ]]; then

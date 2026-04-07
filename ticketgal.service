@@ -4,27 +4,29 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=simple
 User=ticketgal
 Group=ticketgal
 WorkingDirectory=/home/ticketgal/TicketGal
-ExecStart=/home/ticketgal/TicketGal/start-prod.sh --screen
-ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/usr/bin/bash /home/ticketgal/TicketGal/start-prod.sh
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ticketgal
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Resource limits
 LimitNOFILE=65536
 LimitNPROC=4096
 
 # Security settings
-PrivateTmp=yes
-NoNewPrivileges=yes
-ProtectSystem=partial
-ProtectHome=yes
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/home/ticketgal/TicketGal
 
 [Install]
 WantedBy=multi-user.target
