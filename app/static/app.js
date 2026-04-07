@@ -95,6 +95,7 @@ let currentAdminPage = "admin-page-create";
 let cachedTickets = [];
 let cachedProperties = [];
 let alertsPollTimer = null;
+let ticketsPollTimer = null;
 let userPasswordAuthEnabled = true;
 let microsoftAuthEnabled = false;
 
@@ -427,6 +428,9 @@ function formatTicketDate(value) {
 
 function getTicketPreviewText(ticket) {
   const rawDescription = firstPopulatedField(ticket, [
+    "FirstComment",
+    "LastTechnicianComment",
+    "LastEndUserComment",
     "TicketDescription",
     "Description",
     "IssueDescription",
@@ -440,6 +444,9 @@ function getTicketPreviewText(ticket) {
 
 function getTicketCreatedAt(ticket) {
   return firstPopulatedField(ticket, [
+    "TicketCreatedDate",
+    "TechnicianFirstCommentDate",
+    "LastEndUserCommentTimestamp",
     "CreatedDate",
     "CreationDate",
     "CreatedAt",
@@ -451,6 +458,9 @@ function getTicketCreatedAt(ticket) {
 
 function getTicketLastActionAt(ticket) {
   return firstPopulatedField(ticket, [
+    "LastTechnicianCommentTimestamp",
+    "LastEndUserCommentTimestamp",
+    "TechnicianFirstCommentDate",
     "LastActionDate",
     "LastUpdated",
     "LastUpdateDate",
@@ -870,6 +880,90 @@ function startAlertsPolling() {
   alertsPollTimer = setInterval(() => {
     loadAlerts({ silent: true });
   }, 60_000);
+}
+
+function stopTicketsPolling() {
+  if (ticketsPollTimer) {
+    clearInterval(ticketsPollTimer);
+    ticketsPollTimer = null;
+  }
+}
+
+function startTicketsPolling() {
+  stopTicketsPolling();
+  ticketsPollTimer = setInterval(() => {
+    pollTickets();
+  }, 30_000);
+}
+
+function ticketFingerprint(ticket) {
+  // Captures anything that should trigger a refresh: status changes and any
+  // edit/comment that bumps the last-updated timestamp.
+  const updated =
+    ticket?.LastUpdateDate ||
+    ticket?.LastActionDate ||
+    ticket?.UpdatedDate ||
+    "";
+  return `${ticket?.TicketStatus || ""}|${updated}`;
+}
+
+async function pollTickets() {
+  if (!currentUser) return;
+
+  // Build a fast lookup of the current cache keyed by TicketID.
+  const cacheMap = new Map(
+    cachedTickets.map((t) => [safeText(t?.TicketID), t])
+  );
+
+  const pageSize = 50;
+
+  // Walk pages from newest (page 1) to oldest.  When a full page has no
+  // changes we stop early — older tickets are very unlikely to have changed.
+  // If any change is detected we hand off to loadTickets() for a full,
+  // authoritative re-render.
+  for (let page = 1; page <= 200; page += 1) {
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("items_in_page", String(pageSize));
+
+    let result;
+    try {
+      result = await api(`/api/tickets?${params.toString()}`);
+    } catch {
+      return; // network hiccup — skip this poll cycle
+    }
+
+    const items = Array.isArray(result?.items) ? result.items : [];
+
+    const maybeTotal = Number(result?.totalItemCount);
+    const serverTotal = Number.isFinite(maybeTotal) && maybeTotal >= 0 ? maybeTotal : null;
+
+    // Total count changed (ticket created or deleted) — full reload.
+    if (serverTotal !== null && serverTotal !== cachedTickets.length) {
+      await loadTickets();
+      return;
+    }
+
+    // Check every ticket on this page for a status or update-time change.
+    let pageChanged = false;
+    for (const ticket of items) {
+      const id = safeText(ticket?.TicketID);
+      if (!id) continue;
+      const cached = cacheMap.get(id);
+      if (!cached || ticketFingerprint(cached) !== ticketFingerprint(ticket)) {
+        pageChanged = true;
+        break;
+      }
+    }
+
+    if (pageChanged) {
+      await loadTickets();
+      return;
+    }
+
+    // This page was clean — if it was the last page we're done.
+    if (items.length < pageSize) break;
+  }
 }
 
 async function loadAlerts(options = {}) {
@@ -1994,16 +2088,9 @@ async function loadTickets() {
     userTicketsBody.innerHTML = "";
     adminStatusBody.innerHTML = "";
 
-    let adminResponseSummaries = {};
-    if (currentUser?.role === "admin") {
-      adminStatusMessage.textContent = "Loading ticket statuses and responses...";
-      adminResponseSummaries = await buildAdminTicketResponseSummaries(cachedTickets);
-    }
-
     cachedTickets.forEach((ticket) => {
       if (currentUser?.role === "admin") {
-        const summary = adminResponseSummaries[String(ticket.TicketID)] || null;
-        adminStatusBody.appendChild(statusManagementRow(ticket, summary));
+        adminStatusBody.appendChild(statusManagementRow(ticket));
       } else {
         userTicketsBody.appendChild(ticketListRow(ticket, false));
       }
@@ -2215,6 +2302,12 @@ async function submitCreateForm(prefix, isAdmin) {
     payload.customer_id = Number(adminPropertySelect.value);
   }
 
+  // Resolve the stub customer name now, while the form / property select still
+  // holds the user's selection (the form is reset after the API call).
+  const stubCustomerName = isAdmin
+    ? (cachedProperties.find((p) => Number(p.customer_id) === Number(adminPropertySelect?.value || 0))?.customer_name || "")
+    : (currentUser?.property_name || "");
+
   await api("/api/tickets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2222,6 +2315,26 @@ async function submitCreateForm(prefix, isAdmin) {
   });
 
   statusEl.textContent = "Ticket created successfully.";
+
+  // Optimistically prepend a dimmed stub row so the ticket appears in the
+  // table immediately, before the server has finished writing it to the cache.
+  const stubTicket = {
+    TicketID: "…",
+    TicketTitle: payload.ticket_title,
+    TicketStatus: payload.ticket_status || "Open",
+    EndUserEmail: payload.end_user_email,
+    CustomerName: stubCustomerName,
+  };
+  const stubRow = isAdmin
+    ? statusManagementRow(stubTicket)
+    : ticketListRow(stubTicket, false);
+  stubRow.style.opacity = "0.5";
+  if (isAdmin) {
+    adminStatusBody.prepend(stubRow);
+  } else {
+    userTicketsBody.prepend(stubRow);
+  }
+
   if (isAdmin) {
     adminCreateForm.reset();
     const adminTechInput = document.getElementById("admin-technician-id");
@@ -2237,7 +2350,12 @@ async function submitCreateForm(prefix, isAdmin) {
     setCreateFormStatusOptions("", USER_STATUSES);
     applyCreateFormDefaults("");
   }
-  await loadTickets();
+
+  // Delay the authoritative reload to give the server's background transaction
+  // dispatcher time to create the ticket in Atera and write it to the local
+  // cache.  The stub row above provides immediate visual feedback in the
+  // meantime; loadTickets() will replace it with the real data.
+  setTimeout(() => { loadTickets(); }, 2000);
 }
 
 async function loadProperties() {
@@ -2360,6 +2478,7 @@ logoutBtn.addEventListener("click", async () => {
   }
   currentUser = null;
   stopAlertsPolling();
+  stopTicketsPolling();
   if (alertsList) {
     alertsList.innerHTML = "";
   }
@@ -2499,7 +2618,7 @@ if (ticketViewer) {
 
     try {
       await postUpdateFromRow(row, ticketId, currentUser?.role === "admin", ticketViewerUpdateStatus);
-      await openTicketViewer(ticketId);
+      closeTicketViewer();
     } catch (error) {
       if (ticketViewerUpdateStatus) {
         ticketViewerUpdateStatus.textContent = `Update failed: ${error.message}`;
@@ -2699,6 +2818,7 @@ async function refreshMe() {
       await loadAdminSignupsPreference();
     }
     await loadTickets();
+    startTicketsPolling();
     if (currentUser.role === "admin") {
       await loadAlerts();
       startAlertsPolling();
@@ -2715,6 +2835,7 @@ async function refreshMe() {
   } catch {
     currentUser = null;
     stopAlertsPolling();
+    stopTicketsPolling();
     if (alertsList) {
       alertsList.innerHTML = "";
     }

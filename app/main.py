@@ -40,6 +40,8 @@ from .database import (
     create_user,
     delete_user,
     delete_session,
+    enqueue_transaction,
+    get_cached_ticket_by_id,
     get_session,
     get_signups_enabled,
     get_user_by_email,
@@ -51,13 +53,17 @@ from .database import (
     link_user_microsoft_account,
     list_users,
     log_audit_event,
+    mark_transaction_completed,
+    mark_transaction_retry,
     replace_ticket_cache_snapshot,
     reset_user_password,
     seed_admin,
     set_site_setting,
     set_signups_enabled,
     set_user_theme_enabled,
+    upsert_cached_ticket,
     update_user_role,
+    claim_due_transactions,
 )
 from .schemas import (
     AddTicketCommentRequest,
@@ -110,9 +116,15 @@ TICKET_CACHE_PAGE_SIZE = 50
 STARTUP_TICKET_RATE_LIMIT_PER_MINUTE = 500
 REFRESH_REQUESTS_PER_MINUTE = 200
 REFRESH_INTERVAL_SECONDS = 60
+TICKET_SYNC_MIN_REQUEST_GAP_SECONDS = 1.0
+TRANSACTION_DISPATCH_INTERVAL_SECONDS = 60
+TRANSACTION_DISPATCH_BATCH_SIZE = 25
+TRANSACTION_MAX_ATTEMPTS = 20
 
 ticket_cache_refresh_task: Optional[asyncio.Task[Any]] = None
+transaction_dispatch_task: Optional[asyncio.Task[Any]] = None
 ticket_cache_sync_lock = asyncio.Lock()
+transaction_dispatch_lock = asyncio.Lock()
 
 
 async def run_initial_ticket_cache_sync() -> None:
@@ -130,12 +142,19 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 class MinuteRateLimiter:
-    def __init__(self, limit_per_minute: int) -> None:
+    def __init__(self, limit_per_minute: int, min_gap_seconds: float = 0.0) -> None:
         self.limit_per_minute = max(1, int(limit_per_minute))
+        self.min_gap_seconds = max(0.0, float(min_gap_seconds))
         self.window_started = time.monotonic()
         self.used_in_window = 0
+        self.last_request_at: Optional[float] = None
 
     async def wait_for_slot(self) -> None:
+        if self.last_request_at is not None and self.min_gap_seconds > 0:
+            elapsed_since_last = time.monotonic() - self.last_request_at
+            if elapsed_since_last < self.min_gap_seconds:
+                await asyncio.sleep(self.min_gap_seconds - elapsed_since_last)
+
         now = time.monotonic()
         elapsed = now - self.window_started
         if elapsed >= 60:
@@ -150,6 +169,7 @@ class MinuteRateLimiter:
             self.used_in_window = 0
 
         self.used_in_window += 1
+        self.last_request_at = time.monotonic()
 
 
 def _startup_requests_per_minute() -> int:
@@ -158,7 +178,10 @@ def _startup_requests_per_minute() -> int:
 
 async def sync_ticket_cache_full(request_limit_per_minute: int) -> Dict[str, Any]:
     async with ticket_cache_sync_lock:
-        limiter = MinuteRateLimiter(request_limit_per_minute)
+        limiter = MinuteRateLimiter(
+            request_limit_per_minute,
+            min_gap_seconds=TICKET_SYNC_MIN_REQUEST_GAP_SECONDS,
+        )
 
         all_tickets: List[Dict[str, Any]] = []
         seen_ids: set[int] = set()
@@ -214,6 +237,132 @@ async def ticket_cache_refresh_loop() -> None:
             await sync_ticket_cache_full(request_limit_per_minute=REFRESH_REQUESTS_PER_MINUTE)
         except Exception as exc:
             set_site_setting("ticket_cache_last_error", str(exc))
+
+
+def _transaction_retry_delay_seconds(attempts: int) -> int:
+    # Exponential backoff with cap to avoid hammering Atera during incidents.
+    return min(900, max(30, (2 ** max(0, attempts)) * 15))
+
+
+async def _dispatch_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
+    operation_type = str(tx.get("operation_type") or "").strip().lower()
+    ticket_id = tx.get("ticket_id")
+
+    payload: Dict[str, Any]
+    try:
+        payload = json.loads(str(tx.get("payload_json") or "{}"))
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+
+    if operation_type == "create_ticket":
+        atera_payload = payload.get("atera_payload") if isinstance(payload.get("atera_payload"), dict) else {}
+        created = await client.create_ticket(atera_payload)
+
+        created_ticket_id_raw = created.get("TicketID") if isinstance(created, dict) else None
+        if created_ticket_id_raw is None and isinstance(created, dict):
+            created_ticket_id_raw = created.get("Id") or created.get("ID")
+
+        try:
+            created_ticket_id = int(created_ticket_id_raw)
+        except (TypeError, ValueError):
+            created_ticket_id = None
+
+        if created_ticket_id:
+            latest_ticket = await client.get_ticket(created_ticket_id)
+            upsert_cached_ticket(latest_ticket)
+
+        return {"created": created, "ticket_id": created_ticket_id}
+
+    if operation_type == "set_ticket_status":
+        try:
+            resolved_ticket_id = int(ticket_id)
+        except (TypeError, ValueError):
+            raise RuntimeError("Missing ticket_id for status transaction")
+
+        normalized_status = str(payload.get("ticket_status") or "").strip()
+        if not normalized_status:
+            raise RuntimeError("Missing ticket_status for status transaction")
+
+        updated = await client.update_ticket(ticket_id=resolved_ticket_id, payload={"TicketStatus": normalized_status})
+
+        try:
+            latest_ticket = await client.get_ticket(resolved_ticket_id)
+            upsert_cached_ticket(latest_ticket)
+        except AteraApiError:
+            cached = get_cached_ticket_by_id(resolved_ticket_id)
+            if cached:
+                cached["TicketStatus"] = normalized_status
+                upsert_cached_ticket(cached)
+
+        return {"updated": updated, "ticket_id": resolved_ticket_id, "ticket_status": normalized_status}
+
+    if operation_type == "add_ticket_update":
+        try:
+            resolved_ticket_id = int(ticket_id)
+        except (TypeError, ValueError):
+            raise RuntimeError("Missing ticket_id for update transaction")
+
+        comment_payload = payload.get("comment_payload") if isinstance(payload.get("comment_payload"), dict) else {}
+        effective_status = str(payload.get("effective_status") or "").strip() or None
+
+        comment_result = await client.add_comment(ticket_id=resolved_ticket_id, payload=comment_payload)
+        if effective_status:
+            await client.update_ticket(ticket_id=resolved_ticket_id, payload={"TicketStatus": effective_status})
+
+        try:
+            latest_ticket = await client.get_ticket(resolved_ticket_id)
+            upsert_cached_ticket(latest_ticket)
+        except AteraApiError:
+            if effective_status:
+                cached = get_cached_ticket_by_id(resolved_ticket_id)
+                if cached:
+                    cached["TicketStatus"] = effective_status
+                    upsert_cached_ticket(cached)
+
+        return {"comment": comment_result, "ticket_id": resolved_ticket_id, "ticket_status": effective_status}
+
+    raise RuntimeError(f"Unsupported transaction operation: {operation_type}")
+
+
+async def process_transaction_queue_once() -> None:
+    async with transaction_dispatch_lock:
+        while True:
+            batch = claim_due_transactions(limit=TRANSACTION_DISPATCH_BATCH_SIZE)
+            if not batch:
+                return
+
+            for tx in batch:
+                tx_id = int(tx["id"])
+                try:
+                    result = await _dispatch_transaction(tx)
+                    mark_transaction_completed(tx_id, result=result)
+                except Exception as exc:
+                    retry_state = mark_transaction_retry(
+                        tx_id,
+                        error_message=str(exc),
+                        retry_after_seconds=_transaction_retry_delay_seconds(int(tx.get("attempts") or 0)),
+                    )
+                    if retry_state.get("status") == "failed":
+                        set_site_setting("ticket_tx_last_error", f"Transaction {tx_id} failed permanently: {exc}")
+
+                # Keep spacing between Atera calls while dispatching queued work.
+                await asyncio.sleep(TICKET_SYNC_MIN_REQUEST_GAP_SECONDS)
+
+
+async def transaction_dispatch_loop() -> None:
+    while True:
+        try:
+            await process_transaction_queue_once()
+        except Exception as exc:
+            set_site_setting("ticket_tx_last_error", str(exc))
+        await asyncio.sleep(TRANSACTION_DISPATCH_INTERVAL_SECONDS)
+
+
+def trigger_transaction_dispatch() -> None:
+    # Fire-and-forget immediate dispatch attempt; periodic loop remains as safety net.
+    asyncio.create_task(process_transaction_queue_once())
 
 
 @app.middleware("http")
@@ -420,7 +569,7 @@ def _resolve_microsoft_user(email: str, microsoft_oid: str, microsoft_tenant_id:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global ticket_cache_refresh_task
+    global ticket_cache_refresh_task, transaction_dispatch_task
 
     init_db()
     if settings.admin_email and settings.admin_password:
@@ -429,11 +578,12 @@ async def startup() -> None:
     asyncio.create_task(run_initial_ticket_cache_sync())
 
     ticket_cache_refresh_task = asyncio.create_task(ticket_cache_refresh_loop())
+    transaction_dispatch_task = asyncio.create_task(transaction_dispatch_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global ticket_cache_refresh_task
+    global ticket_cache_refresh_task, transaction_dispatch_task
 
     if ticket_cache_refresh_task:
         ticket_cache_refresh_task.cancel()
@@ -442,6 +592,14 @@ async def shutdown() -> None:
         except asyncio.CancelledError:
             pass
         ticket_cache_refresh_task = None
+
+    if transaction_dispatch_task:
+        transaction_dispatch_task.cancel()
+        try:
+            await transaction_dispatch_task
+        except asyncio.CancelledError:
+            pass
+        transaction_dispatch_task = None
 
 
 @app.get("/")
@@ -1467,10 +1625,20 @@ async def create_ticket(request: CreateTicketRequest, user: Dict[str, Any] = Dep
     }
     payload = {k: v for k, v in payload.items() if v is not None and v != ""}
 
-    try:
-        return await client.create_ticket(payload)
-    except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    queued = enqueue_transaction(
+        operation_type="create_ticket",
+        payload={"atera_payload": payload},
+        ticket_id=None,
+        requested_by_user_id=int(user["id"]),
+        max_attempts=TRANSACTION_MAX_ATTEMPTS,
+    )
+    trigger_transaction_dispatch()
+
+    return {
+        "message": "Ticket create request queued for delivery",
+        "queued": True,
+        "queue_id": queued["id"],
+    }
 
 
 @app.patch("/api/tickets/{ticket_id}/status")
@@ -1487,10 +1655,9 @@ async def set_ticket_status(
 
     normalized_status = _normalize_status_input(request.ticket_status)
 
-    try:
-        ticket = await client.get_ticket(ticket_id)
-    except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    ticket = get_cached_ticket_by_id(ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found in local cache")
 
     ensure_ticket_owner_or_admin(user, ticket)
 
@@ -1499,11 +1666,26 @@ async def set_ticket_status(
     if normalized_status not in ADMIN_ALLOWED_STATUSES:
         raise HTTPException(status_code=400, detail="Unsupported admin status")
 
-    payload = {"TicketStatus": normalized_status}
-    try:
-        return await client.update_ticket(ticket_id=ticket_id, payload=payload)
-    except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    fallback_ticket = dict(ticket)
+    fallback_ticket["TicketStatus"] = normalized_status
+    upsert_cached_ticket(fallback_ticket)
+
+    queued = enqueue_transaction(
+        operation_type="set_ticket_status",
+        payload={"ticket_status": normalized_status},
+        ticket_id=ticket_id,
+        requested_by_user_id=int(user["id"]),
+        max_attempts=TRANSACTION_MAX_ATTEMPTS,
+    )
+    trigger_transaction_dispatch()
+
+    return {
+        "message": "Status change queued for delivery",
+        "queued": True,
+        "queue_id": queued["id"],
+        "ticket_id": ticket_id,
+        "ticket_status": normalized_status,
+    }
 
 
 @app.post("/api/tickets/{ticket_id}/updates")
@@ -1512,10 +1694,9 @@ async def add_ticket_update(
     request: AddTicketCommentRequest,
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Any:
-    try:
-        ticket = await client.get_ticket(ticket_id)
-    except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    ticket = get_cached_ticket_by_id(ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found in local cache")
 
     ensure_ticket_owner_or_admin(user, ticket)
 
@@ -1567,15 +1748,30 @@ async def add_ticket_update(
                     detail="Ticket status is locked for users when current status is Pending or Closed",
                 )
 
-    try:
-        comment_result = await client.add_comment(ticket_id=ticket_id, payload=payload)
+    if effective_status:
+        fallback_ticket = dict(ticket)
+        fallback_ticket["TicketStatus"] = effective_status
+        upsert_cached_ticket(fallback_ticket)
 
-        if effective_status:
-            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": effective_status})
+    queued = enqueue_transaction(
+        operation_type="add_ticket_update",
+        payload={
+            "comment_payload": payload,
+            "effective_status": effective_status,
+        },
+        ticket_id=ticket_id,
+        requested_by_user_id=int(user["id"]),
+        max_attempts=TRANSACTION_MAX_ATTEMPTS,
+    )
+    trigger_transaction_dispatch()
 
-        return comment_result
-    except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {
+        "message": "Ticket update queued for delivery",
+        "queued": True,
+        "queue_id": queued["id"],
+        "ticket_id": ticket_id,
+        "ticket_status": effective_status,
+    }
 
 
 @app.get("/api/tickets/{ticket_id}/history")

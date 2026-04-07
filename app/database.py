@@ -105,6 +105,17 @@ def get_ticket_cache_conn() -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 
+@contextmanager
+def get_transactions_conn() -> Generator[sqlite3.Connection, None, None]:
+    conn = sqlite3.connect(settings.transactions_db_path)
+    conn.row_factory = sqlite3.Row
+    _apply_common_pragmas(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _create_ticket_cache_schema() -> None:
     with get_ticket_cache_conn() as conn:
         conn.execute(
@@ -140,6 +151,58 @@ def _create_ticket_cache_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_ticket_cache_end_user_email
             ON ticket_cache(end_user_email)
             """
+        )
+        conn.commit()
+
+
+def _create_transactions_schema() -> None:
+    with get_transactions_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_type TEXT NOT NULL,
+                ticket_id INTEGER,
+                payload_json TEXT NOT NULL,
+                requested_by_user_id INTEGER,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 20,
+                status TEXT NOT NULL CHECK(status IN ('pending','in_progress','retry','failed','completed')),
+                next_attempt_ts REAL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                result_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_transaction_queue_due
+            ON transaction_queue(status, next_attempt_ts, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_transaction_queue_ticket
+            ON transaction_queue(ticket_id)
+            """
+        )
+        conn.commit()
+
+
+def _recover_in_progress_transactions() -> None:
+    now_iso = _utc_now_iso()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with get_transactions_conn() as conn:
+        conn.execute(
+            """
+            UPDATE transaction_queue
+            SET status = 'retry', next_attempt_ts = ?, updated_at = ?
+            WHERE status = 'in_progress'
+            """,
+            (now_ts, now_iso),
         )
         conn.commit()
 
@@ -218,6 +281,8 @@ def _migrate_legacy_ticket_cache_to_dedicated_db() -> None:
 
 def init_db() -> None:
     _create_ticket_cache_schema()
+    _create_transactions_schema()
+    _recover_in_progress_transactions()
     _migrate_legacy_ticket_cache_to_dedicated_db()
 
     with get_conn() as conn:
@@ -411,6 +476,45 @@ def replace_ticket_cache_snapshot(tickets: List[Dict[str, Any]]) -> int:
     return len(rows)
 
 
+def upsert_cached_ticket(ticket: Dict[str, Any]) -> bool:
+    row = _ticket_cache_row(ticket, _utc_now_iso())
+    if row is None:
+        return False
+
+    with get_ticket_cache_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ticket_cache(
+                ticket_id,
+                ticket_status,
+                customer_id,
+                customer_name,
+                end_user_email,
+                ticket_title,
+                created_at,
+                updated_at,
+                raw_json,
+                last_seen_sync_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ticket_id) DO UPDATE SET
+                ticket_status = excluded.ticket_status,
+                customer_id = excluded.customer_id,
+                customer_name = excluded.customer_name,
+                end_user_email = excluded.end_user_email,
+                ticket_title = excluded.ticket_title,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                raw_json = excluded.raw_json,
+                last_seen_sync_at = excluded.last_seen_sync_at
+            """,
+            row,
+        )
+        conn.commit()
+
+    return True
+
+
 def list_cached_tickets(
     page: int,
     items_in_page: int,
@@ -470,6 +574,174 @@ def list_cached_tickets(
         "totalItemCount": total_count,
         "page": page,
         "itemsInPage": items_in_page,
+    }
+
+
+def get_cached_ticket_by_id(ticket_id: int) -> Optional[Dict[str, Any]]:
+    with get_ticket_cache_conn() as conn:
+        row = conn.execute(
+            "SELECT raw_json FROM ticket_cache WHERE ticket_id = ?",
+            (ticket_id,),
+        ).fetchone()
+
+    if not row:
+        return None
+
+    try:
+        payload = json.loads(row["raw_json"])
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def enqueue_transaction(
+    operation_type: str,
+    payload: Dict[str, Any],
+    ticket_id: Optional[int] = None,
+    requested_by_user_id: Optional[int] = None,
+    max_attempts: int = 20,
+) -> Dict[str, Any]:
+    now_iso = _utc_now_iso()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+    with get_transactions_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO transaction_queue(
+                operation_type,
+                ticket_id,
+                payload_json,
+                requested_by_user_id,
+                attempts,
+                max_attempts,
+                status,
+                next_attempt_ts,
+                created_at,
+                updated_at
+            )
+            VALUES(?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                operation_type,
+                ticket_id,
+                payload_json,
+                requested_by_user_id,
+                max(1, int(max_attempts)),
+                now_ts,
+                now_iso,
+                now_iso,
+            ),
+        )
+        conn.commit()
+        tx_id = int(cur.lastrowid)
+
+    return {
+        "id": tx_id,
+        "status": "pending",
+        "operation_type": operation_type,
+        "ticket_id": ticket_id,
+    }
+
+
+def claim_due_transactions(limit: int = 25) -> List[Dict[str, Any]]:
+    now_iso = _utc_now_iso()
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    with get_transactions_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM transaction_queue
+            WHERE status IN ('pending', 'retry')
+              AND (next_attempt_ts IS NULL OR next_attempt_ts <= ?)
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (now_ts, max(1, int(limit))),
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        ids = [int(row["id"]) for row in rows]
+        placeholders = ",".join(["?"] * len(ids))
+        conn.execute(
+            f"UPDATE transaction_queue SET status = 'in_progress', updated_at = ? WHERE id IN ({placeholders})",
+            (now_iso, *ids),
+        )
+        conn.commit()
+
+        claimed = conn.execute(
+            f"SELECT * FROM transaction_queue WHERE id IN ({placeholders}) ORDER BY id ASC",
+            tuple(ids),
+        ).fetchall()
+
+    return [dict(row) for row in claimed]
+
+
+def mark_transaction_completed(tx_id: int, result: Optional[Dict[str, Any]] = None) -> None:
+    now_iso = _utc_now_iso()
+    result_json = json.dumps(result, separators=(",", ":"), ensure_ascii=True) if result is not None else None
+    with get_transactions_conn() as conn:
+        conn.execute(
+            """
+            UPDATE transaction_queue
+            SET status = 'completed',
+                completed_at = ?,
+                updated_at = ?,
+                result_json = ?,
+                last_error = NULL,
+                next_attempt_ts = NULL
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, result_json, tx_id),
+        )
+        conn.commit()
+
+
+def mark_transaction_retry(tx_id: int, error_message: str, retry_after_seconds: int) -> Dict[str, Any]:
+    now_iso = _utc_now_iso()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    delay = max(1, int(retry_after_seconds))
+
+    with get_transactions_conn() as conn:
+        row = conn.execute(
+            "SELECT attempts, max_attempts FROM transaction_queue WHERE id = ?",
+            (tx_id,),
+        ).fetchone()
+        if not row:
+            return {"status": "missing", "attempts": 0, "max_attempts": 0}
+
+        attempts = int(row["attempts"]) + 1
+        max_attempts = int(row["max_attempts"])
+        exhausted = attempts >= max_attempts
+
+        conn.execute(
+            """
+            UPDATE transaction_queue
+            SET attempts = ?,
+                status = ?,
+                next_attempt_ts = ?,
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                attempts,
+                "failed" if exhausted else "retry",
+                None if exhausted else now_ts + delay,
+                (error_message or "")[:1500],
+                now_iso,
+                tx_id,
+            ),
+        )
+        conn.commit()
+
+    return {
+        "status": "failed" if exhausted else "retry",
+        "attempts": attempts,
+        "max_attempts": max_attempts,
     }
 
 

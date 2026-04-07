@@ -78,6 +78,8 @@ ssl_cert_file="${TICKETGAL_SSL_CERT_FILE:-certs/dev-cert.pem}"
 ssl_key_file="${TICKETGAL_SSL_KEY_FILE:-certs/dev-key.pem}"
 ssl_hosts="${TICKETGAL_SSL_HOSTS:-$host_addr,localhost,127.0.0.1}"
 db_path="${DB_PATH:-ticketgal.db}"
+ticket_cache_db_path="${TICKET_CACHE_DB_PATH:-ticketgal_tickets.db}"
+transactions_db_path="${TICKET_TRANSACTIONS_DB_PATH:-ticketgal_transactions.db}"
 
 https_enabled=0
 if [[ "$https_flag" == "1" || "$https_flag" == "true" || "$https_flag" == "yes" ]]; then
@@ -187,20 +189,22 @@ if [[ "$https_enabled" == "1" ]]; then
 fi
 echo "Starting TicketGal on ${protocol}://${host_addr}:${port} with ${workers} worker(s)"
 
-if [[ -e "$db_path" ]]; then
-  if [[ ! -r "$db_path" || ! -w "$db_path" ]]; then
-    echo "Database file exists but is not readable/writable: $db_path" >&2
-    ls -l "$db_path" >&2 || true
-    exit 1
+for candidate_db in "$db_path" "$ticket_cache_db_path" "$transactions_db_path"; do
+  if [[ -e "$candidate_db" ]]; then
+    if [[ ! -r "$candidate_db" || ! -w "$candidate_db" ]]; then
+      echo "Database file exists but is not readable/writable: $candidate_db" >&2
+      ls -l "$candidate_db" >&2 || true
+      exit 1
+    fi
+  else
+    db_dir="$(dirname "$candidate_db")"
+    if [[ ! -w "$db_dir" ]]; then
+      echo "Database directory is not writable: $db_dir" >&2
+      ls -ld "$db_dir" >&2 || true
+      exit 1
+    fi
   fi
-else
-  db_dir="$(dirname "$db_path")"
-  if [[ ! -w "$db_dir" ]]; then
-    echo "Database directory is not writable: $db_dir" >&2
-    ls -ld "$db_dir" >&2 || true
-    exit 1
-  fi
-fi
+done
 
 if [[ "$RUN_IN_SCREEN" == "1" ]]; then
   if ! command -v screen >/dev/null 2>&1; then

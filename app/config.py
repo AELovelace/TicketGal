@@ -19,6 +19,7 @@ class Settings:
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
         self.db_path = os.getenv("DB_PATH", str(project_root / "ticketgal.db"))
         self.ticket_cache_db_path = os.getenv("TICKET_CACHE_DB_PATH", str(project_root / "ticketgal_tickets.db"))
+        self.transactions_db_path = os.getenv("TICKET_TRANSACTIONS_DB_PATH", str(project_root / "ticketgal_transactions.db"))
         self.data_encryption_key = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
         self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "ticketgal_session")
         self.session_hours = int(os.getenv("SESSION_HOURS", "12"))
