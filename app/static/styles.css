@@ -44,14 +44,14 @@ body {
 }
 
 .shell {
-  width: 96vw;
+  width: min(1120px, 92vw);
   margin: 1.4rem auto 3rem;
   display: grid;
   gap: 1rem;
 }
 
 .shell.admin-mode {
-  width: 96vw;
+  width: min(1700px, 98vw);
 }
 
 .admin-shell {
@@ -479,28 +479,6 @@ td select {
   gap: 0.35rem;
 }
 
-.ticket-preview {
-  margin-top: 0.35rem;
-  line-height: 1.35;
-  font-size: 0.84rem;
-  display: -webkit-box;
-  line-clamp: 3;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.status-details {
-  display: grid;
-  gap: 0.28rem;
-  min-width: 190px;
-  font-size: 0.84rem;
-}
-
-.status-details strong {
-  color: #213247;
-}
-
 .status-open {
   color: #c62828;
 }
@@ -538,11 +516,6 @@ td select {
 
 .muted {
   color: var(--muted);
-}
-
-.muted.warning {
-  color: #e07b39;
-  font-weight: 600;
 }
 
 .ticket-viewer {
@@ -598,31 +571,10 @@ td select {
 
 .viewer-update-form {
   display: grid;
-  gap: 0.7rem;
+  gap: 0.5rem;
 }
 
-.status-filter-checks {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.status-filter-checks label {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  cursor: pointer;
-  font-size: 0.85rem;
-  user-select: none;
-  white-space: nowrap;
-}
-
-.status-filter-checks input[type="checkbox"] {
-  cursor: pointer;
-}
-
-.list-header {
+.ticket-viewer-history {
   display: grid;
   gap: 0.55rem;
 }
@@ -887,7 +839,7 @@ body.theme-premium .admin-sidenav {
   border: 2px solid #d4a0a8;
   border-radius: 14px;
   padding: 0.6rem;
-  background: rgba(255, 250, 251, 0.96);
+  background: rgba(45, 21, 32, 0.15);
   box-shadow: 0 8px 32px rgba(45, 21, 32, 0.25);
 }
 

@@ -152,6 +152,30 @@ def _create_ticket_cache_schema() -> None:
             ON ticket_cache(end_user_email)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_status_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                old_status TEXT,
+                new_status TEXT NOT NULL,
+                changed_by_user_id INTEGER,
+                changed_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_status_history_ticket
+            ON ticket_status_history(ticket_id, changed_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_status_history_new_status
+            ON ticket_status_history(new_status, changed_at)
+            """
+        )
         conn.commit()
 
 
@@ -438,6 +462,14 @@ def replace_ticket_cache_snapshot(tickets: List[Dict[str, Any]]) -> int:
 
     with get_ticket_cache_conn() as conn:
         if rows:
+            ticket_ids = [row[0] for row in rows]
+            placeholders = ",".join(["?"] * len(ticket_ids))
+            existing_rows = conn.execute(
+                f"SELECT ticket_id, ticket_status FROM ticket_cache WHERE ticket_id IN ({placeholders})",
+                tuple(ticket_ids),
+            ).fetchall()
+            old_status_map = {int(r["ticket_id"]): r["ticket_status"] for r in existing_rows}
+
             conn.executemany(
                 """
                 INSERT INTO ticket_cache(
@@ -467,6 +499,25 @@ def replace_ticket_cache_snapshot(tickets: List[Dict[str, Any]]) -> int:
                 rows,
             )
 
+            history_rows: List[tuple] = []
+            for row in rows:
+                tid, new_status = int(row[0]), row[1]
+                old_status = old_status_map.get(tid)
+                if new_status and new_status != old_status:
+                    changed_at = row[7] or sync_marker
+                    history_rows.append((tid, old_status, new_status, None, changed_at))
+
+            if history_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO ticket_status_history(
+                        ticket_id, old_status, new_status, changed_by_user_id, changed_at
+                    )
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    history_rows,
+                )
+
         conn.execute(
             "DELETE FROM ticket_cache WHERE last_seen_sync_at <> ?",
             (sync_marker,),
@@ -476,12 +527,20 @@ def replace_ticket_cache_snapshot(tickets: List[Dict[str, Any]]) -> int:
     return len(rows)
 
 
-def upsert_cached_ticket(ticket: Dict[str, Any]) -> bool:
+def upsert_cached_ticket(ticket: Dict[str, Any], changed_by_user_id: Optional[int] = None) -> bool:
     row = _ticket_cache_row(ticket, _utc_now_iso())
     if row is None:
         return False
 
+    ticket_id = row[0]
+    new_status = row[1]
+
     with get_ticket_cache_conn() as conn:
+        existing = conn.execute(
+            "SELECT ticket_status FROM ticket_cache WHERE ticket_id = ?", (ticket_id,)
+        ).fetchone()
+        old_status = existing["ticket_status"] if existing else None
+
         conn.execute(
             """
             INSERT INTO ticket_cache(
@@ -510,6 +569,19 @@ def upsert_cached_ticket(ticket: Dict[str, Any]) -> bool:
             """,
             row,
         )
+
+        if new_status and new_status != old_status:
+            changed_at = row[7] or _utc_now_iso()
+            conn.execute(
+                """
+                INSERT INTO ticket_status_history(
+                    ticket_id, old_status, new_status, changed_by_user_id, changed_at
+                )
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (ticket_id, old_status, new_status, changed_by_user_id, changed_at),
+            )
+
         conn.commit()
 
     return True
@@ -992,3 +1064,95 @@ def log_audit_event(
             (actor_user_id, action, target_user_id, metadata_json, _utc_now_iso()),
         )
         conn.commit()
+
+
+def get_ticket_report_stats(period_start: str) -> Dict[str, Any]:
+    """Return ticket counts and per-customer breakdowns for the requested period."""
+    with get_ticket_cache_conn() as conn:
+        opened_count = int(
+            (conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ticket_cache WHERE created_at >= ?",
+                (period_start,),
+            ).fetchone() or {})["cnt"] or 0
+        )
+
+        resolved_count = int(
+            (conn.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM ticket_status_history
+                WHERE new_status IN ('Closed', 'Resolved') AND changed_at >= ?
+                """,
+                (period_start,),
+            ).fetchone() or {})["cnt"] or 0
+        )
+
+        currently_open = int(
+            (conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ticket_cache WHERE ticket_status = 'Open'"
+            ).fetchone() or {})["cnt"] or 0
+        )
+
+        currently_pending = int(
+            (conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ticket_cache WHERE ticket_status = 'Pending'"
+            ).fetchone() or {})["cnt"] or 0
+        )
+
+        by_customer_rows = conn.execute(
+            """
+            SELECT customer_name,
+                   SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS opened
+            FROM ticket_cache
+            GROUP BY customer_name
+            """,
+            (period_start,),
+        ).fetchall()
+
+        resolved_by_customer_rows = conn.execute(
+            """
+            SELECT tc.customer_name, COUNT(*) AS resolved
+            FROM ticket_status_history tsh
+            JOIN ticket_cache tc ON tc.ticket_id = tsh.ticket_id
+            WHERE tsh.new_status IN ('Closed', 'Resolved') AND tsh.changed_at >= ?
+            GROUP BY tc.customer_name
+            """,
+            (period_start,),
+        ).fetchall()
+
+        sample_title_rows = conn.execute(
+            """
+            SELECT tc.ticket_title
+            FROM ticket_status_history tsh
+            JOIN ticket_cache tc ON tc.ticket_id = tsh.ticket_id
+            WHERE tsh.new_status IN ('Closed', 'Resolved') AND tsh.changed_at >= ?
+            ORDER BY tsh.changed_at DESC
+            LIMIT 8
+            """,
+            (period_start,),
+        ).fetchall()
+
+    resolved_map: Dict[str, int] = {
+        str(r["customer_name"] or ""): int(r["resolved"]) for r in resolved_by_customer_rows
+    }
+
+    by_customer: List[Dict[str, Any]] = []
+    for r in sorted(by_customer_rows, key=lambda x: int(x["opened"] or 0), reverse=True):
+        name = str(r["customer_name"] or "Unknown")
+        opened = int(r["opened"] or 0)
+        resolved = resolved_map.get(str(r["customer_name"] or ""), 0)
+        if opened > 0 or resolved > 0:
+            by_customer.append({"customer_name": name, "opened": opened, "resolved": resolved})
+    by_customer = by_customer[:10]
+
+    sample_titles: List[str] = [
+        str(r["ticket_title"]) for r in sample_title_rows if r["ticket_title"]
+    ]
+
+    return {
+        "opened_count": opened_count,
+        "resolved_count": resolved_count,
+        "currently_open_count": currently_open,
+        "currently_pending_count": currently_pending,
+        "by_customer": by_customer,
+        "sample_titles": sample_titles,
+    }

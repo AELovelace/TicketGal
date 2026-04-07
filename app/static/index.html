@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TicketGal</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260407-1">
+  <link rel="stylesheet" href="/static/styles.css?v=20260407-2">
 </head>
 <body>
   <div class="brand-strip">
@@ -169,6 +169,7 @@
           <button type="button" class="nav-btn" data-admin-page="admin-page-create">Create Ticket</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-status">Ticket Statuses</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-users">User Management</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-reports">Reports</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-settings">Settings</button>
         </aside>
 
@@ -331,6 +332,57 @@
               <p id="alerts-toggle-status" class="muted"></p>
             </div>
           </section>
+
+          <section id="admin-page-reports" class="admin-page card hidden">
+            <p class="card-kicker">ANALYTICS</p>
+            <h2>Ticket Reports</h2>
+
+            <div class="report-period-selector">
+              <button type="button" class="period-btn" data-period="week">1 Week</button>
+              <button type="button" class="period-btn" data-period="month">1 Month</button>
+              <button type="button" class="period-btn" data-period="year">1 Year</button>
+            </div>
+
+            <p id="report-loading" class="muted hidden">Generating report&hellip;</p>
+
+            <div id="report-stats" class="report-stats hidden">
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-opened-count">&mdash;</div>
+                <div class="report-stat-label">Opened This Period</div>
+              </div>
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-resolved-count">&mdash;</div>
+                <div class="report-stat-label">Resolved / Closed</div>
+              </div>
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-open-count">&mdash;</div>
+                <div class="report-stat-label">Currently Open</div>
+              </div>
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-pending-count">&mdash;</div>
+                <div class="report-stat-label">Currently Pending</div>
+              </div>
+            </div>
+
+            <div id="report-customer-section" class="hidden">
+              <h3>Activity by Property</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Property</th>
+                    <th>Opened</th>
+                    <th>Resolved</th>
+                  </tr>
+                </thead>
+                <tbody id="report-customer-body"></tbody>
+              </table>
+            </div>
+
+            <div id="report-ai-section" class="hidden">
+              <h3>AI Analysis</h3>
+              <div id="report-ai-summary" class="report-ai-summary"></div>
+            </div>
+          </section>
         </div>
       </section>
     </section>
@@ -370,6 +422,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260407-1" defer></script>
+  <script src="/static/app.js?v=20260407-2" defer></script>
 </body>
 </html>
