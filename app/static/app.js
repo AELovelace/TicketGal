@@ -2171,7 +2171,11 @@ if (microsoftLoginBtn) {
 
 
 logoutBtn.addEventListener("click", async () => {
-  await api("/auth/logout", { method: "POST" });
+  try {
+    await api("/auth/logout", { method: "POST" });
+  } catch {
+    // Continue clearing local UI state even if logout request fails.
+  }
   currentUser = null;
   stopAlertsPolling();
   if (alertsList) {
@@ -2182,6 +2186,9 @@ logoutBtn.addEventListener("click", async () => {
   }
   applyTheme(false);
   showAuth();
+  loginStatus.textContent = "";
+  await loadAuthProviders();
+  await checkSignupsEnabled();
 });
 
 userCreateForm.addEventListener("submit", async (event) => {
