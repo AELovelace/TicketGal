@@ -96,7 +96,6 @@ if (userSearchInput) {
 
 const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
 const adminPages = Array.from(document.querySelectorAll(".admin-page"));
-const openKBNavBtn = document.getElementById("open-kb-nav-btn");
 const adminPropertySelect = document.getElementById("admin-ticket-property");
 const ticketViewer = document.getElementById("ticket-viewer");
 const ticketViewerClose = document.getElementById("ticket-viewer-close");
@@ -924,6 +923,9 @@ function setAdminPage(pageId) {
   navButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.adminPage === pageId));
   if (pageId === "admin-page-users" && currentUser?.role === "admin") {
     loadUsers();
+  }
+  if (pageId === "admin-page-knowledgebase") {
+    loadKBArticles();
   }
 }
 
@@ -2965,10 +2967,6 @@ navButtons.forEach((button) => {
   });
 });
 
-if (openKBNavBtn) {
-  openKBNavBtn.addEventListener("click", openKBModal);
-}
-
 document.querySelectorAll(".period-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     const period = btn.dataset.period;
@@ -3388,8 +3386,6 @@ let kbCurrentArticle = null;
 let kbProperties = [];
 let kbEditor = null;
 
-const kbModal = document.getElementById("kb-modal");
-const kbModalClose = document.getElementById("kb-modal-close");
 const kbEditorModal = document.getElementById("kb-editor-modal");
 const kbEditorClose = document.getElementById("kb-editor-close");
 const kbSearchInput = document.getElementById("kb-search-input");
@@ -3397,8 +3393,8 @@ const kbSearchBtn = document.getElementById("kb-search-btn");
 const kbNewArticleBtn = document.getElementById("kb-new-article-btn");
 const kbArticlesList = document.getElementById("kb-articles-list");
 const kbArticleViewer = document.getElementById("kb-article-viewer");
-const kbEditorTitle = document.getElementById("kb-editor-title");
-const kbEditorTitleInput = document.getElementById("kb-editor-title");
+const kbEditorTitleHeading = document.getElementById("kb-editor-title-heading");
+const kbEditorTitleInput = document.getElementById("kb-editor-title-input");
 const kbEditorVisibility = document.getElementById("kb-editor-visibility");
 const kbEditorCustomerLabel = document.getElementById("kb-editor-customer-label");
 const kbEditorCustomerId = document.getElementById("kb-editor-customer-id");
@@ -3408,17 +3404,19 @@ const kbEditorDelete = document.getElementById("kb-editor-delete");
 const kbEditorStatus = document.getElementById("kb-editor-status");
 
 function openKBModal() {
-  if (!kbModal) return;
-  kbModal.classList.remove("hidden");
+  if (currentUser?.role === "admin") {
+    setAdminPage("admin-page-knowledgebase");
+    return;
+  }
   loadKBArticles();
 }
 
 function closeKBModal() {
-  if (!kbModal) return;
-  kbModal.classList.add("hidden");
   kbCurrentArticle = null;
-  kbArticleViewer.classList.add("hidden");
-  kbArticleViewer.innerHTML = "";
+  if (kbArticleViewer) {
+    kbArticleViewer.classList.add("hidden");
+    kbArticleViewer.innerHTML = "";
+  }
 }
 
 async function loadKBArticles(search = "") {
@@ -3505,6 +3503,10 @@ async function displayKBArticle(slug) {
 
 async function openKBEditor(article = null) {
   if (!kbEditorModal) return;
+
+  if (kbEditorTitleHeading) {
+    kbEditorTitleHeading.textContent = article ? "Edit Article" : "New Article";
+  }
   
   // Show/hide delete button based on edit vs create
   if (kbEditorDelete) {
@@ -3700,10 +3702,6 @@ function sanitizeElement(el) {
 }
 
 // Event listeners
-if (kbModalClose) {
-  kbModalClose.addEventListener("click", closeKBModal);
-}
-
 if (kbSearchBtn) {
   kbSearchBtn.addEventListener("click", () => {
     const query = kbSearchInput ? kbSearchInput.value : "";

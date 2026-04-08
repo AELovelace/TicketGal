@@ -169,7 +169,7 @@
           <button type="button" class="nav-btn" data-admin-page="admin-page-create">Create Ticket</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-status">Ticket Statuses</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-users">User Management</button>
-          <button type="button" class="nav-btn" id="open-kb-nav-btn">Knowledgebase</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-knowledgebase">Knowledgebase</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-reports">Reports</button>
           <button type="button" class="nav-btn" data-admin-page="admin-page-settings">Settings</button>
         </aside>
@@ -311,6 +311,23 @@
                 <p id="lockout-status" class="muted"></p>
                 <div id="lockout-list"></div>
               </div>
+            </div>
+          </section>
+
+          <section id="admin-page-knowledgebase" class="admin-page card hidden">
+            <p class="card-kicker">KNOWLEDGE MANAGEMENT</p>
+            <h2>Knowledgebase</h2>
+            <p class="muted">Search, review, and maintain markdown knowledgebase articles.</p>
+            <div class="kb-controls">
+              <div class="kb-search-box">
+                <input id="kb-search-input" type="search" placeholder="Search articles..." maxlength="200">
+                <button id="kb-search-btn" type="button">Search</button>
+              </div>
+              <button id="kb-new-article-btn" type="button" class="btn-admin-only" style="display:none;">New Article</button>
+            </div>
+            <div class="kb-content">
+              <div id="kb-articles-list" class="kb-articles-list"></div>
+              <div id="kb-article-viewer" class="kb-article-viewer hidden"></div>
             </div>
           </section>
 
@@ -502,36 +519,16 @@
     </div>
   </div>
 
-  <div id="kb-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-modal-title">
-    <div class="ticket-viewer-panel kb-modal-panel">
-      <div class="ticket-viewer-header">
-        <h2 id="kb-modal-title">Knowledgebase</h2>
-        <button id="kb-modal-close" type="button">Close</button>
-      </div>
-      <div class="kb-controls">
-        <div class="kb-search-box">
-          <input id="kb-search-input" type="search" placeholder="Search articles..." maxlength="200">
-          <button id="kb-search-btn" type="button">Search</button>
-        </div>
-        <button id="kb-new-article-btn" type="button" class="btn-admin-only" style="display:none;">New Article</button>
-      </div>
-      <div class="kb-content">
-        <div id="kb-articles-list" class="kb-articles-list"></div>
-        <div id="kb-article-viewer" class="kb-article-viewer hidden"></div>
-      </div>
-    </div>
-  </div>
-
-  <div id="kb-editor-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-editor-title">
+  <div id="kb-editor-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-editor-title-heading">
     <div class="ticket-viewer-panel kb-editor-panel">
       <div class="ticket-viewer-header">
-        <h2 id="kb-editor-title">Edit Article</h2>
+        <h2 id="kb-editor-title-heading">Edit Article</h2>
         <button id="kb-editor-close" type="button">Close</button>
       </div>
       <div class="kb-editor-form">
         <label>
           Title
-          <input id="kb-editor-title" type="text" placeholder="Article title" maxlength="200" required>
+          <input id="kb-editor-title-input" type="text" placeholder="Article title" maxlength="200" required>
         </label>
         <label>
           Visibility
