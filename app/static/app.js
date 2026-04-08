@@ -1882,6 +1882,24 @@ async function loadTickets() {
       }
     }
 
+    if (currentUser?.role === "admin") {
+      allTickets.sort((left, right) => {
+        const leftQueued = Boolean(left?._queued);
+        const rightQueued = Boolean(right?._queued);
+        if (leftQueued !== rightQueued) {
+          return leftQueued ? -1 : 1;
+        }
+        if (leftQueued && rightQueued) {
+          const leftQueuedAt = Date.parse(safeText(left?._queuedCreatedAt || "")) || 0;
+          const rightQueuedAt = Date.parse(safeText(right?._queuedCreatedAt || "")) || 0;
+          return rightQueuedAt - leftQueuedAt;
+        }
+        const leftId = Number(left?.TicketID || 0);
+        const rightId = Number(right?.TicketID || 0);
+        return rightId - leftId;
+      });
+    }
+
     cachedTickets = allTickets;
 
     userTicketsBody.innerHTML = "";
@@ -1898,9 +1916,13 @@ async function loadTickets() {
     const pagesText = pagesFetched === 1 ? "1 page" : `${pagesFetched} pages`;
 
     if (currentUser?.role === "admin") {
+      const queuedCount = cachedTickets.filter((ticket) => Boolean(ticket?._queued)).length;
       adminStatusMessage.textContent = cachedTickets.length
         ? `Loaded ${cachedTickets.length} tickets from ${pagesText}.`
         : "No tickets found.";
+      if (queuedCount > 0) {
+        adminStatusMessage.textContent += ` ${queuedCount} queued ticket${queuedCount === 1 ? " is" : "s are"} awaiting replay.`;
+      }
       if (usingCacheFallback) {
         const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
         adminStatusMessage.textContent += ` Running in degraded mode using cached data.${detail}`;
