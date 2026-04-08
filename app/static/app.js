@@ -1847,6 +1847,41 @@ async function loadTickets() {
       }
     }
 
+    if (currentUser?.role === "admin") {
+      try {
+        const queueResult = await api("/api/admin/queue/status?limit=100");
+        const pendingCreates = Array.isArray(queueResult?.pending_create_tickets)
+          ? queueResult.pending_create_tickets
+          : [];
+
+        pendingCreates.forEach((tx) => {
+          const payload = tx?.payload || {};
+          const ticket = {
+            TicketID: null,
+            TicketTitle: safeText(payload.TicketTitle || "(no title)"),
+            TicketStatus: "Queued",
+            EndUserEmail: safeText(payload.EndUserEmail || ""),
+            CustomerName: "",
+            TicketPriority: safeText(payload.TicketPriority || ""),
+            TicketType: safeText(payload.TicketType || ""),
+            _queued: true,
+            _queuedTransactionId: Number(tx?.id || 0),
+            _queuedCreatedAt: safeText(tx?.created_at || ""),
+            _queuedAttempts: Number(tx?.attempts || 0),
+            _queuedStatus: safeText(tx?.status || "pending"),
+          };
+          const syntheticId = `_queued_${safeText(ticket._queuedTransactionId)}`;
+          if (!syntheticId || seenTicketIds.has(syntheticId)) {
+            return;
+          }
+          seenTicketIds.add(syntheticId);
+          allTickets.push(ticket);
+        });
+      } catch {
+        // Keep the status page usable even if queue metadata fails to load.
+      }
+    }
+
     cachedTickets = allTickets;
 
     userTicketsBody.innerHTML = "";

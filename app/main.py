@@ -671,6 +671,25 @@ def admin_queue_status(
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
     require_admin(user)
+    pending_create_tickets: List[Dict[str, Any]] = []
+    for tx in list_pending_queue_creates():
+        payload: Dict[str, Any] = {}
+        try:
+            raw = tx.get("payload_json") or ""
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+        pending_create_tickets.append(
+            {
+                "id": int(tx.get("id") or 0),
+                "status": str(tx.get("status") or "pending"),
+                "attempts": int(tx.get("attempts") or 0),
+                "created_at": str(tx.get("created_at") or ""),
+                "payload": payload,
+            }
+        )
     return {
         "queue_enabled": settings.enable_write_queue,
         "queue_features": {
@@ -690,6 +709,7 @@ def admin_queue_status(
         },
         "summary": get_transaction_queue_summary(),
         "recent": list_recent_transactions(limit=limit),
+        "pending_create_tickets": pending_create_tickets,
     }
 
 
