@@ -174,6 +174,7 @@ Admin queue endpoints:
 Admin security monitoring endpoint:
 
 - `GET /api/admin/security/login-rate-limits?limit=100`
+- `POST /api/admin/security/login-rate-limits/clear` with JSON body: `{"key_type":"email|ip","key_value":"..."}`
 
 ## Run (Development)
 

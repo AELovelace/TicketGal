@@ -36,6 +36,7 @@ from .config import settings
 from .database import (
     approve_user,
     assign_user_property,
+    clear_login_rate_limit_entry,
     clear_login_rate_limits,
     create_session,
     create_user,
@@ -79,6 +80,7 @@ from .database import (
 from .schemas import (
     AddTicketCommentRequest,
     AdminAssignPropertyRequest,
+    AdminClearLoginRateLimitRequest,
     AdminResetPasswordRequest,
     AdminUpdateRoleRequest,
     CreateTicketRequest,
@@ -849,6 +851,22 @@ def admin_login_rate_limits(
 ) -> Dict[str, Any]:
     require_admin(user)
     return get_login_rate_limits_snapshot(limit=limit)
+
+
+@app.post("/api/admin/security/login-rate-limits/clear")
+def admin_clear_login_rate_limit_entry(
+    request: AdminClearLoginRateLimitRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    cleared = clear_login_rate_limit_entry(request.key_type, request.key_value)
+    if not cleared:
+        raise HTTPException(status_code=404, detail="Rate-limit entry not found")
+    return {
+        "message": "Rate-limit entry cleared",
+        "key_type": request.key_type,
+        "key_value": request.key_value,
+    }
 
 
 @app.post("/api/admin/queue/process")

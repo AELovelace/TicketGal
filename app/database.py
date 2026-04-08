@@ -1564,6 +1564,25 @@ def clear_login_rate_limits(email: str, ip_address: str) -> None:
         conn.commit()
 
 
+def clear_login_rate_limit_entry(key_type: str, key_value: str) -> bool:
+    normalized_type = (key_type or "").strip().lower()
+    normalized_value = (key_value or "").strip()
+    if normalized_type not in {"email", "ip"}:
+        return False
+    if not normalized_value:
+        return False
+    if normalized_type == "email":
+        normalized_value = normalized_value.lower()
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM login_rate_limits WHERE key_type = ? AND key_value = ?",
+            (normalized_type, normalized_value),
+        )
+        conn.commit()
+    return int(cur.rowcount or 0) > 0
+
+
 def get_login_rate_limits_snapshot(limit: int = 100) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()

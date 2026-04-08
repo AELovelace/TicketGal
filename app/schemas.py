@@ -98,6 +98,28 @@ class AdminAssignPropertyRequest(BaseModel):
         return cleaned or None
 
 
+class AdminClearLoginRateLimitRequest(BaseModel):
+    key_type: str = Field(..., pattern="^(email|ip)$")
+    key_value: str = Field(..., min_length=1, max_length=254)
+
+    @field_validator("key_value")
+    @classmethod
+    def validate_key_value(cls, value: str, info) -> str:
+        key_type = str(info.data.get("key_type") or "").strip().lower()
+        cleaned = _sanitize_single_line(value, max_length=254)
+        if not cleaned:
+            raise ValueError("key_value is required")
+
+        if key_type == "email":
+            return _validate_email(cleaned)
+
+        if key_type == "ip":
+            # Keep IP validation permissive to support IPv4, IPv6, and proxy-formatted host values.
+            return cleaned[:64]
+
+        return cleaned
+
+
 class UserResponse(BaseModel):
     id: int
     email: str
