@@ -135,6 +135,24 @@ OPENAI_TIMEOUT_SECONDS=300
 # OPENAI_API_KEY is optional for local Ollama
 ```
 
+### Optional Graceful Degradation and Write Queue
+
+To enable resilience when Atera is unavailable, these flags are supported:
+
+- `ENABLE_CACHE_READ_FALLBACK` (default `1`): serve ticket list/history from local cache when upstream is unavailable.
+- `HEALTH_CHECK_ATERA` (default `1`): include Atera dependency probe in `/health`.
+- `HEALTH_CHECK_TIMEOUT_SECONDS` (default `3`): timeout for health dependency probe.
+- `ENABLE_WRITE_QUEUE` (default `0`): enable queued writes when Atera is unavailable.
+- `ENABLE_QUEUE_FOR_CREATE_TICKET` (default `0`): allow queue fallback for ticket create.
+- `ENABLE_QUEUE_FOR_STATUS_UPDATE` (default `1`): allow queue fallback for status updates.
+- `ENABLE_QUEUE_FOR_COMMENT` (default `1`): allow queue fallback for ticket comments/updates.
+- `QUEUE_PROCESS_BATCH_LIMIT` (default `25`): max queued items processed per drain request.
+
+Admin queue endpoints:
+
+- `GET /api/admin/queue/status`
+- `POST /api/admin/queue/process?limit=25`
+
 ## Run (Development)
 
 ```bash

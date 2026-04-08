@@ -967,6 +967,7 @@ async function openTicketViewer(ticketId) {
     const result = await api(`/api/tickets/${ticketId}/history`);
     const ticket = result?.ticket || {};
     const comments = result?.comments || [];
+    const historyFromCache = Boolean(result?.degraded) || safeText(result?.history_source).toLowerCase() === "cache";
 
     ticketViewerMeta.innerHTML = `
       <strong>#${safeText(ticket.TicketID)} - ${safeText(ticket.TicketTitle)}</strong><br>
@@ -987,7 +988,11 @@ async function openTicketViewer(ticketId) {
     }
 
     if (!comments.length) {
-      ticketViewerHistory.innerHTML = '<div class="history-entry muted">No ticket history found.</div>';
+      if (historyFromCache) {
+        ticketViewerHistory.innerHTML = '<div class="history-entry muted">History is temporarily unavailable from Atera. Showing cached ticket details only.</div>';
+      } else {
+        ticketViewerHistory.innerHTML = '<div class="history-entry muted">No ticket history found.</div>';
+      }
       return;
     }
 
@@ -1711,6 +1716,8 @@ async function loadTickets() {
     const seenTicketIds = new Set();
     let totalItemCount = null;
     let pagesFetched = 0;
+    let usingCacheFallback = false;
+    let fallbackDetail = "";
 
     for (let page = 1; page <= maxPages; page += 1) {
       const params = new URLSearchParams();
@@ -1720,6 +1727,10 @@ async function loadTickets() {
       const result = await api(`/api/tickets?${params.toString()}`);
       const items = Array.isArray(result?.items) ? result.items : [];
       pagesFetched += 1;
+      if (Boolean(result?.degraded) || safeText(result?.source).toLowerCase() === "cache") {
+        usingCacheFallback = true;
+        fallbackDetail = safeText(result?.detail);
+      }
 
       const maybeTotal = Number(result?.totalItemCount);
       if (Number.isFinite(maybeTotal) && maybeTotal >= 0) {
@@ -1766,8 +1777,16 @@ async function loadTickets() {
       adminStatusMessage.textContent = cachedTickets.length
         ? `Loaded ${cachedTickets.length} tickets from ${pagesText}.`
         : "No tickets found.";
+      if (usingCacheFallback) {
+        const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
+        adminStatusMessage.textContent += ` Running in degraded mode using cached data.${detail}`;
+      }
     } else {
       userListStatus.textContent = `Loaded ${cachedTickets.length} tickets from ${pagesText}.`;
+      if (usingCacheFallback) {
+        const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
+        userListStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
+      }
     }
   } catch (error) {
     if (currentUser?.role === "admin") {
@@ -1932,13 +1951,15 @@ async function submitCreateForm(prefix, isAdmin) {
     payload.customer_id = Number(adminPropertySelect.value);
   }
 
-  await api("/api/tickets", {
+  const result = await api("/api/tickets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
-  statusEl.textContent = "Ticket created successfully.";
+  statusEl.textContent = Boolean(result?.queued)
+    ? "Atera is unavailable. Ticket create request was queued for retry."
+    : "Ticket created successfully.";
   if (isAdmin) {
     adminCreateForm.reset();
     const adminTechInput = document.getElementById("admin-technician-id");
@@ -2227,22 +2248,29 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
     payload.mark_resolved = resolve.checked;
   }
 
-  await api(`/api/tickets/${ticketId}/updates`, {
+  const result = await api(`/api/tickets/${ticketId}/updates`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  const wasQueued = Boolean(result?.queued);
 
   if (isAdmin) {
     if (statusTarget) {
-      statusTarget.textContent = `Posted update for ticket ${ticketId}.`;
+      statusTarget.textContent = wasQueued
+        ? `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
+        : `Posted update for ticket ${ticketId}.`;
     } else if (adminStatusMessage) {
-      adminStatusMessage.textContent = `Posted update for ticket ${ticketId}.`;
+      adminStatusMessage.textContent = wasQueued
+        ? `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
+        : `Posted update for ticket ${ticketId}.`;
     }
   } else {
-    const text = payload.mark_resolved
-      ? `Posted update and marked ticket ${ticketId} as Resolved.`
-      : `Posted update for ticket ${ticketId}.`;
+    const text = wasQueued
+      ? `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
+      : payload.mark_resolved
+        ? `Posted update and marked ticket ${ticketId} as Resolved.`
+        : `Posted update for ticket ${ticketId}.`;
     if (statusTarget) {
       statusTarget.textContent = text;
     } else {
@@ -2448,12 +2476,14 @@ adminStatusBody.addEventListener("click", async (event) => {
     if (!ticketId || !(select instanceof HTMLSelectElement)) return;
 
     try {
-      await api(`/api/tickets/${ticketId}/status`, {
+      const result = await api(`/api/tickets/${ticketId}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticket_status: select.value }),
       });
-      adminStatusMessage.textContent = `Updated status for ticket ${ticketId}.`;
+      adminStatusMessage.textContent = Boolean(result?.queued)
+        ? `Status change for ticket ${ticketId} was queued and will sync when Atera recovers.`
+        : `Updated status for ticket ${ticketId}.`;
       await loadTickets();
     } catch (error) {
       adminStatusMessage.textContent = `Status update failed: ${error.message}`;

@@ -10,10 +10,21 @@ load_dotenv(project_root / ".env", override=True)
 
 class Settings:
     def __init__(self) -> None:
+        def _flag(name: str, default: str = "0") -> bool:
+            return os.getenv(name, default).strip().lower() in {"1", "true", "yes"}
+
         user_password_flag = os.getenv("USER_PASSWORD_AUTH_ENABLED", "0").strip().lower()
         self.user_password_auth_enabled = user_password_flag in {"1", "true", "yes"}
         self.atera_api_key = os.getenv("ATERA_API_KEY", "")
         self.atera_base_url = os.getenv("ATERA_BASE_URL", "https://app.atera.com").rstrip("/")
+        self.enable_cache_read_fallback = _flag("ENABLE_CACHE_READ_FALLBACK", "1")
+        self.health_check_atera = _flag("HEALTH_CHECK_ATERA", "1")
+        self.health_check_timeout_seconds = max(1, int(os.getenv("HEALTH_CHECK_TIMEOUT_SECONDS", "3")))
+        self.enable_write_queue = _flag("ENABLE_WRITE_QUEUE", "0")
+        self.enable_queue_for_create_ticket = _flag("ENABLE_QUEUE_FOR_CREATE_TICKET", "0")
+        self.enable_queue_for_status_update = _flag("ENABLE_QUEUE_FOR_STATUS_UPDATE", "1")
+        self.enable_queue_for_comment = _flag("ENABLE_QUEUE_FOR_COMMENT", "1")
+        self.queue_process_batch_limit = max(1, int(os.getenv("QUEUE_PROCESS_BATCH_LIMIT", "25")))
         self.host = os.getenv("HOST", "127.0.0.1")
         self.port = int(os.getenv("PORT", "8000"))
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")

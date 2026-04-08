@@ -39,6 +39,11 @@ from .database import (
     create_user,
     delete_user,
     delete_session,
+    claim_due_transactions,
+    enqueue_transaction,
+    get_cached_ticket_by_id,
+    get_ticket_cache_last_sync_at,
+    get_transaction_queue_summary,
     get_signups_enabled,
     get_ticket_report_stats,
     get_user_by_email,
@@ -47,12 +52,16 @@ from .database import (
     get_user_theme_enabled,
     init_db,
     link_user_microsoft_account,
+    list_recent_transactions,
+    list_cached_tickets,
     list_users,
     replace_ticket_cache_snapshot,
     reset_user_password,
     seed_admin,
     set_signups_enabled,
     set_user_theme_enabled,
+    mark_transaction_completed,
+    mark_transaction_retry,
     update_user_role,
 )
 from .schemas import (
@@ -72,6 +81,9 @@ from .schemas import (
 ADMIN_ALLOWED_STATUSES = {"Open", "Pending", "Closed", "Resolved"}
 USER_ALLOWED_STATUSES = {"Open", "Resolved"}
 USER_LOCKED_STATUSES = {"pending", "closed", "pending closed"}
+OP_CREATE_TICKET = "create_ticket"
+OP_UPDATE_TICKET_STATUS = "update_ticket_status"
+OP_ADD_TICKET_COMMENT = "add_ticket_comment"
 
 MICROSOFT_STATE_COOKIE = "ticketgal_ms_state"
 MICROSOFT_NONCE_COOKIE = "ticketgal_ms_nonce"
@@ -332,8 +344,173 @@ async def register_page() -> FileResponse:
 
 
 @app.get("/health")
-async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+async def health() -> Dict[str, Any]:
+    dependencies: Dict[str, Any] = {
+        "atera": {
+            "status": "skipped",
+            "detail": "Atera dependency probe is disabled",
+        }
+    }
+    degraded = False
+
+    if settings.health_check_atera:
+        try:
+            await client.probe_dependency(timeout_seconds=settings.health_check_timeout_seconds)
+            dependencies["atera"] = {"status": "up"}
+        except AteraApiError as exc:
+            degraded = True
+            dependencies["atera"] = {
+                "status": "down",
+                "status_code": exc.status_code,
+                "detail": exc.message,
+            }
+
+    return {
+        "status": "degraded" if degraded else "ok",
+        "dependencies": dependencies,
+        "cache": {
+            "last_seen_sync_at": get_ticket_cache_last_sync_at(),
+        },
+    }
+
+
+def _can_use_cache_fallback(exc: AteraApiError) -> bool:
+    return settings.enable_cache_read_fallback and exc.status_code >= 500
+
+
+def _is_upstream_outage(exc: AteraApiError) -> bool:
+    return exc.status_code >= 500
+
+
+def _queue_enabled_for(operation_type: str) -> bool:
+    if not settings.enable_write_queue:
+        return False
+    if operation_type == OP_CREATE_TICKET:
+        return settings.enable_queue_for_create_ticket
+    if operation_type == OP_UPDATE_TICKET_STATUS:
+        return settings.enable_queue_for_status_update
+    if operation_type == OP_ADD_TICKET_COMMENT:
+        return settings.enable_queue_for_comment
+    return False
+
+
+def _queue_write_or_raise(
+    *,
+    operation_type: str,
+    payload: Dict[str, Any],
+    ticket_id: Optional[int],
+    requested_by_user_id: Optional[int],
+    exc: AteraApiError,
+    message: str,
+) -> JSONResponse:
+    if not (_queue_enabled_for(operation_type) and _is_upstream_outage(exc)):
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    queued = enqueue_transaction(
+        operation_type=operation_type,
+        payload=payload,
+        ticket_id=ticket_id,
+        requested_by_user_id=requested_by_user_id,
+    )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "queued": True,
+            "message": message,
+            "transaction": queued,
+            "detail": exc.message,
+        },
+    )
+
+
+async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
+    tx_id = int(tx.get("id") or 0)
+    op = str(tx.get("operation_type") or "").strip()
+    payload_raw = tx.get("payload_json")
+    payload: Dict[str, Any] = {}
+    if isinstance(payload_raw, str) and payload_raw.strip():
+        parsed = json.loads(payload_raw)
+        if isinstance(parsed, dict):
+            payload = parsed
+
+    if op == OP_CREATE_TICKET:
+        result = await client.create_ticket(payload)
+        return {"ok": True, "operation_type": op, "result": result}
+
+    if op == OP_UPDATE_TICKET_STATUS:
+        ticket_id = int(payload.get("ticket_id") or tx.get("ticket_id") or 0)
+        status = str(payload.get("ticket_status") or "").strip()
+        if ticket_id <= 0 or not status:
+            raise ValueError("Invalid queued status update payload")
+        result = await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": status})
+        return {"ok": True, "operation_type": op, "ticket_id": ticket_id, "result": result}
+
+    if op == OP_ADD_TICKET_COMMENT:
+        ticket_id = int(payload.get("ticket_id") or tx.get("ticket_id") or 0)
+        comment_payload = payload.get("comment_payload")
+        if ticket_id <= 0 or not isinstance(comment_payload, dict):
+            raise ValueError("Invalid queued comment payload")
+
+        comment_result = await client.add_comment(ticket_id=ticket_id, payload=comment_payload)
+        follow_up_status = str(payload.get("follow_up_status") or "").strip()
+        if follow_up_status:
+            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": follow_up_status})
+
+        return {
+            "ok": True,
+            "operation_type": op,
+            "ticket_id": ticket_id,
+            "result": comment_result,
+            "follow_up_status": follow_up_status or None,
+        }
+
+    raise ValueError(f"Unsupported queued operation_type: {op or 'empty'}")
+
+
+@app.get("/api/admin/queue/status")
+def admin_queue_status(
+    limit: int = Query(default=20, ge=1, le=100),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return {
+        "queue_enabled": settings.enable_write_queue,
+        "summary": get_transaction_queue_summary(),
+        "recent": list_recent_transactions(limit=limit),
+    }
+
+
+@app.post("/api/admin/queue/process")
+async def admin_process_queue(
+    limit: int = Query(default=25, ge=1, le=100),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+
+    batch_limit = min(limit, settings.queue_process_batch_limit)
+    txs = claim_due_transactions(limit=batch_limit)
+    processed: List[Dict[str, Any]] = []
+
+    for tx in txs:
+        tx_id = int(tx.get("id") or 0)
+        attempts = int(tx.get("attempts") or 0)
+        retry_delay = min(300, 2 ** min(attempts + 1, 8))
+        try:
+            result = await _process_single_transaction(tx)
+            mark_transaction_completed(tx_id, result)
+            processed.append({"id": tx_id, "status": "completed"})
+        except AteraApiError as exc:
+            retry_result = mark_transaction_retry(tx_id, exc.message, retry_delay)
+            processed.append({"id": tx_id, **retry_result, "detail": exc.message})
+        except Exception as exc:
+            retry_result = mark_transaction_retry(tx_id, f"Queue processor error: {exc}", retry_delay)
+            processed.append({"id": tx_id, **retry_result, "detail": str(exc)})
+
+    return {
+        "claimed": len(txs),
+        "processed": processed,
+        "summary": get_transaction_queue_summary(),
+    }
 
 
 @app.get("/auth/providers")
@@ -1291,6 +1468,18 @@ async def list_tickets(
             include_relations=include_relations,
         )
     except AteraApiError as exc:
+        if _can_use_cache_fallback(exc):
+            fallback = list_cached_tickets(
+                page=page,
+                items_in_page=items_in_page,
+                customer_id=customer_id,
+                ticket_status=ticket_status,
+                end_user_email=None if user["role"] == "admin" else user["email"],
+            )
+            fallback["degraded"] = True
+            fallback["source"] = "cache"
+            fallback["detail"] = exc.message
+            return fallback
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     if user["role"] == "admin":
@@ -1382,7 +1571,14 @@ async def create_ticket(request: CreateTicketRequest, user: Dict[str, Any] = Dep
     try:
         return await client.create_ticket(payload)
     except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        return _queue_write_or_raise(
+            operation_type=OP_CREATE_TICKET,
+            payload=payload,
+            ticket_id=None,
+            requested_by_user_id=int(user["id"]),
+            exc=exc,
+            message="Atera is unavailable. Ticket create request was queued.",
+        )
 
 
 @app.patch("/api/tickets/{ticket_id}/status")
@@ -1415,7 +1611,17 @@ async def set_ticket_status(
     try:
         return await client.update_ticket(ticket_id=ticket_id, payload=payload)
     except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        return _queue_write_or_raise(
+            operation_type=OP_UPDATE_TICKET_STATUS,
+            payload={
+                "ticket_id": ticket_id,
+                "ticket_status": normalized_status,
+            },
+            ticket_id=ticket_id,
+            requested_by_user_id=int(user["id"]),
+            exc=exc,
+            message=f"Atera is unavailable. Status change for ticket {ticket_id} was queued.",
+        )
 
 
 @app.post("/api/tickets/{ticket_id}/updates")
@@ -1456,26 +1662,53 @@ async def add_ticket_update(
             )
         payload["EnduserCommentDetails"] = {"EnduserId": end_user_id}
 
+    follow_up_status: Optional[str] = None
+    if user["role"] == "admin" and request.ticket_status:
+        if request.ticket_status not in ADMIN_ALLOWED_STATUSES:
+            raise HTTPException(status_code=400, detail="Unsupported admin status")
+        follow_up_status = request.ticket_status
+    elif user["role"] != "admin" and request.mark_resolved:
+        current_status = (ticket.get("TicketStatus") or "").strip().lower()
+        if current_status in USER_LOCKED_STATUSES:
+            raise HTTPException(
+                status_code=403,
+                detail="Ticket status is locked for users when current status is Pending or Closed",
+            )
+        follow_up_status = "Resolved"
+
     try:
         comment_result = await client.add_comment(ticket_id=ticket_id, payload=payload)
-
-        if user["role"] == "admin" and request.ticket_status:
-            if request.ticket_status not in ADMIN_ALLOWED_STATUSES:
-                raise HTTPException(status_code=400, detail="Unsupported admin status")
-            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": request.ticket_status})
-        elif user["role"] != "admin" and request.mark_resolved:
-            current_status = (ticket.get("TicketStatus") or "").strip().lower()
-            if current_status in USER_LOCKED_STATUSES:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Ticket status is locked for users when current status is Pending or Closed",
-                )
-
-            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": "Resolved"})
-
-        return comment_result
     except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        return _queue_write_or_raise(
+            operation_type=OP_ADD_TICKET_COMMENT,
+            payload={
+                "ticket_id": ticket_id,
+                "comment_payload": payload,
+                "follow_up_status": follow_up_status,
+            },
+            ticket_id=ticket_id,
+            requested_by_user_id=int(user["id"]),
+            exc=exc,
+            message=f"Atera is unavailable. Comment update for ticket {ticket_id} was queued.",
+        )
+
+    if follow_up_status:
+        try:
+            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": follow_up_status})
+        except AteraApiError as exc:
+            return _queue_write_or_raise(
+                operation_type=OP_UPDATE_TICKET_STATUS,
+                payload={
+                    "ticket_id": ticket_id,
+                    "ticket_status": follow_up_status,
+                },
+                ticket_id=ticket_id,
+                requested_by_user_id=int(user["id"]),
+                exc=exc,
+                message=f"Atera is unavailable. Follow-up status change for ticket {ticket_id} was queued.",
+            )
+
+    return comment_result
 
 
 @app.get("/api/tickets/{ticket_id}/history")
@@ -1483,9 +1716,26 @@ async def get_ticket_history(
     ticket_id: int,
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
+    ticket: Dict[str, Any]
     try:
         ticket = await client.get_ticket(ticket_id)
     except AteraApiError as exc:
+        if _can_use_cache_fallback(exc):
+            cached_ticket = get_cached_ticket_by_id(ticket_id)
+            if not cached_ticket:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Atera is unavailable and this ticket is not present in local cache",
+                ) from exc
+            ensure_ticket_owner_or_admin(user, cached_ticket)
+            return {
+                "ticket": cached_ticket,
+                "comments": [],
+                "degraded": True,
+                "source": "cache",
+                "history_source": "cache",
+                "detail": exc.message,
+            }
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     ensure_ticket_owner_or_admin(user, ticket)
@@ -1493,6 +1743,15 @@ async def get_ticket_history(
     try:
         comments_result = await client.list_ticket_comments(ticket_id=ticket_id, page=1, items_in_page=50)
     except AteraApiError as exc:
+        if _can_use_cache_fallback(exc):
+            return {
+                "ticket": ticket,
+                "comments": [],
+                "degraded": True,
+                "source": "atera",
+                "history_source": "cache",
+                "detail": exc.message,
+            }
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     comments = comments_result.get("items", []) if isinstance(comments_result, dict) else []

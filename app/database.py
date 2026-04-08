@@ -789,6 +789,17 @@ def get_cached_ticket_by_id(ticket_id: int) -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def get_ticket_cache_last_sync_at() -> Optional[str]:
+    with get_ticket_cache_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(last_seen_sync_at) AS last_sync FROM ticket_cache"
+        ).fetchone()
+
+    if not row:
+        return None
+    return str(row["last_sync"]).strip() or None
+
+
 def enqueue_transaction(
     operation_type: str,
     payload: Dict[str, Any],
@@ -938,6 +949,57 @@ def mark_transaction_retry(tx_id: int, error_message: str, retry_after_seconds: 
         "attempts": attempts,
         "max_attempts": max_attempts,
     }
+
+
+def get_transaction_queue_summary() -> Dict[str, Any]:
+    with get_transactions_conn() as conn:
+        counts_rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS cnt
+            FROM transaction_queue
+            GROUP BY status
+            """
+        ).fetchall()
+        now_ts = datetime.now(timezone.utc).timestamp()
+        due_row = conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM transaction_queue
+            WHERE status IN ('pending', 'retry')
+              AND (next_attempt_ts IS NULL OR next_attempt_ts <= ?)
+            """,
+            (now_ts,),
+        ).fetchone()
+
+    counts: Dict[str, int] = {
+        "pending": 0,
+        "in_progress": 0,
+        "retry": 0,
+        "failed": 0,
+        "completed": 0,
+    }
+    for row in counts_rows:
+        counts[str(row["status"])] = int(row["cnt"] or 0)
+
+    return {
+        "counts": counts,
+        "due_now": int(due_row["cnt"] or 0) if due_row else 0,
+    }
+
+
+def list_recent_transactions(limit: int = 20) -> List[Dict[str, Any]]:
+    with get_transactions_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, operation_type, ticket_id, attempts, max_attempts, status,
+                   next_attempt_ts, last_error, created_at, updated_at, completed_at
+            FROM transaction_queue
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:

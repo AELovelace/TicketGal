@@ -65,6 +65,7 @@ class AteraClient:
         path: str,
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
+        timeout: float = 30,
     ) -> Any:
         if not self._is_request_allowed(method, path):
             raise AteraApiError(
@@ -73,14 +74,17 @@ class AteraClient:
             )
 
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.request(
-                method=method,
-                url=url,
-                headers=self._headers(),
-                params=params,
-                json=json,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    headers=self._headers(),
+                    params=params,
+                    json=json,
+                )
+        except httpx.RequestError as exc:
+            raise AteraApiError(503, "Atera service is currently unavailable.") from exc
 
         if response.status_code >= 400:
             raise AteraApiError(response.status_code, self._safe_error_message(response.status_code))
@@ -89,6 +93,14 @@ class AteraClient:
             return {"ok": True}
 
         return response.json()
+
+    async def probe_dependency(self, timeout_seconds: int = 3) -> None:
+        await self._request(
+            "GET",
+            "/api/v3/tickets",
+            params={"page": 1, "itemsInPage": 1, "includeRelations": False},
+            timeout=max(1, int(timeout_seconds)),
+        )
 
     async def list_tickets(
         self,
