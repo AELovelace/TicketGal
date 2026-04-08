@@ -78,6 +78,8 @@ const adminPages = Array.from(document.querySelectorAll(".admin-page"));
 const adminPropertySelect = document.getElementById("admin-ticket-property");
 const ticketViewer = document.getElementById("ticket-viewer");
 const ticketViewerClose = document.getElementById("ticket-viewer-close");
+const adminSyncTicketsBtn = document.getElementById("admin-sync-tickets-btn");
+const adminSyncTicketsStatus = document.getElementById("admin-sync-tickets-status");
 
 let reportLoadedPeriod = null;
 const ticketViewerMeta = document.getElementById("ticket-viewer-meta");
@@ -2066,6 +2068,42 @@ async function loadReport(period, customStart = null, customEnd = null) {
   }
 }
 
+async function syncTicketsFromAtera() {
+  if (!adminSyncTicketsBtn) return;
+
+  adminSyncTicketsBtn.disabled = true;
+  if (adminSyncTicketsStatus) {
+    adminSyncTicketsStatus.textContent = "Syncing tickets from Atera...";
+  }
+
+  try {
+    const result = await api("/api/admin/sync-tickets-from-atera", {
+      method: "POST",
+    });
+    const syncedCount = Number(result?.ticket_count || 0);
+    if (adminSyncTicketsStatus) {
+      adminSyncTicketsStatus.textContent = `Sync complete. ${syncedCount} tickets synced.`;
+    }
+
+    if (reportLoadedPeriod) {
+      if (reportLoadedPeriod.startsWith("custom:")) {
+        const [, customStart = "", customEnd = ""] = reportLoadedPeriod.split(":");
+        if (customStart && customEnd) {
+          await loadReport("custom", customStart, customEnd);
+        }
+      } else {
+        await loadReport(reportLoadedPeriod);
+      }
+    }
+  } catch (error) {
+    if (adminSyncTicketsStatus) {
+      adminSyncTicketsStatus.textContent = `Sync failed: ${error.message}`;
+    }
+  } finally {
+    adminSyncTicketsBtn.disabled = false;
+  }
+}
+
 async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   const comment = row.querySelector("[data-role='comment-text']");
   const techId = row.querySelector("[data-role='tech-id']");
@@ -2217,6 +2255,9 @@ if (adminStatusRefreshBtn) {
 refreshUsersBtn.addEventListener("click", loadUsers);
 if (alertsRefreshBtn) {
   alertsRefreshBtn.addEventListener("click", () => loadAlerts());
+}
+if (adminSyncTicketsBtn) {
+  adminSyncTicketsBtn.addEventListener("click", syncTicketsFromAtera);
 }
 
 if (userStatusFilter) {
