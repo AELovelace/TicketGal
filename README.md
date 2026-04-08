@@ -81,6 +81,21 @@ Notes:
 - Session tokens are stored as SHA-256 hashes instead of plaintext.
 - Keep this key in a secure secret store. Rotating it requires data migration planning.
 
+### Optional Login Brute-Force Protection
+
+To harden password login against credential stuffing and brute-force attempts, configure:
+
+- `LOGIN_RATE_LIMIT_WINDOW_MINUTES` (default `15`)
+- `LOGIN_MAX_ATTEMPTS_PER_EMAIL` (default `5`)
+- `LOGIN_MAX_ATTEMPTS_PER_IP` (default `20`)
+- `LOGIN_LOCKOUT_MINUTES` (default `30`)
+
+Behavior:
+
+- TicketGal tracks failed login attempts per email and per client IP.
+- If either threshold is exceeded within the configured window, password login is blocked with HTTP 429 until lockout expires.
+- A successful login clears the rate-limit counters for that email and client IP.
+
 ### Optional Microsoft 365 SSO Configuration
 
 To enable Microsoft sign-in, register a web app in Microsoft Entra ID and add these env vars:
@@ -155,6 +170,10 @@ Admin queue endpoints:
 
 - `GET /api/admin/queue/status`
 - `POST /api/admin/queue/process?limit=25`
+
+Admin security monitoring endpoint:
+
+- `GET /api/admin/security/login-rate-limits?limit=100`
 
 ## Run (Development)
 
@@ -240,6 +259,41 @@ What the installer does:
 - Enables `X-Forwarded-*` headers expected by the app
 
 Blocking mode is intentionally not the default. Review `/var/log/nginx/modsec_audit.log`, tune exclusions, then rerun with `--enable-blocking` or promote the generated config manually after normal traffic is clean.
+
+### WAF Verification Script
+
+Use the included smoke-test script to validate nginx + ModSecurity behavior end-to-end.
+
+Run in blocking mode (expected malicious probes blocked with 403):
+
+```bash
+bash scripts/test_waf.sh --base-url https://ticketgal.localdomain.internal --mode blocking --insecure
+```
+
+Run in detection mode (expected no 500s; malicious probes may pass through):
+
+```bash
+bash scripts/test_waf.sh --base-url https://ticketgal.localdomain.internal --mode detection --insecure
+```
+
+The script checks:
+
+- `/health` availability through nginx
+- benign protected API request behavior (no internal WAF failure)
+- XSS and SQLi probe behavior according to selected mode
+- Microsoft callback path does not regress to CRS setup-related 500s
+
+PowerShell equivalent:
+
+```powershell
+pwsh ./scripts/test_waf.ps1 -BaseUrl https://ticketgal.localdomain.internal -Mode blocking -Insecure
+```
+
+For detection mode:
+
+```powershell
+pwsh ./scripts/test_waf.ps1 -BaseUrl https://ticketgal.localdomain.internal -Mode detection -Insecure
+```
 
 ## Workflow Notes
 

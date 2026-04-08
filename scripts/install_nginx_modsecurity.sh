@@ -99,6 +99,9 @@ apt-get update -qq
 apt-get install -y -qq nginx libnginx-mod-http-modsecurity modsecurity-crs
 
 install -d -m 755 "$MODSEC_TARGET_DIR" "$MODSEC_DATA_DIR"
+chown root:root "$MODSEC_TARGET_DIR"
+chown www-data:www-data "$MODSEC_DATA_DIR"
+chmod 750 "$MODSEC_DATA_DIR"
 install -m 644 "$MODSEC_SOURCE_DIR/modsecurity-ticketgal.conf" "$MODSEC_TARGET_DIR/modsecurity-ticketgal.conf"
 install -m 644 "$MODSEC_SOURCE_DIR/crs-setup-ticketgal.conf" "$MODSEC_TARGET_DIR/crs-setup-ticketgal.conf"
 install -m 644 "$MODSEC_SOURCE_DIR/ticketgal-exclusions.conf" "$MODSEC_TARGET_DIR/ticketgal-exclusions.conf"

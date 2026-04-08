@@ -77,6 +77,13 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_utc_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _apply_common_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -475,6 +482,25 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_rate_limits (
+                key_type TEXT NOT NULL CHECK(key_type IN ('email','ip')),
+                key_value TEXT NOT NULL,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                window_started_at TEXT NOT NULL,
+                last_failed_at TEXT NOT NULL,
+                locked_until TEXT,
+                PRIMARY KEY (key_type, key_value)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_login_rate_limits_locked
+            ON login_rate_limits(locked_until)
             """
         )
         user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -1407,6 +1433,230 @@ def delete_session(token: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM sessions WHERE token_hash = ? OR token = ?", (token_hash, token_hash))
         conn.commit()
+
+
+def get_login_lockout_until(email: str, ip_address: str) -> Optional[str]:
+    now = datetime.now(timezone.utc)
+    keys = (
+        ("email", (email or "").strip().lower()),
+        ("ip", (ip_address or "").strip()),
+    )
+    max_lockout: Optional[datetime] = None
+
+    with get_conn() as conn:
+        for key_type, key_value in keys:
+            if not key_value:
+                continue
+
+            row = conn.execute(
+                """
+                SELECT failure_count, window_started_at, locked_until
+                FROM login_rate_limits
+                WHERE key_type = ? AND key_value = ?
+                """,
+                (key_type, key_value),
+            ).fetchone()
+            if not row:
+                continue
+
+            locked_until_value = row["locked_until"]
+            if locked_until_value:
+                locked_until_dt = _parse_utc_datetime(str(locked_until_value))
+                if locked_until_dt > now:
+                    if max_lockout is None or locked_until_dt > max_lockout:
+                        max_lockout = locked_until_dt
+                    continue
+
+            window_started_at = _parse_utc_datetime(str(row["window_started_at"]))
+            window_delta = now - window_started_at
+            if window_delta > timedelta(minutes=settings.login_rate_limit_window_minutes):
+                conn.execute(
+                    "DELETE FROM login_rate_limits WHERE key_type = ? AND key_value = ?",
+                    (key_type, key_value),
+                )
+        conn.commit()
+
+    return max_lockout.isoformat() if max_lockout else None
+
+
+def record_login_failure(email: str, ip_address: str) -> Optional[str]:
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    lockout_until: Optional[datetime] = None
+    scope_limits = (
+        ("email", (email or "").strip().lower(), settings.login_max_attempts_per_email),
+        ("ip", (ip_address or "").strip(), settings.login_max_attempts_per_ip),
+    )
+
+    with get_conn() as conn:
+        for key_type, key_value, max_attempts in scope_limits:
+            if not key_value:
+                continue
+
+            row = conn.execute(
+                """
+                SELECT failure_count, window_started_at
+                FROM login_rate_limits
+                WHERE key_type = ? AND key_value = ?
+                """,
+                (key_type, key_value),
+            ).fetchone()
+
+            failure_count = 1
+            window_started_at = now
+            if row:
+                prior_window = _parse_utc_datetime(str(row["window_started_at"]))
+                if now - prior_window <= timedelta(minutes=settings.login_rate_limit_window_minutes):
+                    failure_count = int(row["failure_count"] or 0) + 1
+                    window_started_at = prior_window
+
+            next_locked_until: Optional[str] = None
+            if failure_count >= int(max_attempts):
+                locked_dt = now + timedelta(minutes=settings.login_lockout_minutes)
+                next_locked_until = locked_dt.isoformat()
+                if lockout_until is None or locked_dt > lockout_until:
+                    lockout_until = locked_dt
+
+            conn.execute(
+                """
+                INSERT INTO login_rate_limits(
+                    key_type,
+                    key_value,
+                    failure_count,
+                    window_started_at,
+                    last_failed_at,
+                    locked_until
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key_type, key_value) DO UPDATE SET
+                    failure_count = excluded.failure_count,
+                    window_started_at = excluded.window_started_at,
+                    last_failed_at = excluded.last_failed_at,
+                    locked_until = excluded.locked_until
+                """,
+                (
+                    key_type,
+                    key_value,
+                    failure_count,
+                    window_started_at.isoformat(),
+                    now_iso,
+                    next_locked_until,
+                ),
+            )
+        conn.commit()
+
+    return lockout_until.isoformat() if lockout_until else None
+
+
+def clear_login_rate_limits(email: str, ip_address: str) -> None:
+    keys = (
+        ("email", (email or "").strip().lower()),
+        ("ip", (ip_address or "").strip()),
+    )
+    with get_conn() as conn:
+        for key_type, key_value in keys:
+            if not key_value:
+                continue
+            conn.execute(
+                "DELETE FROM login_rate_limits WHERE key_type = ? AND key_value = ?",
+                (key_type, key_value),
+            )
+        conn.commit()
+
+
+def get_login_rate_limits_snapshot(limit: int = 100) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    safe_limit = max(1, min(int(limit), 500))
+    recent_window = timedelta(minutes=settings.login_rate_limit_window_minutes)
+
+    active_lockouts: List[Dict[str, Any]] = []
+    recent_failed_attempts: List[Dict[str, Any]] = []
+
+    with get_conn() as conn:
+        active_rows = conn.execute(
+            """
+            SELECT key_type, key_value, failure_count, window_started_at, last_failed_at, locked_until
+            FROM login_rate_limits
+            WHERE locked_until IS NOT NULL AND locked_until > ?
+            ORDER BY locked_until DESC
+            """,
+            (now_iso,),
+        ).fetchall()
+
+        recent_rows = conn.execute(
+            """
+            SELECT key_type, key_value, failure_count, window_started_at, last_failed_at, locked_until
+            FROM login_rate_limits
+            ORDER BY last_failed_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+
+    for row in active_rows:
+        locked_until_raw = str(row["locked_until"] or "").strip()
+        if not locked_until_raw:
+            continue
+        try:
+            locked_until_dt = _parse_utc_datetime(locked_until_raw)
+        except Exception:
+            continue
+        seconds_remaining = int(max(0, (locked_until_dt - now).total_seconds()))
+        active_lockouts.append(
+            {
+                "key_type": str(row["key_type"] or ""),
+                "key_value": str(row["key_value"] or ""),
+                "failure_count": int(row["failure_count"] or 0),
+                "window_started_at": str(row["window_started_at"] or ""),
+                "last_failed_at": str(row["last_failed_at"] or ""),
+                "locked_until": locked_until_dt.isoformat(),
+                "seconds_until_unlock": seconds_remaining,
+            }
+        )
+
+    for row in recent_rows:
+        last_failed_raw = str(row["last_failed_at"] or "").strip()
+        if not last_failed_raw:
+            continue
+        try:
+            last_failed_dt = _parse_utc_datetime(last_failed_raw)
+        except Exception:
+            continue
+
+        locked_until_raw = str(row["locked_until"] or "").strip()
+        locked_until_dt: Optional[datetime] = None
+        if locked_until_raw:
+            try:
+                locked_until_dt = _parse_utc_datetime(locked_until_raw)
+            except Exception:
+                locked_until_dt = None
+
+        still_locked = bool(locked_until_dt and locked_until_dt > now)
+        recent_enough = (now - last_failed_dt) <= recent_window
+        if not still_locked and not recent_enough:
+            continue
+
+        recent_failed_attempts.append(
+            {
+                "key_type": str(row["key_type"] or ""),
+                "key_value": str(row["key_value"] or ""),
+                "failure_count": int(row["failure_count"] or 0),
+                "window_started_at": str(row["window_started_at"] or ""),
+                "last_failed_at": last_failed_dt.isoformat(),
+                "locked_until": locked_until_dt.isoformat() if locked_until_dt else None,
+                "is_locked": still_locked,
+            }
+        )
+
+    return {
+        "window_minutes": settings.login_rate_limit_window_minutes,
+        "lockout_minutes": settings.login_lockout_minutes,
+        "max_attempts_per_email": settings.login_max_attempts_per_email,
+        "max_attempts_per_ip": settings.login_max_attempts_per_ip,
+        "active_lockouts": active_lockouts,
+        "recent_failed_attempts": recent_failed_attempts,
+    }
 
 
 def seed_admin(email: str, password_hash: str) -> None:

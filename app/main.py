@@ -36,6 +36,7 @@ from .config import settings
 from .database import (
     approve_user,
     assign_user_property,
+    clear_login_rate_limits,
     create_session,
     create_user,
     delete_user,
@@ -47,6 +48,7 @@ from .database import (
     get_ticket_cache_last_sync_at,
     get_transaction_queue_summary,
     get_signups_enabled,
+    get_login_rate_limits_snapshot,
     get_ticket_report_stats,
     get_user_by_email,
     get_user_by_id,
@@ -68,6 +70,8 @@ from .database import (
     set_user_theme_enabled,
     mark_transaction_completed,
     mark_transaction_retry,
+    get_login_lockout_until,
+    record_login_failure,
     update_pending_queue_create_payload,
     upsert_cached_ticket,
     update_user_role,
@@ -188,6 +192,15 @@ def _set_user_session(response: Response, request: Request, user: Dict[str, Any]
         samesite="lax",
         max_age=settings.session_hours * 3600,
     )
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()[:64]
+    if request.client and request.client.host:
+        return str(request.client.host).strip()[:64]
+    return "unknown"
 
 
 def _microsoft_authority() -> str:
@@ -829,6 +842,15 @@ def admin_queue_status(
     }
 
 
+@app.get("/api/admin/security/login-rate-limits")
+def admin_login_rate_limits(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return get_login_rate_limits_snapshot(limit=limit)
+
+
 @app.post("/api/admin/queue/process")
 async def admin_process_queue(
     limit: int = Query(default=25, ge=1, le=100),
@@ -887,8 +909,15 @@ def register(request: RegisterRequest) -> Dict[str, Any]:
 @app.post("/auth/login")
 def login(login_request: LoginRequest, request: Request, response: Response) -> Dict[str, Any]:
     email = normalize_email(login_request.email)
+    client_ip = _get_client_ip(request)
+
+    lockout_until = get_login_lockout_until(email, client_ip)
+    if lockout_until:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+
     user = get_user_by_email(email)
     if not user:
+        record_login_failure(email, client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if user.get("role") != "admin" and not settings.user_password_auth_enabled:
@@ -904,11 +933,14 @@ def login(login_request: LoginRequest, request: Request, response: Response) -> 
         raise HTTPException(status_code=403, detail="Account pending admin approval")
 
     if not user["password_hash"]:
+        record_login_failure(email, client_ip)
         raise HTTPException(status_code=401, detail="Account password is not configured")
 
     if not verify_password(login_request.password, user["password_hash"]):
+        record_login_failure(email, client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    clear_login_rate_limits(email, client_ip)
     _set_user_session(response, request, user)
 
     return {"message": "Logged in", "user": sanitize_user(user)}

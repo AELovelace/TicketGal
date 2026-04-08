@@ -36,6 +36,10 @@ class Settings:
         self.data_encryption_key = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
         self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "ticketgal_session")
         self.session_hours = int(os.getenv("SESSION_HOURS", "12"))
+        self.login_rate_limit_window_minutes = max(1, int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_MINUTES", "15")))
+        self.login_max_attempts_per_email = max(1, int(os.getenv("LOGIN_MAX_ATTEMPTS_PER_EMAIL", "5")))
+        self.login_max_attempts_per_ip = max(1, int(os.getenv("LOGIN_MAX_ATTEMPTS_PER_IP", "20")))
+        self.login_lockout_minutes = max(1, int(os.getenv("LOGIN_LOCKOUT_MINUTES", "30")))
         self.allowed_domains = [
             domain.strip().lower()
             for domain in os.getenv(
