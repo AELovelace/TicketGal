@@ -1150,6 +1150,40 @@ def list_pending_queue_items_for_ticket(ticket_id: int) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def get_pending_queue_create(tx_id: int) -> Optional[Dict[str, Any]]:
+    with get_transactions_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, operation_type, ticket_id, payload_json, requested_by_user_id,
+                   attempts, status, created_at, updated_at
+            FROM transaction_queue
+            WHERE id = ?
+              AND operation_type = 'create_ticket'
+              AND status IN ('pending', 'retry', 'in_progress')
+            """,
+            (int(tx_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_pending_queue_create_payload(tx_id: int, payload: Dict[str, Any]) -> bool:
+    now_iso = _utc_now_iso()
+    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    with get_transactions_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE transaction_queue
+            SET payload_json = ?, updated_at = ?
+            WHERE id = ?
+              AND operation_type = 'create_ticket'
+              AND status IN ('pending', 'retry', 'in_progress')
+            """,
+            (payload_json, now_iso, int(tx_id)),
+        )
+        conn.commit()
+    return int(cur.rowcount or 0) > 0
+
+
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (email,)).fetchone()

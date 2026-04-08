@@ -1064,6 +1064,76 @@ async function openTicketViewer(ticketId) {
   }
 }
 
+async function openQueuedTicketViewer(queueId) {
+  if (!ticketViewer || !ticketViewerMeta || !ticketViewerHistory) return;
+
+  ticketViewer.classList.remove("hidden");
+  ticketViewerMeta.innerHTML = "Loading queued ticket...";
+  if (ticketViewerUpdate) ticketViewerUpdate.innerHTML = "";
+  if (ticketViewerUpdateStatus) ticketViewerUpdateStatus.textContent = "";
+  ticketViewerHistory.innerHTML = "";
+
+  try {
+    const result = await api(`/api/queued-tickets/${queueId}/history`);
+    const ticket = result?.ticket || {};
+    const pendingOps = Array.isArray(result?.pending_ops) ? result.pending_ops : [];
+
+    ticketViewerMeta.innerHTML = `
+      <strong>Queued Ticket - ${safeText(ticket.TicketTitle)}</strong><br>
+      Status: Queued&nbsp;&nbsp;|&nbsp;&nbsp;
+      End User: ${safeText(ticket.EndUserEmail || "")}
+    `;
+
+    if (ticketViewerUpdate && currentUser?.role === "admin") {
+      const heading = document.createElement("h3");
+      heading.textContent = "Queue Update";
+      const controls = buildUpdateControls(ticket, true);
+      controls.classList.add("viewer-update-form");
+
+      ticketViewerUpdate.innerHTML = "";
+      ticketViewerUpdate.appendChild(heading);
+      ticketViewerUpdate.appendChild(controls);
+    }
+
+    ticketViewerHistory.innerHTML = "";
+    if (!pendingOps.length) {
+      ticketViewerHistory.innerHTML = '<div class="history-entry muted">No queued follow-up updates yet.</div>';
+      return;
+    }
+
+    const fmtDate = (iso) => {
+      if (!iso) return "";
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? safeText(iso) : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+    };
+
+    pendingOps.forEach((op) => {
+      const el = document.createElement("div");
+      el.className = "history-entry history-entry-queued";
+      const badge = document.createElement("div");
+      badge.className = "queued-badge";
+      if (op._type === "comment") {
+        badge.textContent = `⏳ Queued update — ${fmtDate(op._createdAt)}`;
+        el.appendChild(badge);
+        el.appendChild(renderTicketCommentContent(op.Comment || ""));
+        if (op.follow_up_status) {
+          const statusNote = document.createElement("div");
+          statusNote.className = "muted";
+          statusNote.textContent = `Status will change to: ${safeText(op.follow_up_status)}`;
+          el.appendChild(statusNote);
+        }
+      } else {
+        badge.textContent = `⏳ Queued status change → "${safeText(op.new_status)}" — ${fmtDate(op._createdAt)}`;
+        el.appendChild(badge);
+      }
+      ticketViewerHistory.appendChild(el);
+    });
+  } catch (error) {
+    ticketViewerMeta.innerHTML = "";
+    ticketViewerHistory.innerHTML = `<div class="history-entry">Failed to load queued ticket: ${safeText(error.message)}</div>`;
+  }
+}
+
 function showAuth() {
   authView.classList.remove("hidden");
   appView.classList.add("hidden");
@@ -1191,10 +1261,11 @@ function buildStatusReadOnlyCell(ticket) {
 
 function buildUpdateControls(ticket, isAdminTable) {
   const wrap = document.createElement("div");
+  const isQueued = Boolean(ticket?._queued);
 
   const comment = document.createElement("textarea");
   comment.rows = 3;
-  comment.placeholder = "Add ticket update";
+  comment.placeholder = isQueued ? "Add queued update for replay" : "Add ticket update";
   comment.dataset.role = "comment-text";
 
   const tech = document.createElement("input");
@@ -1226,8 +1297,13 @@ function buildUpdateControls(ticket, isAdminTable) {
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.dataset.role = "comment-save";
-  saveBtn.dataset.ticketId = String(ticket.TicketID);
-  saveBtn.textContent = "Post Update";
+  if (isQueued) {
+    saveBtn.dataset.queuedTransactionId = String(ticket._queuedTransactionId || "");
+    saveBtn.textContent = "Queue Update";
+  } else {
+    saveBtn.dataset.ticketId = String(ticket.TicketID);
+    saveBtn.textContent = "Post Update";
+  }
 
   wrap.appendChild(comment);
   wrap.appendChild(tech);
@@ -1268,12 +1344,16 @@ function ticketListRow(ticket, isAdminTable) {
 
   const titleTd = document.createElement("td");
   if (isQueued) {
-    const span = document.createElement("span");
-    span.textContent = safeText(ticket.TicketTitle);
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "ticket-open-btn";
+    openBtn.dataset.role = "open-queued-ticket";
+    openBtn.dataset.queuedTransactionId = String(ticket._queuedTransactionId || "");
+    openBtn.textContent = safeText(ticket.TicketTitle);
     const badge = document.createElement("span");
     badge.className = "queued-badge";
     badge.textContent = " ⏳ Pending sync";
-    titleTd.appendChild(span);
+    titleTd.appendChild(openBtn);
     titleTd.appendChild(badge);
   } else {
     const openBtn = document.createElement("button");
@@ -1324,12 +1404,16 @@ function statusManagementRow(ticket) {
 
   const titleTd = document.createElement("td");
   if (isQueued) {
-    const span = document.createElement("span");
-    span.textContent = safeText(ticket.TicketTitle);
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "ticket-open-btn";
+    openBtn.dataset.role = "open-queued-ticket";
+    openBtn.dataset.queuedTransactionId = String(ticket._queuedTransactionId || "");
+    openBtn.textContent = safeText(ticket.TicketTitle);
     const badge = document.createElement("span");
     badge.className = "queued-badge";
     badge.textContent = " ⏳ Pending sync";
-    titleTd.appendChild(span);
+    titleTd.appendChild(openBtn);
     titleTd.appendChild(badge);
   } else {
     const openBtn = document.createElement("button");
@@ -1392,7 +1476,7 @@ function statusManagementRow(ticket) {
 
   const actionTd = document.createElement("td");
   if (isQueued) {
-    actionTd.textContent = "—";
+    actionTd.appendChild(buildUpdateControls(ticket, true));
   } else {
     const select = document.createElement("select");
     select.dataset.role = "admin-status-select";
@@ -2394,21 +2478,33 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
     payload.mark_resolved = resolve.checked;
   }
 
-  const result = await api(`/api/tickets/${ticketId}/updates`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const saveBtn = row.querySelector("[data-role='comment-save']");
+  const queuedTransactionId = saveBtn instanceof HTMLElement ? safeText(saveBtn.dataset.queuedTransactionId || "") : "";
+
+  const result = await api(
+    queuedTransactionId
+      ? `/api/queued-tickets/${queuedTransactionId}/updates`
+      : `/api/tickets/${ticketId}/updates`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
   const wasQueued = Boolean(result?.queued);
 
   if (isAdmin) {
     if (statusTarget) {
       statusTarget.textContent = wasQueued
-        ? `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
+        ? queuedTransactionId
+          ? `Update for queued ticket ${queuedTransactionId} was stored for replay.`
+          : `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
         : `Posted update for ticket ${ticketId}.`;
     } else if (adminStatusMessage) {
       adminStatusMessage.textContent = wasQueued
-        ? `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
+        ? queuedTransactionId
+          ? `Update for queued ticket ${queuedTransactionId} was stored for replay.`
+          : `Update for ticket ${ticketId} was queued and will sync when Atera recovers.`
         : `Posted update for ticket ${ticketId}.`;
     }
   } else {
@@ -2591,14 +2687,24 @@ userTicketsBody.addEventListener("click", async (event) => {
     return;
   }
 
+  const openQueuedBtn = target.closest("[data-role='open-queued-ticket']");
+  if (openQueuedBtn instanceof HTMLElement) {
+    const queueId = openQueuedBtn.dataset.queuedTransactionId;
+    if (queueId) {
+      await openQueuedTicketViewer(queueId);
+    }
+    return;
+  }
+
   const commentSaveBtn = target.closest("[data-role='comment-save']");
   if (commentSaveBtn instanceof HTMLElement) {
     const row = commentSaveBtn.closest("tr");
     const ticketId = commentSaveBtn.dataset.ticketId;
-    if (!row || !ticketId) return;
+    const queueId = commentSaveBtn.dataset.queuedTransactionId;
+    if (!row || (!ticketId && !queueId)) return;
 
     try {
-      await postUpdateFromRow(row, ticketId, false);
+      await postUpdateFromRow(row, ticketId || "", false);
     } catch (error) {
       userListStatus.textContent = `Update failed: ${error.message}`;
     }
@@ -2614,6 +2720,15 @@ adminStatusBody.addEventListener("click", async (event) => {
     const ticketId = openBtn.dataset.ticketId;
     if (ticketId) {
       await openTicketViewer(ticketId);
+    }
+    return;
+  }
+
+  const openQueuedBtn = target.closest("[data-role='open-queued-ticket']");
+  if (openQueuedBtn instanceof HTMLElement) {
+    const queueId = openQueuedBtn.dataset.queuedTransactionId;
+    if (queueId) {
+      await openQueuedTicketViewer(queueId);
     }
     return;
   }
@@ -2639,6 +2754,19 @@ adminStatusBody.addEventListener("click", async (event) => {
       adminStatusMessage.textContent = `Status update failed: ${error.message}`;
     }
   }
+
+  const commentSaveBtn = target.closest("[data-role='comment-save']");
+  if (commentSaveBtn instanceof HTMLElement) {
+    const row = commentSaveBtn.closest("tr");
+    const queuedTransactionId = commentSaveBtn.dataset.queuedTransactionId;
+    if (!row || !queuedTransactionId) return;
+
+    try {
+      await postUpdateFromRow(row, "", true);
+    } catch (error) {
+      adminStatusMessage.textContent = `Queued update failed: ${error.message}`;
+    }
+  }
 });
 
 if (ticketViewer) {
@@ -2650,11 +2778,16 @@ if (ticketViewer) {
 
     const row = saveBtn.closest(".viewer-update-form");
     const ticketId = saveBtn.dataset.ticketId;
-    if (!row || !ticketId) return;
+    const queuedTransactionId = saveBtn.dataset.queuedTransactionId;
+    if (!row || (!ticketId && !queuedTransactionId)) return;
 
     try {
-      await postUpdateFromRow(row, ticketId, currentUser?.role === "admin", ticketViewerUpdateStatus);
-      await openTicketViewer(ticketId);
+      await postUpdateFromRow(row, ticketId || "", currentUser?.role === "admin", ticketViewerUpdateStatus);
+      if (queuedTransactionId) {
+        await openQueuedTicketViewer(queuedTransactionId);
+      } else {
+        await openTicketViewer(ticketId);
+      }
     } catch (error) {
       if (ticketViewerUpdateStatus) {
         ticketViewerUpdateStatus.textContent = `Update failed: ${error.message}`;

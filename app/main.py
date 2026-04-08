@@ -43,6 +43,7 @@ from .database import (
     claim_due_transactions,
     enqueue_transaction,
     get_cached_ticket_by_id,
+    get_pending_queue_create,
     get_ticket_cache_last_sync_at,
     get_transaction_queue_summary,
     get_signups_enabled,
@@ -67,6 +68,7 @@ from .database import (
     set_user_theme_enabled,
     mark_transaction_completed,
     mark_transaction_retry,
+    update_pending_queue_create_payload,
     upsert_cached_ticket,
     update_user_role,
 )
@@ -457,18 +459,154 @@ def _queue_write_or_raise(
     )
 
 
-async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
-    op = str(tx.get("operation_type") or "").strip()
+def _parse_transaction_payload(tx: Dict[str, Any]) -> Dict[str, Any]:
     payload_raw = tx.get("payload_json")
-    payload: Dict[str, Any] = {}
     if isinstance(payload_raw, str) and payload_raw.strip():
         parsed = json.loads(payload_raw)
         if isinstance(parsed, dict):
-            payload = parsed
+            return parsed
+    return {}
+
+
+def _queued_create_ticket_from_payload(tx: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    queued_follow_ups = payload.get("queued_follow_ups")
+    follow_up_count = len(queued_follow_ups) if isinstance(queued_follow_ups, list) else 0
+    return {
+        "TicketID": None,
+        "TicketTitle": payload.get("TicketTitle") or "(no title)",
+        "TicketStatus": "Queued",
+        "EndUserEmail": payload.get("EndUserEmail") or "",
+        "CustomerName": "",
+        "TicketPriority": payload.get("TicketPriority") or "",
+        "TicketType": payload.get("TicketType") or "",
+        "Description": payload.get("Description") or "",
+        "_queued": True,
+        "_queuedTransactionId": int(tx.get("id") or 0),
+        "_queuedCreatedAt": tx.get("created_at") or "",
+        "_queuedAttempts": int(tx.get("attempts") or 0),
+        "_queuedStatus": tx.get("status") or "pending",
+        "_queuedFollowUpCount": follow_up_count,
+    }
+
+
+def _extract_ticket_id_from_result(result: Any) -> int:
+    if isinstance(result, dict):
+        return int(result.get("TicketID") or result.get("ticket_id") or result.get("ticketId") or 0)
+    return 0
+
+
+def _ensure_queued_create_access(user: Dict[str, Any], tx: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    if user["role"] == "admin":
+        return
+    requested_by_user_id = int(tx.get("requested_by_user_id") or 0)
+    if requested_by_user_id and requested_by_user_id == int(user["id"]):
+        return
+    queued_email = str(payload.get("EndUserEmail") or "").strip().lower()
+    if queued_email and queued_email == user["email"]:
+        return
+    raise HTTPException(status_code=403, detail="You do not have access to this queued ticket")
+
+
+def _build_pending_ops_for_queued_create(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    pending: List[Dict[str, Any]] = []
+    queued_follow_ups = payload.get("queued_follow_ups")
+    if not isinstance(queued_follow_ups, list):
+        return pending
+    for index, item in enumerate(queued_follow_ups, start=1):
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type == "comment":
+            comment_payload = item.get("comment_payload") if isinstance(item.get("comment_payload"), dict) else {}
+            pending.append(
+                {
+                    "_queued": True,
+                    "_type": "comment",
+                    "_transactionId": int(item.get("transaction_id") or 0) or index,
+                    "_createdAt": str(item.get("created_at") or ""),
+                    "Comment": str(comment_payload.get("CommentText") or ""),
+                    "follow_up_status": str(item.get("follow_up_status") or ""),
+                }
+            )
+        elif item_type == "status_change":
+            pending.append(
+                {
+                    "_queued": True,
+                    "_type": "status_change",
+                    "_transactionId": int(item.get("transaction_id") or 0) or index,
+                    "_createdAt": str(item.get("created_at") or ""),
+                    "new_status": str(item.get("ticket_status") or ""),
+                }
+            )
+    return pending
+
+
+async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
+    op = str(tx.get("operation_type") or "").strip()
+    payload = _parse_transaction_payload(tx)
 
     if op == OP_CREATE_TICKET:
-        result = await client.create_ticket(payload)
-        return {"ok": True, "operation_type": op, "result": result}
+        create_payload = dict(payload)
+        queued_follow_ups = create_payload.pop("queued_follow_ups", [])
+        result = await client.create_ticket(create_payload)
+        created_ticket_id = _extract_ticket_id_from_result(result)
+        follow_up_results: List[Dict[str, Any]] = []
+
+        if created_ticket_id > 0:
+            for item in queued_follow_ups if isinstance(queued_follow_ups, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("type") or "").strip().lower()
+                if item_type == "comment":
+                    comment_payload = item.get("comment_payload") if isinstance(item.get("comment_payload"), dict) else None
+                    if not comment_payload:
+                        continue
+                    try:
+                        comment_result = await client.add_comment(ticket_id=created_ticket_id, payload=comment_payload)
+                        follow_up_status = str(item.get("follow_up_status") or "").strip()
+                        if follow_up_status:
+                            await client.update_ticket(ticket_id=created_ticket_id, payload={"TicketStatus": follow_up_status})
+                        follow_up_results.append({"type": "comment", "result": comment_result, "follow_up_status": follow_up_status or None})
+                    except AteraApiError as exc:
+                        enqueue_transaction(
+                            operation_type=OP_ADD_TICKET_COMMENT,
+                            payload={
+                                "ticket_id": created_ticket_id,
+                                "comment_payload": comment_payload,
+                                "follow_up_status": str(item.get("follow_up_status") or "").strip() or None,
+                            },
+                            ticket_id=created_ticket_id,
+                            requested_by_user_id=int(tx.get("requested_by_user_id") or 0) or None,
+                        )
+                        follow_up_results.append({"type": "comment", "requeued": True, "detail": exc.message})
+                elif item_type == "status_change":
+                    status = str(item.get("ticket_status") or "").strip()
+                    if not status:
+                        continue
+                    try:
+                        status_result = await client.update_ticket(ticket_id=created_ticket_id, payload={"TicketStatus": status})
+                        follow_up_results.append({"type": "status_change", "result": status_result, "ticket_status": status})
+                    except AteraApiError as exc:
+                        enqueue_transaction(
+                            operation_type=OP_UPDATE_TICKET_STATUS,
+                            payload={"ticket_id": created_ticket_id, "ticket_status": status},
+                            ticket_id=created_ticket_id,
+                            requested_by_user_id=int(tx.get("requested_by_user_id") or 0) or None,
+                        )
+                        follow_up_results.append({"type": "status_change", "requeued": True, "detail": exc.message, "ticket_status": status})
+
+            try:
+                await _refresh_cached_ticket_from_atera(created_ticket_id, changed_by_user_id=int(tx.get("requested_by_user_id") or 0) or None)
+            except AteraApiError:
+                pass
+
+        return {
+            "ok": True,
+            "operation_type": op,
+            "ticket_id": created_ticket_id or None,
+            "result": result,
+            "follow_up_results": follow_up_results,
+        }
 
     if op == OP_UPDATE_TICKET_STATUS:
         ticket_id = int(payload.get("ticket_id") or tx.get("ticket_id") or 0)
@@ -557,30 +695,8 @@ def _inject_queued_creates(result: Dict[str, Any], user: Dict[str, Any]) -> None
         return
     synthetic: List[Dict[str, Any]] = []
     for tx in queued:
-        payload: Dict[str, Any] = {}
-        try:
-            raw = tx.get("payload_json") or ""
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                payload = parsed
-        except Exception:
-            pass
-        synthetic.append(
-            {
-                "TicketID": None,
-                "TicketTitle": payload.get("TicketTitle") or "(no title)",
-                "TicketStatus": "Queued",
-                "EndUserEmail": payload.get("EndUserEmail") or "",
-                "CustomerName": "",
-                "TicketPriority": payload.get("TicketPriority") or "",
-                "TicketType": payload.get("TicketType") or "",
-                "_queued": True,
-                "_queuedTransactionId": tx["id"],
-                "_queuedCreatedAt": tx.get("created_at") or "",
-                "_queuedAttempts": int(tx.get("attempts") or 0),
-                "_queuedStatus": tx.get("status") or "pending",
-            }
-        )
+        payload = _parse_transaction_payload(tx)
+        synthetic.append(_queued_create_ticket_from_payload(tx, payload))
     result["items"] = result.get("items", []) + synthetic
     result["totalItemCount"] = int(result.get("totalItemCount") or 0) + len(synthetic)
 
@@ -1865,6 +1981,128 @@ async def set_ticket_status(
         pass
 
     return result
+
+
+@app.get("/api/queued-tickets/{queue_id}/history")
+async def get_queued_ticket_history(
+    queue_id: int,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    tx = get_pending_queue_create(queue_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Queued ticket was not found")
+    payload = _parse_transaction_payload(tx)
+    _ensure_queued_create_access(user, tx, payload)
+    return {
+        "ticket": _queued_create_ticket_from_payload(tx, payload),
+        "comments": [],
+        "pending_ops": _build_pending_ops_for_queued_create(payload),
+        "degraded": True,
+        "source": "queue",
+        "history_source": "queue",
+    }
+
+
+@app.patch("/api/queued-tickets/{queue_id}/status")
+async def set_queued_ticket_status(
+    queue_id: int,
+    request: TicketStatusUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    normalized_status = _normalize_status_input(request.ticket_status)
+    if normalized_status not in ADMIN_ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail="Unsupported admin status")
+
+    tx = get_pending_queue_create(queue_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Queued ticket was not found")
+    payload = _parse_transaction_payload(tx)
+    _ensure_queued_create_access(user, tx, payload)
+
+    queued_follow_ups = payload.get("queued_follow_ups") if isinstance(payload.get("queued_follow_ups"), list) else []
+    queued_follow_ups.append(
+        {
+            "type": "status_change",
+            "ticket_status": normalized_status,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "requested_by_user_id": int(user["id"]),
+        }
+    )
+    payload["queued_follow_ups"] = queued_follow_ups
+    if not update_pending_queue_create_payload(queue_id, payload):
+        raise HTTPException(status_code=409, detail="Unable to update queued ticket")
+
+    return {
+        "queued": True,
+        "message": f"Status change for queued ticket {queue_id} was stored for replay.",
+        "queue_id": queue_id,
+        "pending_ops": _build_pending_ops_for_queued_create(payload),
+    }
+
+
+@app.post("/api/queued-tickets/{queue_id}/updates")
+async def add_queued_ticket_update(
+    queue_id: int,
+    request: AddTicketCommentRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    tx = get_pending_queue_create(queue_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Queued ticket was not found")
+    payload = _parse_transaction_payload(tx)
+    _ensure_queued_create_access(user, tx, payload)
+
+    comment_payload: Dict[str, Any] = {"CommentText": request.comment_text}
+
+    if user["role"] == "admin":
+        if request.technician_id is not None:
+            comment_payload["TechnicianCommentDetails"] = {
+                "TechnicianId": request.technician_id,
+                "IsInternal": request.is_internal,
+                "TechnicianEmail": request.technician_email,
+            }
+        elif request.enduser_id is not None:
+            comment_payload["EnduserCommentDetails"] = {"EnduserId": request.enduser_id}
+        else:
+            raise HTTPException(status_code=400, detail="Admin update requires technician_id or enduser_id")
+    else:
+        end_user_id = payload.get("EndUserID")
+        if not end_user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Queued ticket is missing EndUserID. Wait for ticket creation before posting user updates.",
+            )
+        comment_payload["EnduserCommentDetails"] = {"EnduserId": end_user_id}
+
+    follow_up_status: Optional[str] = None
+    if user["role"] == "admin" and request.ticket_status:
+        if request.ticket_status not in ADMIN_ALLOWED_STATUSES:
+            raise HTTPException(status_code=400, detail="Unsupported admin status")
+        follow_up_status = request.ticket_status
+    elif user["role"] != "admin" and request.mark_resolved:
+        follow_up_status = "Resolved"
+
+    queued_follow_ups = payload.get("queued_follow_ups") if isinstance(payload.get("queued_follow_ups"), list) else []
+    queued_follow_ups.append(
+        {
+            "type": "comment",
+            "comment_payload": comment_payload,
+            "follow_up_status": follow_up_status,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "requested_by_user_id": int(user["id"]),
+        }
+    )
+    payload["queued_follow_ups"] = queued_follow_ups
+    if not update_pending_queue_create_payload(queue_id, payload):
+        raise HTTPException(status_code=409, detail="Unable to update queued ticket")
+
+    return {
+        "queued": True,
+        "message": f"Update for queued ticket {queue_id} was stored for replay.",
+        "queue_id": queue_id,
+        "pending_ops": _build_pending_ops_for_queued_create(payload),
+    }
 
 
 @app.post("/api/tickets/{ticket_id}/updates")
