@@ -48,6 +48,7 @@ from .database import (
     init_db,
     link_user_microsoft_account,
     list_users,
+    replace_ticket_cache_snapshot,
     reset_user_password,
     seed_admin,
     set_signups_enabled,
@@ -626,6 +627,50 @@ def toggle_signups(
     new_state = not current
     set_signups_enabled(new_state)
     return {"signups_enabled": new_state, "message": "Signups " + ("enabled" if new_state else "disabled")}
+
+
+@app.post("/api/admin/sync-tickets-from-atera")
+async def admin_sync_tickets(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Sync all tickets from Atera into the local ticket cache.
+    
+    This endpoint fetches all tickets from Atera with pagination and populates
+    the ticket_cache database, then backfills missing dates and status history.
+    Admin-only operation.
+    """
+    require_admin(user)
+    
+    try:
+        all_tickets: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            result = await client.list_tickets(
+                page=page,
+                items_in_page=500,
+                include_relations=True,
+            )
+            items = result.get("items", []) if isinstance(result, dict) else []
+            if not items:
+                break
+            all_tickets.extend(items)
+            total = result.get("totalItemCount", 0) if isinstance(result, dict) else 0
+            if len(all_tickets) >= total:
+                break
+            page += 1
+    except AteraApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    
+    # Populate cache with all tickets
+    count = replace_ticket_cache_snapshot(all_tickets)
+    
+    # Trigger backfill of dates and status history for newly synced tickets
+    # This re-runs the same logic from startup but is safe due to NOT EXISTS guards
+    init_db()
+    
+    return {
+        "status": "success",
+        "message": f"Synced {count} tickets from Atera and backfilled dates/history",
+        "ticket_count": count,
+    }
 
 
 @app.get("/api/admin/properties")
