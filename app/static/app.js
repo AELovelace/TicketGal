@@ -1959,6 +1959,43 @@ async function loadProperties() {
   }
 }
 
+function renderAiSummaryWithTicketLinks(container, text) {
+  if (!container) return;
+
+  const content = String(text || "");
+  container.textContent = "";
+
+  const fragment = document.createDocumentFragment();
+  const ticketPattern = /#(\d+)\b/g;
+  let cursor = 0;
+  let match;
+
+  while ((match = ticketPattern.exec(content)) !== null) {
+    const start = match.index;
+    const end = ticketPattern.lastIndex;
+
+    if (start > cursor) {
+      fragment.appendChild(document.createTextNode(content.slice(cursor, start)));
+    }
+
+    const ticketId = match[1];
+    const ticketBtn = document.createElement("button");
+    ticketBtn.type = "button";
+    ticketBtn.className = "ai-ticket-link";
+    ticketBtn.dataset.ticketId = ticketId;
+    ticketBtn.textContent = `#${ticketId}`;
+    fragment.appendChild(ticketBtn);
+
+    cursor = end;
+  }
+
+  if (cursor < content.length) {
+    fragment.appendChild(document.createTextNode(content.slice(cursor)));
+  }
+
+  container.appendChild(fragment);
+}
+
 async function loadReport(period, customStart = null, customEnd = null) {
   const requestId = ++reportRequestSeq;
   const loading = document.getElementById("report-loading");
@@ -2062,9 +2099,9 @@ async function loadReport(period, customStart = null, customEnd = null) {
 
         if (aiResult.ai_error) {
           aiSummaryEl.className = "report-ai-error";
-          aiSummaryEl.textContent = pendingText
+          renderAiSummaryWithTicketLinks(aiSummaryEl, pendingText
             ? `AI service unavailable\n\nPending Watchlist (Net-Neutral)\n${pendingText}`
-            : safeText(aiResult.ai_error);
+            : safeText(aiResult.ai_error));
         } else {
           const sections = [];
           if (aiResult.ai_summary) {
@@ -2083,9 +2120,9 @@ async function loadReport(period, customStart = null, customEnd = null) {
             sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);
           }
           aiSummaryEl.className = "report-ai-summary";
-          aiSummaryEl.textContent = sections.length
+          renderAiSummaryWithTicketLinks(aiSummaryEl, sections.length
             ? sections.join("\n\n")
-            : "No AI summary available.";
+            : "No AI summary available.");
         }
         aiSection.classList.remove("hidden");
       }
@@ -2095,7 +2132,7 @@ async function loadReport(period, customStart = null, customEnd = null) {
       }
       if (aiSummaryEl && aiSection) {
         aiSummaryEl.className = "report-ai-error";
-        aiSummaryEl.textContent = `AI summary unavailable: ${error.message}`;
+        renderAiSummaryWithTicketLinks(aiSummaryEl, `AI summary unavailable: ${error.message}`);
         aiSection.classList.remove("hidden");
       }
     } finally {
@@ -2304,6 +2341,21 @@ if (adminStatusRefreshBtn) {
 refreshUsersBtn.addEventListener("click", loadUsers);
 if (alertsRefreshBtn) {
   alertsRefreshBtn.addEventListener("click", () => loadAlerts());
+}
+const reportAiSummaryEl = document.getElementById("report-ai-summary");
+if (reportAiSummaryEl) {
+  reportAiSummaryEl.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    const linkBtn = target.closest(".ai-ticket-link");
+    if (!(linkBtn instanceof HTMLButtonElement)) return;
+
+    const ticketId = Number(linkBtn.dataset.ticketId || 0);
+    if (!Number.isFinite(ticketId) || ticketId <= 0) return;
+
+    await openTicketViewer(ticketId);
+  });
 }
 if (adminSyncTicketsBtn) {
   adminSyncTicketsBtn.addEventListener("click", syncTicketsFromAtera);

@@ -1033,6 +1033,28 @@ body.theme-premium .user-search-bar input[type="search"] {
   }
 }
 
+.ai-ticket-link {
+  border: 0;
+  background: transparent;
+  color: var(--navy-700);
+  text-decoration: underline;
+  padding: 0;
+  margin: 0;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ai-ticket-link:hover {
+  color: var(--navy-900);
+  filter: none;
+}
+
+.ai-ticket-link:focus-visible {
+  outline: 2px solid rgba(198, 167, 93, 0.45);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .report-ai-error {
   border-color: #e7b9b6;
   background: #fae8e7;
@@ -1052,6 +1074,14 @@ body.theme-premium .report-ai-loading {
 body.theme-premium .report-ai-spinner {
   border-color: #e0c0c4;
   border-top-color: #9d6674;
+}
+
+body.theme-premium .ai-ticket-link {
+  color: #5c2e3e;
+}
+
+body.theme-premium .ai-ticket-link:hover {
+  color: #2d1520;
 }
 
 body.theme-premium .report-ai-error {
