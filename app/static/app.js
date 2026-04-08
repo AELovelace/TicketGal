@@ -2070,8 +2070,14 @@ async function loadReport(period, customStart = null, customEnd = null) {
           if (aiResult.ai_summary) {
             sections.push(`Summary\n${safeText(aiResult.ai_summary).trim()}`);
           }
+          if (aiResult.open_request_context) {
+            sections.push(`Open Ticket Summary\n${safeText(aiResult.open_request_context).trim()}`);
+          }
           if (aiResult.pending_request_context) {
             sections.push(`Pending Ticket Breakdown\n${safeText(aiResult.pending_request_context).trim()}`);
+          }
+          if (aiResult.resolved_request_context) {
+            sections.push(`Resolved / Closed Highlights\n${safeText(aiResult.resolved_request_context).trim()}`);
           }
           if (pendingText) {
             sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);

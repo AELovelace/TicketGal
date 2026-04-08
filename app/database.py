@@ -1322,6 +1322,36 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
             """
         ).fetchall()
 
+        open_request_rows = conn.execute(
+            """
+            SELECT ticket_id, customer_name, ticket_title, created_at, updated_at, raw_json
+            FROM ticket_cache
+            WHERE ticket_status = 'Open'
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            LIMIT 20
+            """
+        ).fetchall()
+
+        resolved_request_rows = conn.execute(
+            f"""
+            SELECT
+                tc.ticket_id,
+                tc.customer_name,
+                tc.ticket_title,
+                tc.created_at,
+                tc.updated_at,
+                tc.raw_json,
+                MAX(tsh.changed_at) AS resolved_at
+            FROM ticket_status_history tsh
+            JOIN ticket_cache tc ON tc.ticket_id = tsh.ticket_id
+            WHERE {resolved_where}
+            GROUP BY tc.ticket_id, tc.customer_name, tc.ticket_title, tc.created_at, tc.updated_at, tc.raw_json
+            ORDER BY resolved_at DESC
+            LIMIT 20
+            """,
+            resolved_params,
+        ).fetchall()
+
     resolved_map: Dict[str, int] = {
         str(r["customer_name"] or ""): int(r["resolved"]) for r in resolved_by_customer_rows
     }
@@ -1384,6 +1414,51 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
             }
         )
 
+    open_request_tickets: List[Dict[str, Any]] = []
+    for r in open_request_rows:
+        payload = {}
+        try:
+            parsed = json.loads(r["raw_json"] or "{}")
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+
+        ticket_type = str(payload.get("TicketType") or "").strip()
+        open_request_tickets.append(
+            {
+                "ticket_id": int(r["ticket_id"]),
+                "customer_name": str(r["customer_name"] or "Unknown"),
+                "title": str(r["ticket_title"] or ""),
+                "created_at": str(r["created_at"] or ""),
+                "last_activity_at": str(r["updated_at"] or ""),
+                "ticket_type": ticket_type or "Request",
+            }
+        )
+
+    resolved_request_tickets: List[Dict[str, Any]] = []
+    for r in resolved_request_rows:
+        payload = {}
+        try:
+            parsed = json.loads(r["raw_json"] or "{}")
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+
+        ticket_type = str(payload.get("TicketType") or "").strip()
+        resolved_request_tickets.append(
+            {
+                "ticket_id": int(r["ticket_id"]),
+                "customer_name": str(r["customer_name"] or "Unknown"),
+                "title": str(r["ticket_title"] or ""),
+                "created_at": str(r["created_at"] or ""),
+                "last_activity_at": str(r["updated_at"] or ""),
+                "resolved_at": str(r["resolved_at"] or ""),
+                "ticket_type": ticket_type or "Request",
+            }
+        )
+
     return {
         "opened_count": opened_count,
         "resolved_count": resolved_count,
@@ -1394,4 +1469,6 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
         "pending_by_customer": pending_by_customer,
         "pending_sample_titles": pending_sample_titles,
         "pending_request_tickets": pending_request_tickets,
+        "open_request_tickets": open_request_tickets,
+        "resolved_request_tickets": resolved_request_tickets,
     }

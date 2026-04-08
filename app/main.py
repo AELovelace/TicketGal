@@ -1553,6 +1553,8 @@ async def get_reports_summary(
         for row in (stats.get("pending_by_customer") or [])[:5]
     ]
     pending_request_tickets = stats.get("pending_request_tickets") or []
+    open_request_tickets = stats.get("open_request_tickets") or []
+    resolved_request_tickets = stats.get("resolved_request_tickets") or []
     sample_titles = stats.get("sample_titles") or []
     pending_sample_titles = stats.get("pending_sample_titles") or []
 
@@ -1597,6 +1599,8 @@ async def get_reports_summary(
 
     ai_summary: Optional[str] = None
     pending_request_context: Optional[str] = None
+    open_request_context: Optional[str] = None
+    resolved_request_context: Optional[str] = None
     ai_error: Optional[str] = None
 
     if not include_ai:
@@ -1635,6 +1639,75 @@ async def get_reports_summary(
             if len(cleaned) > max_len:
                 return cleaned[: max_len - 1] + "…"
             return cleaned
+
+        async def _build_ticket_lines(tickets: List[Dict[str, Any]], label: str) -> List[str]:
+            lines: List[str] = []
+            for t in tickets:
+                tid = int(t.get("ticket_id") or 0)
+                if tid <= 0:
+                    continue
+
+                try:
+                    comments_result = await client.list_ticket_comments(ticket_id=tid, page=1, items_in_page=50)
+                    comments = comments_result.get("items", []) if isinstance(comments_result, dict) else []
+                except AteraApiError:
+                    comments = []
+
+                comments = sorted(
+                    [c for c in comments if isinstance(c, dict)],
+                    key=lambda c: str(c.get("Date") or ""),
+                )
+
+                message_parts: List[str] = []
+                history_count = 0
+                first_comment_at = ""
+                last_comment_at = ""
+                for entry in comments:
+                    history_count += 1
+                    c_text = _comment_excerpt(str(entry.get("Comment") or ""))
+                    if not c_text:
+                        continue
+                    c_date = str(entry.get("Date") or "").strip()
+                    author = str(entry.get("FirstName") or entry.get("Email") or "Unknown").strip()
+                    if c_date and not first_comment_at:
+                        first_comment_at = c_date
+                    if c_date:
+                        last_comment_at = c_date
+                    if c_date:
+                        message_parts.append(f"[{c_date}] {author}: {c_text}")
+                    else:
+                        message_parts.append(f"{author}: {c_text}")
+
+                if len(message_parts) > 8:
+                    tail = message_parts[-8:]
+                    messages_blob = (
+                        f"{history_count} total comments. Showing latest 8 entries: " + " || ".join(tail)
+                    )
+                elif message_parts:
+                    messages_blob = f"{history_count} total comments: " + " || ".join(message_parts)
+                else:
+                    messages_blob = "No comment history available"
+
+                activity_meta = []
+                if first_comment_at:
+                    activity_meta.append(f"First comment: {first_comment_at}")
+                if last_comment_at:
+                    activity_meta.append(f"Last comment: {last_comment_at}")
+                if history_count:
+                    activity_meta.append(f"Comment count: {history_count}")
+
+                lines.append(
+                    f"Ticket #{tid}\n"
+                    f"Status bucket: {label}\n"
+                    f"Property: {t.get('customer_name') or 'Unknown'}\n"
+                    f"Title: {t.get('title') or '(untitled)'}\n"
+                    f"Opened: {t.get('created_at') or 'unknown'}\n"
+                    f"Last activity: {t.get('last_activity_at') or 'unknown'}\n"
+                    f"Resolved at: {t.get('resolved_at') or 'n/a'}\n"
+                    f"{'; '.join(activity_meta) if activity_meta else 'Comment count: 0'}\n"
+                    f"Messages: {messages_blob}"
+                )
+            return lines
 
         pending_lines: List[str] = []
         for t in pending_request_tickets:
@@ -1878,6 +1951,139 @@ async def get_reports_summary(
                                 )
                             if rewritten:
                                 pending_request_context = rewritten
+
+            open_lines = await _build_ticket_lines(open_request_tickets, "Open")
+            if open_lines:
+                open_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an IT operations analyst. Provide a pro-technician, forgiving summary for open tickets. "
+                            "Assume work is in progress and avoid blame language. "
+                            "Highlight active troubleshooting, communication, and practical next steps. "
+                            "Never frame open tickets as failure; frame them as active service pipeline work."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Create a per-ticket open-ticket summary for the {period_label}.\n"
+                            "Output one line per ticket in this format exactly: "
+                            "#<id> - <progress context from messages>. Next action: <supportive action>.\n"
+                            "Use Comment count, First comment, Last comment, and Messages fields to infer communication history.\n"
+                            "If Comment count > 1, emphasize ongoing progress and collaboration.\n"
+                            "Use plain text only, no markdown bullets or headings.\n\n"
+                            + "\n".join(open_lines)
+                        ),
+                    },
+                ]
+
+                if _looks_like_ollama_base_url(settings.openai_base_url):
+                    open_payload: Dict[str, Any] = {
+                        "model": settings.openai_model,
+                        "messages": open_messages,
+                        "stream": False,
+                        "think": False,
+                        "options": {
+                            "temperature": 0.25,
+                            "num_ctx": 32768,
+                        },
+                    }
+                    open_response = await http_client.post(
+                        _get_ollama_native_endpoint(settings.openai_base_url),
+                        headers=headers,
+                        json=open_payload,
+                    )
+                else:
+                    open_payload = {
+                        "model": settings.openai_model,
+                        "messages": open_messages,
+                        "temperature": 0.25,
+                        "stream": False,
+                    }
+                    open_response = await http_client.post(
+                        f"{settings.openai_base_url}/chat/completions",
+                        headers=headers,
+                        json=open_payload,
+                    )
+
+                if open_response.status_code < 400:
+                    open_body = open_response.json() if open_response.content else {}
+                    if _looks_like_ollama_base_url(settings.openai_base_url):
+                        open_request_context = (
+                            ((open_body.get("message") or {}).get("content") or "").strip() or None
+                        )
+                    else:
+                        open_choices = open_body.get("choices") or []
+                        open_request_context = (
+                            ((open_choices[0].get("message") or {}).get("content") or "").strip()
+                            if open_choices else None
+                        ) or None
+
+            resolved_lines = await _build_ticket_lines(resolved_request_tickets, "Resolved/Closed")
+            if resolved_lines:
+                resolved_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an IT operations analyst. Provide a strongly positive summary for resolved and closed tickets. "
+                            "Celebrate outcomes, technician follow-through, and service completion. "
+                            "Use confident, appreciative language while remaining factual and concise."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Create a per-ticket resolved/closed highlight summary for the {period_label}.\n"
+                            "Output one line per ticket in this format exactly: "
+                            "#<id> - <positive completion summary>. Impact: <business-friendly impact>.\n"
+                            "Use plain text only, no markdown bullets or headings.\n\n"
+                            + "\n".join(resolved_lines)
+                        ),
+                    },
+                ]
+
+                if _looks_like_ollama_base_url(settings.openai_base_url):
+                    resolved_payload: Dict[str, Any] = {
+                        "model": settings.openai_model,
+                        "messages": resolved_messages,
+                        "stream": False,
+                        "think": False,
+                        "options": {
+                            "temperature": 0.2,
+                            "num_ctx": 32768,
+                        },
+                    }
+                    resolved_response = await http_client.post(
+                        _get_ollama_native_endpoint(settings.openai_base_url),
+                        headers=headers,
+                        json=resolved_payload,
+                    )
+                else:
+                    resolved_payload = {
+                        "model": settings.openai_model,
+                        "messages": resolved_messages,
+                        "temperature": 0.2,
+                        "stream": False,
+                    }
+                    resolved_response = await http_client.post(
+                        f"{settings.openai_base_url}/chat/completions",
+                        headers=headers,
+                        json=resolved_payload,
+                    )
+
+                if resolved_response.status_code < 400:
+                    resolved_body = resolved_response.json() if resolved_response.content else {}
+                    if _looks_like_ollama_base_url(settings.openai_base_url):
+                        resolved_request_context = (
+                            ((resolved_body.get("message") or {}).get("content") or "").strip() or None
+                        )
+                    else:
+                        resolved_choices = resolved_body.get("choices") or []
+                        resolved_request_context = (
+                            ((resolved_choices[0].get("message") or {}).get("content") or "").strip()
+                            if resolved_choices else None
+                        ) or None
     except Exception as exc:  # noqa: BLE001
         ai_error = f"AI summary unavailable: {exc}"
 
@@ -1897,6 +2103,10 @@ async def get_reports_summary(
         result["pending_appendix"] = "Pending watchlist (net-neutral): " + " | ".join(pending_parts)
     if pending_request_context:
         result["pending_request_context"] = pending_request_context
+    if open_request_context:
+        result["open_request_context"] = open_request_context
+    if resolved_request_context:
+        result["resolved_request_context"] = resolved_request_context
     if ai_summary:
         result["ai_summary"] = ai_summary
     if ai_error:
