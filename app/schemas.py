@@ -253,3 +253,58 @@ class AddTicketCommentRequest(BaseModel):
             return None
         cleaned = _validate_email(value)
         return cleaned or None
+
+
+# ========================
+# Knowledgebase Models
+# ========================
+
+
+class CreateKBArticleRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    visibility_type: str = Field(..., pattern="^(public|admin_only|company_assigned|user_allowlist)$")
+    restricted_to_customer_id: Optional[int] = Field(None, ge=1)
+    content: str = Field(..., min_length=1, max_length=50000)
+
+    @field_validator("title")
+    @classmethod
+    def sanitize_title(cls, value: str) -> str:
+        cleaned = _sanitize_single_line(value, max_length=200)
+        if not cleaned:
+            raise ValueError("Title is required")
+        return cleaned
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, value: str) -> str:
+        cleaned = _sanitize_multiline(value, max_length=50000)
+        if not cleaned:
+            raise ValueError("Content is required")
+        return cleaned
+
+
+class UpdateKBArticleRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    visibility_type: Optional[str] = Field(None, pattern="^(public|admin_only|company_assigned|user_allowlist)$")
+    restricted_to_customer_id: Optional[int] = Field(None, ge=1)
+    content: Optional[str] = Field(None, min_length=1, max_length=50000)
+
+    @field_validator("title")
+    @classmethod
+    def sanitize_title(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = _sanitize_single_line(value, max_length=200)
+        return cleaned or None
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = _sanitize_multiline(value, max_length=50000)
+        return cleaned or None
+
+
+class GrantKBAccessRequest(BaseModel):
+    user_id: int = Field(..., gt=0)

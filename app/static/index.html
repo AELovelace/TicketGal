@@ -501,6 +501,74 @@
     </div>
   </div>
 
+  <div id="kb-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-modal-title">
+    <div class="ticket-viewer-panel kb-modal-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="kb-modal-title">Knowledgebase</h2>
+        <button id="kb-modal-close" type="button">Close</button>
+      </div>
+      <div class="kb-controls">
+        <div class="kb-search-box">
+          <input id="kb-search-input" type="search" placeholder="Search articles..." maxlength="200">
+          <button id="kb-search-btn" type="button">Search</button>
+        </div>
+        <button id="kb-new-article-btn" type="button" class="btn-admin-only" style="display:none;">New Article</button>
+      </div>
+      <div class="kb-content">
+        <div id="kb-articles-list" class="kb-articles-list"></div>
+        <div id="kb-article-viewer" class="kb-article-viewer hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="kb-editor-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-editor-title">
+    <div class="ticket-viewer-panel kb-editor-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="kb-editor-title">Edit Article</h2>
+        <button id="kb-editor-close" type="button">Close</button>
+      </div>
+      <div class="kb-editor-form">
+        <label>
+          Title
+          <input id="kb-editor-title" type="text" placeholder="Article title" maxlength="200" required>
+        </label>
+        <label>
+          Visibility
+          <select id="kb-editor-visibility">
+            <option value="public">Public (visible to all users)</option>
+            <option value="admin_only">Admin Only</option>
+            <option value="company_assigned">Company Assigned</option>
+            <option value="user_allowlist">User Allowlist</option>
+          </select>
+        </label>
+        <label id="kb-editor-customer-label" style="display:none;">
+          Restrict to Property
+          <select id="kb-editor-customer-id">
+            <option value="">-- Select a property --</option>
+          </select>
+        </label>
+        <label>
+          Content (Markdown)
+          <div id="kb-editor-codemirror"></div>
+        </label>
+        <div class="kb-editor-actions">
+          <button id="kb-editor-save" type="button">Save</button>
+          <button id="kb-editor-cancel" type="button">Cancel</button>
+          <button id="kb-editor-delete" type="button" class="btn-danger" style="display:none;">Delete</button>
+          <span id="kb-editor-status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CodeMirror 6 for markdown editing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.0.1/codemirror.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.0.1/codemirror.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@codemirror/lang-markdown/dist/index.min.js"></script>
+  
+  <!-- marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
   <script src="/static/app.js?v=20260407-2" defer></script>
 </body>
 </html>

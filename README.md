@@ -89,12 +89,14 @@ To harden password login against credential stuffing and brute-force attempts, c
 - `LOGIN_MAX_ATTEMPTS_PER_EMAIL` (default `5`)
 - `LOGIN_MAX_ATTEMPTS_PER_IP` (default `20`)
 - `LOGIN_LOCKOUT_MINUTES` (default `30`)
+- `LOGIN_LOCKOUT_EXEMPT_IPS` (optional, comma-separated IP allowlist, e.g. `127.0.0.1,10.0.0.25`)
 
 Behavior:
 
 - TicketGal tracks failed login attempts per email and per client IP.
 - If either threshold is exceeded within the configured window, password login is blocked with HTTP 429 until lockout expires.
 - A successful login clears the rate-limit counters for that email and client IP.
+- Requests from IPs listed in `LOGIN_LOCKOUT_EXEMPT_IPS` are exempt from lockout enforcement.
 
 ### Optional Microsoft 365 SSO Configuration
 

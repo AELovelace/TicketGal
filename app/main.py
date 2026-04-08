@@ -36,13 +36,19 @@ from .config import settings
 from .database import (
     approve_user,
     assign_user_property,
+    can_user_access_kb_article,
     clear_login_rate_limit_entry,
     clear_login_rate_limits,
+    create_kb_article,
     create_session,
     create_user,
+    delete_kb_article,
     delete_user,
     delete_session,
+    get_kb_article_by_slug,
+    get_kb_article_whitelist,
     get_session,
+    grant_kb_article_access,
     claim_due_transactions,
     enqueue_transaction,
     get_cached_ticket_by_id,
@@ -59,6 +65,7 @@ from .database import (
     init_db,
     link_user_microsoft_account,
     list_cached_ticket_comments,
+    list_kb_articles,
     list_pending_queue_creates,
     list_pending_queue_items_for_ticket,
     list_recent_transactions,
@@ -68,6 +75,7 @@ from .database import (
     replace_cached_ticket_comments,
     replace_ticket_cache_snapshot,
     reset_user_password,
+    revoke_kb_article_access,
     seed_admin,
     set_signups_enabled,
     set_user_theme_enabled,
@@ -76,6 +84,7 @@ from .database import (
     get_audit_log_page,
     get_login_lockout_until,
     record_login_failure,
+    update_kb_article,
     update_pending_queue_create_payload,
     upsert_cached_ticket,
     update_user_role,
@@ -86,12 +95,15 @@ from .schemas import (
     AdminClearLoginRateLimitRequest,
     AdminResetPasswordRequest,
     AdminUpdateRoleRequest,
+    CreateKBArticleRequest,
     CreateTicketRequest,
+    GrantKBAccessRequest,
     LoginRequest,
     RegisterRequest,
     TicketAiAssistRequest,
     TicketAiAssistResponse,
     TicketStatusUpdateRequest,
+    UpdateKBArticleRequest,
 )
 
 
@@ -206,6 +218,10 @@ def _get_client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return str(request.client.host).strip()[:64]
     return "unknown"
+
+
+def _is_lockout_exempt_ip(client_ip: str) -> bool:
+    return client_ip.strip().lower() in settings.login_lockout_exempt_ips
 
 
 def _microsoft_authority() -> str:
@@ -957,15 +973,17 @@ def register(request: RegisterRequest) -> Dict[str, Any]:
 def login(login_request: LoginRequest, request: Request, response: Response) -> Dict[str, Any]:
     email = normalize_email(login_request.email)
     client_ip = _get_client_ip(request)
+    lockout_exempt = _is_lockout_exempt_ip(client_ip)
 
-    lockout_until = get_login_lockout_until(email, client_ip)
+    lockout_until = None if lockout_exempt else get_login_lockout_until(email, client_ip)
     if lockout_until:
         log_audit_event(None, "auth.login.locked_out", None, json.dumps({"email": email, "ip": client_ip}))
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
 
     user = get_user_by_email(email)
     if not user:
-        record_login_failure(email, client_ip)
+        if not lockout_exempt:
+            record_login_failure(email, client_ip)
         log_audit_event(None, "auth.login.failed", None, json.dumps({"email": email, "ip": client_ip, "reason": "user_not_found"}))
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -982,12 +1000,14 @@ def login(login_request: LoginRequest, request: Request, response: Response) -> 
         raise HTTPException(status_code=403, detail="Account pending admin approval")
 
     if not user["password_hash"]:
-        record_login_failure(email, client_ip)
+        if not lockout_exempt:
+            record_login_failure(email, client_ip)
         log_audit_event(None, "auth.login.failed", int(user["id"]), json.dumps({"email": email, "ip": client_ip, "reason": "password_not_configured"}))
         raise HTTPException(status_code=401, detail="Account password is not configured")
 
     if not verify_password(login_request.password, user["password_hash"]):
-        record_login_failure(email, client_ip)
+        if not lockout_exempt:
+            record_login_failure(email, client_ip)
         log_audit_event(None, "auth.login.failed", int(user["id"]), json.dumps({"email": email, "ip": client_ip, "reason": "invalid_credentials"}))
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -2984,3 +3004,312 @@ async def get_reports_summary(
     if ai_error:
         result["ai_error"] = ai_error
     return result
+
+
+# ========================
+# Knowledgebase Endpoints
+# ========================
+
+
+@app.get("/api/knowledgebase/articles")
+async def list_kb_articles_endpoint(
+    page: int = Query(1, ge=1),
+    items_per_page: int = Query(10, ge=1, le=100),
+    search: str = Query("", max_length=200),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """List knowledgebase articles accessible to the current user."""
+    all_articles = list_kb_articles()
+    
+    # Filter by user access level
+    accessible = [a for a in all_articles if can_user_access_kb_article(user, a)]
+    
+    # Filter by search if provided
+    if search:
+        search_lower = search.lower()
+        accessible = [
+            a for a in accessible
+            if search_lower in str(a.get("title") or "").lower()
+        ]
+    
+    # Paginate
+    offset = (page - 1) * items_per_page
+    paginated = accessible[offset : offset + items_per_page]
+    
+    return {
+        "total": len(accessible),
+        "page": page,
+        "items_per_page": items_per_page,
+        "items": [
+            {
+                "id": a["id"],
+                "slug": a["slug"],
+                "title": a["title"],
+                "visibility_type": a["visibility_type"],
+                "created_at": a["created_at"],
+                "updated_at": a["updated_at"],
+            }
+            for a in paginated
+        ],
+    }
+
+
+@app.get("/api/knowledgebase/articles/{article_slug}")
+async def get_kb_article_endpoint(
+    article_slug: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Fetch a specific knowledgebase article by slug."""
+    article = get_kb_article_by_slug(article_slug)
+    
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    
+    if not can_user_access_kb_article(user, article):
+        raise HTTPException(status_code=403, detail="You do not have access to this article")
+    
+    # Read markdown content from disk
+    file_path = article.get("file_path")
+    content = ""
+    if file_path:
+        try:
+            path = Path(file_path)
+            if path.exists():
+                content = path.read_text(encoding="utf-8")
+        except Exception:
+            content = "(Content unavailable)"
+    
+    return {
+        "id": article["id"],
+        "slug": article["slug"],
+        "title": article["title"],
+        "visibility_type": article["visibility_type"],
+        "restricted_to_customer_id": article["restricted_to_customer_id"],
+        "content": content,
+        "created_at": article["created_at"],
+        "updated_at": article["updated_at"],
+        "created_by_user_id": article["created_by_user_id"],
+        "updated_by_user_id": article["updated_by_user_id"],
+    }
+
+
+def _generate_kb_slug(title: str) -> str:
+    """Generate a URL-safe slug from title."""
+    slug = title.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")
+    return slug[:80]
+
+
+@app.post("/api/knowledgebase/articles")
+async def create_kb_article_endpoint(
+    request: CreateKBArticleRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Create a new knowledgebase article (admin only)."""
+    require_admin(user)
+    
+    # Validate restricted_to_customer_id if company_assigned
+    if request.visibility_type == "company_assigned" and request.restricted_to_customer_id:
+        try:
+            properties = await client.list_properties(page=1, items_in_page=500)
+        except AteraApiError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        
+        items = properties.get("items", []) if isinstance(properties, dict) else []
+        if not any(item.get("CustomerID") == request.restricted_to_customer_id for item in items):
+            raise HTTPException(status_code=400, detail="Selected property not found in Atera")
+    
+    # Generate slug and ensure uniqueness
+    slug = _generate_kb_slug(request.title)
+    existing = get_kb_article_by_slug(slug)
+    if existing:
+        counter = 1
+        while get_kb_article_by_slug(f"{slug}-{counter}"):
+            counter += 1
+        slug = f"{slug}-{counter}"
+    
+    # Create file path  
+    visibility_dir = request.visibility_type
+    file_path = f"app/knowledgebase/{visibility_dir}/{slug}.md"
+    
+    # Write markdown to disk
+    try:
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(request.content, encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to write KB article to disk") from exc
+    
+    # Create database record
+    article = create_kb_article(
+        title=request.title,
+        slug=slug,
+        visibility_type=request.visibility_type,
+        content=request.content,
+        created_by_user_id=int(user["id"]),
+        restricted_to_customer_id=request.restricted_to_customer_id,
+        file_path=file_path,
+    )
+    
+    if not article:
+        raise HTTPException(status_code=500, detail="Failed to create KB article")
+    
+    log_audit_event(
+        int(user["id"]),
+        "kb.article.created",
+        None,
+        json.dumps({"article_id": article["id"], "slug": slug, "title": request.title}),
+    )
+    
+    return {
+        "id": article["id"],
+        "slug": article["slug"],
+        "title": article["title"],
+        "visibility_type": article["visibility_type"],
+        "created_at": article["created_at"],
+        "message": "Knowledgebase article created",
+    }
+
+
+@app.patch("/api/knowledgebase/articles/{article_slug}")
+async def update_kb_article_endpoint(
+    article_slug: str,
+    request: UpdateKBArticleRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Update a knowledgebase article (admin only)."""
+    require_admin(user)
+    
+    article = get_kb_article_by_slug(article_slug)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    
+    # Validate restricted_to_customer_id if being updated
+    if request.visibility_type == "company_assigned" and request.restricted_to_customer_id:
+        try:
+            properties = await client.list_properties(page=1, items_in_page=500)
+        except AteraApiError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        
+        items = properties.get("items", []) if isinstance(properties, dict) else []
+        if not any(item.get("CustomerID") == request.restricted_to_customer_id for item in items):
+            raise HTTPException(status_code=400, detail="Selected property not found in Atera")
+    
+    # Update content on disk if provided
+    if request.content:
+        file_path = article.get("file_path")
+        if file_path:
+            try:
+                path = Path(file_path)
+                path.write_text(request.content, encoding="utf-8")
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail="Failed to update KB article on disk") from exc
+    
+    # Update database record
+    update_kb_article(
+        article["id"],
+        title=request.title,
+        visibility_type=request.visibility_type,
+        restricted_to_customer_id=request.restricted_to_customer_id if request.restricted_to_customer_id else (None if request.visibility_type != "company_assigned" else article["restricted_to_customer_id"]),
+        updated_by_user_id=int(user["id"]),
+    )
+    
+    updated_article = get_kb_article_by_slug(article_slug)
+    
+    log_audit_event(
+        int(user["id"]),
+        "kb.article.updated",
+        None,
+        json.dumps({"article_id": article["id"], "slug": article_slug}),
+    )
+    
+    return {
+        "id": updated_article["id"],
+        "slug": updated_article["slug"],
+        "title": updated_article["title"],
+        "visibility_type": updated_article["visibility_type"],
+        "updated_at": updated_article["updated_at"],
+        "message": "Knowledgebase article updated",
+    }
+
+
+@app.delete("/api/knowledgebase/articles/{article_slug}")
+async def delete_kb_article_endpoint(
+    article_slug: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, str]:
+    """Delete (soft delete) a knowledgebase article (admin only)."""
+    require_admin(user)
+    
+    article = get_kb_article_by_slug(article_slug)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    
+    delete_kb_article(article["id"])
+    
+    log_audit_event(
+        int(user["id"]),
+        "kb.article.deleted",
+        None,
+        json.dumps({"article_id": article["id"], "slug": article_slug}),
+    )
+    
+    return {"message": "Knowledgebase article deleted"}
+
+
+@app.post("/api/knowledgebase/articles/{article_slug}/whitelist")
+async def grant_kb_access_endpoint(
+    article_slug: str,
+    request: GrantKBAccessRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, str]:
+    """Grant a user access to an article via allowlist (admin only)."""
+    require_admin(user)
+    
+    article = get_kb_article_by_slug(article_slug)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    
+    # Verify user exists
+    target_user = get_user_by_id(request.user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not grant_kb_article_access(article["id"], request.user_id, int(user["id"])):
+        raise HTTPException(status_code=400, detail="User already has access to this article")
+    
+    log_audit_event(
+        int(user["id"]),
+        "kb.article.access_granted",
+        request.user_id,
+        json.dumps({"article_id": article["id"], "slug": article_slug}),
+    )
+    
+    return {"message": "Access granted"}
+
+
+@app.delete("/api/knowledgebase/articles/{article_slug}/whitelist/{user_id}")
+async def revoke_kb_access_endpoint(
+    article_slug: str,
+    user_id: int,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, str]:
+    """Revoke a user's access to an article (admin only)."""
+    require_admin(user)
+    
+    article = get_kb_article_by_slug(article_slug)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    
+    if not revoke_kb_article_access(article["id"], user_id):
+        raise HTTPException(status_code=400, detail="User does not have allowlist access to this article")
+    
+    log_audit_event(
+        int(user["id"]),
+        "kb.article.access_revoked",
+        user_id,
+        json.dumps({"article_id": article["id"], "slug": article_slug}),
+    )
+    
+    return {"message": "Access revoked"}

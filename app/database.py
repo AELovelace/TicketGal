@@ -449,6 +449,68 @@ def _backfill_ticket_cache_dates() -> None:
             conn.commit()
 
 
+def _create_knowledgebase_schema() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledgebase_articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                visibility_type TEXT NOT NULL CHECK(visibility_type IN ('public', 'admin_only', 'company_assigned', 'user_allowlist')),
+                restricted_to_customer_id INTEGER,
+                file_path TEXT NOT NULL,
+                created_by_user_id INTEGER NOT NULL,
+                updated_by_user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_articles_visibility
+            ON knowledgebase_articles(visibility_type, is_active)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_articles_customer
+            ON knowledgebase_articles(restricted_to_customer_id, is_active)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_articles_active
+            ON knowledgebase_articles(is_active)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kb_article_user_whitelist (
+                article_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                granted_at TEXT NOT NULL,
+                granted_by_user_id INTEGER,
+                PRIMARY KEY (article_id, user_id),
+                FOREIGN KEY (article_id) REFERENCES knowledgebase_articles(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (granted_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_whitelist_user
+            ON kb_article_user_whitelist(user_id)
+            """
+        )
+        conn.commit()
+
+
 def init_db() -> None:
     _create_ticket_cache_schema()
     _backfill_ticket_cache_dates()
@@ -456,6 +518,7 @@ def init_db() -> None:
     _create_transactions_schema()
     _recover_in_progress_transactions()
     _migrate_legacy_ticket_cache_to_dedicated_db()
+    _create_knowledgebase_schema()
 
     with get_conn() as conn:
         conn.execute(
@@ -2050,3 +2113,257 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
         "open_request_tickets": open_request_tickets,
         "resolved_request_tickets": resolved_request_tickets,
     }
+
+
+# ===========================
+# Knowledgebase CRUD Functions
+# ===========================
+
+
+def create_kb_article(
+    title: str,
+    slug: str,
+    visibility_type: str,
+    content: str,
+    created_by_user_id: int,
+    restricted_to_customer_id: Optional[int] = None,
+    file_path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Create a new knowledgebase article and write markdown to disk."""
+    now = _utc_now_iso()
+    
+    with get_conn() as conn:
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO knowledgebase_articles(
+                    slug, title, visibility_type, restricted_to_customer_id, 
+                    file_path, created_by_user_id, updated_by_user_id, 
+                    created_at, updated_at, is_active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    slug,
+                    title,
+                    visibility_type,
+                    restricted_to_customer_id,
+                    file_path or f"app/knowledgebase/{visibility_type}/{slug}.md",
+                    created_by_user_id,
+                    created_by_user_id,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            article_id = cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+    
+    return get_kb_article_by_id(article_id)
+
+
+def get_kb_article_by_id(article_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch knowledgebase article by ID."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM knowledgebase_articles
+            WHERE id = ? AND is_active = 1
+            """,
+            (article_id,),
+        ).fetchone()
+    
+    if not row:
+        return None
+    
+    return dict(row)
+
+
+def get_kb_article_by_slug(slug: str) -> Optional[Dict[str, Any]]:
+    """Fetch knowledgebase article by slug."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM knowledgebase_articles
+            WHERE slug = ? AND is_active = 1
+            """,
+            (slug,),
+        ).fetchone()
+    
+    if not row:
+        return None
+    
+    return dict(row)
+
+
+def list_kb_articles(visibility_type: Optional[str] = None, include_inactive: bool = False) -> List[Dict[str, Any]]:
+    """List all knowledgebase articles, optionally filtered by visibility type."""
+    query = "SELECT * FROM knowledgebase_articles"
+    params: tuple = ()
+    
+    where_clauses = []
+    if not include_inactive:
+        where_clauses.append("is_active = 1")
+    if visibility_type:
+        where_clauses.append("visibility_type = ?")
+        params = (visibility_type,)
+    
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    
+    query += " ORDER BY created_at DESC"
+    
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    
+    return [dict(row) for row in rows]
+
+
+def update_kb_article(
+    article_id: int,
+    title: Optional[str] = None,
+    visibility_type: Optional[str] = None,
+    restricted_to_customer_id: Optional[int] = None,
+    updated_by_user_id: Optional[int] = None,
+) -> bool:
+    """Update knowledgebase article metadata."""
+    updates: List[str] = []
+    params: List[Any] = []
+    
+    if title is not None:
+        updates.append("title = ?")
+        params.append(title)
+    
+    if visibility_type is not None:
+        updates.append("visibility_type = ?")
+        params.append(visibility_type)
+    
+    if restricted_to_customer_id is not None or restricted_to_customer_id == 0:
+        updates.append("restricted_to_customer_id = ?")
+        params.append(restricted_to_customer_id if restricted_to_customer_id else None)
+    
+    if updated_by_user_id is not None:
+        updates.append("updated_by_user_id = ?")
+        params.append(updated_by_user_id)
+    
+    updates.append("updated_at = ?")
+    params.append(_utc_now_iso())
+    
+    params.append(article_id)
+    
+    with get_conn() as conn:
+        cursor = conn.execute(
+            f"UPDATE knowledgebase_articles SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    
+    return cursor.rowcount > 0
+
+
+def delete_kb_article(article_id: int) -> bool:
+    """Soft delete knowledgebase article."""
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "UPDATE knowledgebase_articles SET is_active = 0, updated_at = ? WHERE id = ?",
+            (_utc_now_iso(), article_id),
+        )
+        conn.commit()
+    
+    return cursor.rowcount > 0
+
+
+def grant_kb_article_access(article_id: int, user_id: int, granted_by_user_id: int) -> bool:
+    """Grant a user access to an article via allowlist."""
+    now = _utc_now_iso()
+    
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO kb_article_user_whitelist(
+                    article_id, user_id, granted_at, granted_by_user_id
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (article_id, user_id, now, granted_by_user_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            return False
+    
+    return True
+
+
+def revoke_kb_article_access(article_id: int, user_id: int) -> bool:
+    """Revoke a user's access to an article."""
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "DELETE FROM kb_article_user_whitelist WHERE article_id = ? AND user_id = ?",
+            (article_id, user_id),
+        )
+        conn.commit()
+    
+    return cursor.rowcount > 0
+
+
+def get_kb_article_whitelist(article_id: int) -> List[Dict[str, Any]]:
+    """Get all users with allowlist access to an article."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM kb_article_user_whitelist
+            WHERE article_id = ?
+            ORDER BY granted_at DESC
+            """,
+            (article_id,),
+        ).fetchall()
+    
+    return [dict(row) for row in rows]
+
+
+def user_has_kb_article_allowlist_access(article_id: int, user_id: int) -> bool:
+    """Check if user is on the allowlist for an article."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM kb_article_user_whitelist WHERE article_id = ? AND user_id = ?",
+            (article_id, user_id),
+        ).fetchone()
+    
+    return row is not None
+
+
+def can_user_access_kb_article(user: Dict[str, Any], article: Dict[str, Any]) -> bool:
+    """Check if user can access a knowledgebase article based on visibility rules."""
+    # Admins can access all articles
+    if user.get("role") == "admin":
+        return True
+    
+    visibility_type = article.get("visibility_type")
+    
+    # Public articles visible to everyone
+    if visibility_type == "public":
+        return True
+    
+    # Admin-only articles not visible to users
+    if visibility_type == "admin_only":
+        return False
+    
+    # Company-assigned articles: check user's property_customer_id
+    if visibility_type == "company_assigned":
+        user_customer_id = user.get("property_customer_id")
+        article_customer_id = article.get("restricted_to_customer_id")
+        if user_customer_id and article_customer_id and user_customer_id == article_customer_id:
+            return True
+        return False
+    
+    # User allowlist articles: check if user is in whitelist
+    if visibility_type == "user_allowlist":
+        user_id = user.get("id")
+        article_id = article.get("id")
+        if user_id and article_id:
+            return user_has_kb_article_allowlist_access(article_id, user_id)
+        return False
+    
+    return False

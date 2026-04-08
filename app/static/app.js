@@ -3372,3 +3372,380 @@ async function refreshMe() {
 }
 
 refreshMe();
+
+// ========================
+// Knowledgebase Module
+// ========================
+
+let kbCurrentArticle = null;
+let kbProperties = [];
+let kbEditor = null;
+
+const kbModal = document.getElementById("kb-modal");
+const kbModalClose = document.getElementById("kb-modal-close");
+const kbEditorModal = document.getElementById("kb-editor-modal");
+const kbEditorClose = document.getElementById("kb-editor-close");
+const kbSearchInput = document.getElementById("kb-search-input");
+const kbSearchBtn = document.getElementById("kb-search-btn");
+const kbNewArticleBtn = document.getElementById("kb-new-article-btn");
+const kbArticlesList = document.getElementById("kb-articles-list");
+const kbArticleViewer = document.getElementById("kb-article-viewer");
+const kbEditorTitle = document.getElementById("kb-editor-title");
+const kbEditorTitleInput = document.getElementById("kb-editor-title");
+const kbEditorVisibility = document.getElementById("kb-editor-visibility");
+const kbEditorCustomerLabel = document.getElementById("kb-editor-customer-label");
+const kbEditorCustomerId = document.getElementById("kb-editor-customer-id");
+const kbEditorSave = document.getElementById("kb-editor-save");
+const kbEditorCancel = document.getElementById("kb-editor-cancel");
+const kbEditorDelete = document.getElementById("kb-editor-delete");
+const kbEditorStatus = document.getElementById("kb-editor-status");
+
+function openKBModal() {
+  if (!kbModal) return;
+  kbModal.classList.remove("hidden");
+  loadKBArticles();
+}
+
+function closeKBModal() {
+  if (!kbModal) return;
+  kbModal.classList.add("hidden");
+  kbCurrentArticle = null;
+  kbArticleViewer.classList.add("hidden");
+  kbArticleViewer.innerHTML = "";
+}
+
+async function loadKBArticles(search = "") {
+  if (!kbArticlesList) return;
+  kbArticlesList.innerHTML = '<p class="muted">Loading articles...</p>';
+  
+  try {
+    const query = search ? `?search=${encodeURIComponent(search)}` : "";
+    const result = await api(`/api/knowledgebase/articles${query}`);
+    kbArticlesList.innerHTML = "";
+    
+    if (!result.items || result.items.length === 0) {
+      kbArticlesList.innerHTML = '<p class="muted">No articles found.</p>';
+      return;
+    }
+    
+    result.items.forEach((article) => {
+      const item = document.createElement("div");
+      item.className = "kb-article-item";
+      item.innerHTML = `
+        <div class="kb-article-title">${safeText(article.title)}</div>
+        <span class="kb-article-badge kb-badge-${article.visibility_type}">${safeText(article.visibility_type).replace(/_/g, " ")}</span>
+      `;
+      item.addEventListener("click", () => displayKBArticle(article.slug));
+      kbArticlesList.appendChild(item);
+    });
+  } catch (error) {
+    kbArticlesList.innerHTML = `<p class="muted error">Failed to load articles: ${safeText(error.message)}</p>`;
+  }
+}
+
+async function displayKBArticle(slug) {
+  try {
+    const article = await api(`/api/knowledgebase/articles/${slug}`);
+    kbCurrentArticle = article;
+    
+    // Highlight selected article in list
+    const items = document.querySelectorAll(".kb-article-item");
+    items.forEach((item) => item.classList.remove("active"));
+    items.forEach((item) => {
+      if (item.querySelector(".kb-article-title").textContent === article.title) {
+        item.classList.add("active");
+      }
+    });
+    
+    // Render article content
+    kbArticleViewer.classList.remove("hidden");
+    const isAdmin = currentUser && currentUser.role === "admin";
+    const editBtn = isAdmin ? `<button id="kb-edit-article-btn" type="button">Edit</button>` : "";
+    
+    kbArticleViewer.innerHTML = `
+      <div class="kb-article-header">
+        <h1>${safeText(article.title)}</h1>
+        <div class="kb-article-actions">
+          ${editBtn}
+        </div>
+      </div>
+      <div class="kb-article-content" id="kb-article-markdown"></div>
+    `;
+    
+    // Render markdown content using marked.js if available, otherwise plain text
+    const markdownEl = document.getElementById("kb-article-markdown");
+    if (markdownEl) {
+      if (typeof marked !== "undefined") {
+        markdownEl.innerHTML = marked(article.content || "");
+        sanitizeElement(markdownEl);
+      } else {
+        markdownEl.textContent = article.content || "";
+      }
+    }
+    
+    // Add edit button listener if admin
+    if (isAdmin) {
+      const editBtn = document.getElementById("kb-edit-article-btn");
+      if (editBtn) {
+        editBtn.addEventListener("click", () => openKBEditor(article));
+      }
+    }
+  } catch (error) {
+    kbArticleViewer.classList.remove("hidden");
+    kbArticleViewer.innerHTML = `<p class="muted error">Failed to load article: ${safeText(error.message)}</p>`;
+  }
+}
+
+async function openKBEditor(article = null) {
+  if (!kbEditorModal) return;
+  
+  // Show/hide delete button based on edit vs create
+  if (kbEditorDelete) {
+    kbEditorDelete.style.display = article ? "block" : "none";
+  }
+  
+  // Populate form
+  if (kbEditorTitleInput) {
+    kbEditorTitleInput.value = article ? article.title : "";
+  }
+  if (kbEditorVisibility) {
+    kbEditorVisibility.value = article ? article.visibility_type : "public";
+  }
+  if (kbEditorCustomerId) {
+    kbEditorCustomerId.value = article ? (article.restricted_to_customer_id || "") : "";
+  }
+  
+  // Load properties if needed
+  if (!kbProperties.length && currentUser && currentUser.role === "admin") {
+    await loadKBProperties();
+  }
+  
+  // Update visibility label
+  updateKBVisibilityLabel();
+  
+  // Initialize CodeMirror container
+  initializeCodeMirrorContainer();
+  
+  // Set editor content (use fallback if CodeMirror not available)
+  const contentFallback = document.getElementById("kb-content-fallback");
+  if (contentFallback) {
+    contentFallback.value = article ? (article.content || "") : "";
+  }
+  
+  kbEditorModal.classList.remove("hidden");
+}
+
+function closeKBEditor() {
+  if (!kbEditorModal) return;
+  kbEditorModal.classList.add("hidden");
+  kbCurrentArticle = null;
+  if (kbEditorStatus) {
+    kbEditorStatus.textContent = "";
+  }
+}
+
+function initializeCodeMirrorContainer() {
+  const container = document.getElementById("kb-editor-codemirror");
+  if (!container) return;
+  if (container.querySelector("textarea")) return; // Already initialized
+  
+  // Create fallback textarea if CodeMirror not available
+  const textarea = document.createElement("textarea");
+  textarea.id = "kb-content-fallback";
+  textarea.rows = 15;
+  textarea.style.width = "100%";
+  textarea.style.padding = "0.75rem";
+  textarea.style.fontFamily = '"Courier New", monospace';
+  textarea.style.fontSize = "0.9rem";
+  textarea.style.border = "1px solid #ccbfa3";
+  textarea.style.borderRadius = "6px";
+  container.appendChild(textarea);
+}
+
+async function loadKBProperties() {
+  try {
+    const result = await api("/api/admin/properties");
+    kbProperties = result.items || [];
+    
+    // Populate customer dropdown
+    if (kbEditorCustomerId) {
+      const options = kbProperties.map((p) => `<option value="${p.CustomerID}">${safeText(p.CustomerName)}</option>`).join("");
+      kbEditorCustomerId.innerHTML = '<option value="">-- Select a property --</option>' + options;
+    }
+  } catch (error) {
+    console.error("Failed to load properties:", error);
+  }
+}
+
+function updateKBVisibilityLabel() {
+  if (!kbEditorVisibility || !kbEditorCustomerLabel) return;
+  const visibility = kbEditorVisibility.value;
+  kbEditorCustomerLabel.style.display = visibility === "company_assigned" ? "block" : "none";
+}
+
+async function saveKBArticle() {
+  if (!kbEditorTitleInput || !kbEditorVisibility || !kbEditorStatus) return;
+  
+  const title = kbEditorTitleInput.value.trim();
+  const visibility = kbEditorVisibility.value;
+  const customerId = kbEditorCustomerId && kbEditorCustomerId.value ? parseInt(kbEditorCustomerId.value) : null;
+  const contentFallback = document.getElementById("kb-content-fallback");
+  const content = contentFallback ? contentFallback.value : "";
+  
+  if (!title || !content) {
+    kbEditorStatus.textContent = "Title and content are required.";
+    return;
+  }
+  
+  kbEditorStatus.textContent = "Saving...";
+  
+  try {
+    const isEdit = kbCurrentArticle && kbCurrentArticle.id;
+    const method = isEdit ? "PATCH" : "POST";
+    const url = isEdit ? `/api/knowledgebase/articles/${kbCurrentArticle.slug}` : "/api/knowledgebase/articles";
+    
+    const request = {
+      title,
+      visibility_type: visibility,
+      content,
+      ...(visibility === "company_assigned" && customerId ? { restricted_to_customer_id: customerId } : {})
+    };
+    
+    const result = await api(url, {
+      method,
+      body: JSON.stringify(request),
+      headers: { "Content-Type": "application/json" }
+    });
+    
+    kbEditorStatus.textContent = "Saved successfully!";
+    setTimeout(() => {
+      closeKBEditor();
+      loadKBArticles();
+    }, 800);
+  } catch (error) {
+    kbEditorStatus.textContent = `Error: ${safeText(error.message)}`;
+  }
+}
+
+async function deleteKBArticle() {
+  if (!kbCurrentArticle || !kbCurrentArticle.slug) return;
+  
+  if (!confirm("Are you sure you want to delete this article?")) {
+    return;
+  }
+  
+  if (!kbEditorStatus) return;
+  kbEditorStatus.textContent = "Deleting...";
+  
+  try {
+    await api(`/api/knowledgebase/articles/${kbCurrentArticle.slug}`, { method: "DELETE" });
+    kbEditorStatus.textContent = "Deleted successfully!";
+    setTimeout(() => {
+      closeKBEditor();
+      loadKBArticles();
+    }, 800);
+  } catch (error) {
+    kbEditorStatus.textContent = `Error: ${safeText(error.message)}`;
+  }
+}
+
+function sanitizeElement(el) {
+  // Remove dangerous tags and attributes
+  const allowedTags = ["p", "a", "img", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "code", "pre", "span", "div", "br", "strong", "em", "u"];
+  const allowedAttrs = ["href", "src", "alt", "class"];
+  
+  const walker = document.createTreeWalker(
+    el,
+    NodeFilter.SHOW_ELEMENT,
+    null,
+    false
+  );
+  
+  const nodesToRemove = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!allowedTags.includes(node.tagName.toLowerCase())) {
+      nodesToRemove.push(node);
+    } else {
+      // Remove disallowed attributes
+      const attrs = Array.from(node.attributes);
+      attrs.forEach((attr) => {
+        if (!allowedAttrs.includes(attr.name)) {
+          node.removeAttribute(attr.name);
+        }
+      });
+      
+      // Validate href for security
+      if (node.tagName.toLowerCase() === "a" && node.href) {
+        if (!isSafeCommentHref(node.href)) {
+          node.removeAttribute("href");
+        }
+      }
+    }
+  }
+  
+  nodesToRemove.forEach((node) => {
+    while (node.firstChild) {
+      node.parentNode.insertBefore(node.firstChild, node);
+    }
+    node.parentNode.removeChild(node);
+  });
+}
+
+// Event listeners
+if (kbModalClose) {
+  kbModalClose.addEventListener("click", closeKBModal);
+}
+
+if (kbSearchBtn) {
+  kbSearchBtn.addEventListener("click", () => {
+    const query = kbSearchInput ? kbSearchInput.value : "";
+    loadKBArticles(query);
+  });
+}
+
+if (kbSearchInput) {
+  kbSearchInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      kbSearchBtn?.click();
+    }
+  });
+}
+
+if (kbNewArticleBtn) {
+  kbNewArticleBtn.addEventListener("click", () => openKBEditor());
+}
+
+if (kbEditorClose) {
+  kbEditorClose.addEventListener("click", closeKBEditor);
+}
+
+if (kbEditorVisibility) {
+  kbEditorVisibility.addEventListener("change", updateKBVisibilityLabel);
+}
+
+if (kbEditorSave) {
+  kbEditorSave.addEventListener("click", saveKBArticle);
+}
+
+if (kbEditorCancel) {
+  kbEditorCancel.addEventListener("click", closeKBEditor);
+}
+
+if (kbEditorDelete) {
+  kbEditorDelete.addEventListener("click", deleteKBArticle);
+}
+
+// Show/hide KB button based on user role
+function updateKBButtonVisibility() {
+  if (!kbNewArticleBtn || !currentUser) return;
+  kbNewArticleBtn.style.display = currentUser.role === "admin" ? "block" : "none";
+}
+
+// Update KB button visibility after user loads
+const origRefreshMe = window.refreshMe;
+if (typeof origRefreshMe === "function") {
+  setTimeout(() => {
+    updateKBButtonVisibility();
+  }, 100);
+}

@@ -40,6 +40,11 @@ class Settings:
         self.login_max_attempts_per_email = max(1, int(os.getenv("LOGIN_MAX_ATTEMPTS_PER_EMAIL", "5")))
         self.login_max_attempts_per_ip = max(1, int(os.getenv("LOGIN_MAX_ATTEMPTS_PER_IP", "20")))
         self.login_lockout_minutes = max(1, int(os.getenv("LOGIN_LOCKOUT_MINUTES", "30")))
+        self.login_lockout_exempt_ips = {
+            ip.strip().lower()
+            for ip in os.getenv("LOGIN_LOCKOUT_EXEMPT_IPS", "").split(",")
+            if ip.strip()
+        }
         self.allowed_domains = [
             domain.strip().lower()
             for domain in os.getenv(
