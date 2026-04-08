@@ -91,7 +91,7 @@ if [[ "$AUTO_KILL_PORT_CLI" == "1" || "$auto_kill_port_flag" == "1" || "$auto_ki
   auto_kill_port_enabled=1
 fi
 
-preferred_venv_python="/home/ticketgal/TicketGal/bin/python"
+preferred_venv_python="/home/ticketgal/TicketGal/.venv/bin/python"
 
 if [[ "$port" =~ ^[0-9]+$ ]] && (( port < 1024 )) && [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   has_bind_cap=0

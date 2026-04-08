@@ -22,7 +22,6 @@ APP_GROUP="ticketgal"
 INSTALL_DIR="/home/${APP_USER}/TicketGal"
 VENV_DIR="${INSTALL_DIR}/.venv"
 SERVICE_FILE="/etc/systemd/system/ticketgal.service"
-CERT_DIR="${INSTALL_DIR}/certs"
 MIN_PYTHON_MINOR=11          # Require Python 3.11+
 
 # ── 1. System packages ────────────────────────────────────────
@@ -97,13 +96,18 @@ if [[ ! -f "$ENV_FILE" ]]; then
     info "Creating .env template at ${ENV_FILE}…"
     cat > "$ENV_FILE" <<'EOF'
 # ── Server ────────────────────────────────────────────────────
-HOST=0.0.0.0
-PORT=443
-PUBLIC_BASE_URL=https://your-server-hostname
+HOST=127.0.0.1
+PORT=8000
+# Set PUBLIC_BASE_URL when running behind nginx or another reverse proxy.
+# Example: https://tickets.example.com
+PUBLIC_BASE_URL=
 
-# ── TLS (leave blank to disable HTTPS) ───────────────────────
-SSL_CERT_FILE=certs/cert.pem
-SSL_KEY_FILE=certs/key.pem
+# ── Optional direct app TLS (keep disabled behind nginx) ─────
+HTTPS_ENABLED=0
+AUTO_GENERATE_DEV_CERT=1
+TICKETGAL_SSL_CERT_FILE=certs/dev-cert.pem
+TICKETGAL_SSL_KEY_FILE=certs/dev-key.pem
+TICKETGAL_SSL_HOSTS=ticketgal.localdomain.internal,localhost,127.0.0.1
 
 # ── Atera ─────────────────────────────────────────────────────
 ATERA_API_KEY=
@@ -145,57 +149,30 @@ else
     info ".env already exists – skipping template creation."
 fi
 
-# ── 6. Generate self-signed TLS certificate (if not present) ──
-mkdir -p "$CERT_DIR"
-CERT_FILE="${CERT_DIR}/cert.pem"
-KEY_FILE="${CERT_DIR}/key.pem"
-
-if [[ ! -f "$CERT_FILE" || ! -f "$KEY_FILE" ]]; then
-    info "Generating self-signed TLS certificate…"
-    if [[ -f "${INSTALL_DIR}/scripts/generate_self_signed_cert.py" ]]; then
-        "${VENV_DIR}/bin/python" "${INSTALL_DIR}/scripts/generate_self_signed_cert.py" \
-            --cert "$CERT_FILE" --key "$KEY_FILE" \
-            --host "$(hostname -f)" \
-            2>/dev/null || true
-    fi
-    # Fallback to openssl if the script failed or isn't present
-    if [[ ! -f "$CERT_FILE" ]]; then
-        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout "$KEY_FILE" -out "$CERT_FILE" \
-            -subj "/CN=$(hostname -f)/O=TicketGal" \
-            -addext "subjectAltName=DNS:$(hostname -f),IP:$(hostname -I | awk '{print $1}')" \
-            2>/dev/null
-    fi
-    chmod 640 "$CERT_FILE" "$KEY_FILE"
-    success "TLS certificate written to ${CERT_DIR}."
-else
-    info "TLS certificate already exists – skipping generation."
-fi
-
-# ── 7. Ensure start-prod.sh is executable ─────────────────────
+# ── 6. Ensure start-prod.sh is executable ─────────────────────
 chmod +x "${INSTALL_DIR}/start-prod.sh"
+chmod +x "${INSTALL_DIR}/scripts/install_nginx_modsecurity.sh"
 
-# ── 8. Fix ownership ──────────────────────────────────────────
+# ── 7. Fix ownership ──────────────────────────────────────────
 info "Setting ownership of ${INSTALL_DIR} to ${APP_USER}:${APP_GROUP}…"
 chown -R "${APP_USER}:${APP_GROUP}" "$INSTALL_DIR"
 
-# Protect the .env and private key
+# Protect the .env
 chmod 600 "$ENV_FILE"
-chmod 640 "$KEY_FILE"
 success "Permissions set."
 
-# ── 9. Grant port-binding capability (avoids running as root) ──
-UVICORN_BIN="${VENV_DIR}/bin/uvicorn"
+# ── 8. Grant port-binding capability for optional low-port direct bind ──
+PYTHON_EXECUTABLE="${VENV_DIR}/bin/python"
 if command -v setcap &>/dev/null; then
-    info "Granting CAP_NET_BIND_SERVICE to uvicorn binary…"
-    setcap 'cap_net_bind_service=+ep' "$UVICORN_BIN" || \
+    info "Granting CAP_NET_BIND_SERVICE to Python executable for optional direct low-port bind…"
+    setcap 'cap_net_bind_service=+ep' "$PYTHON_EXECUTABLE" || \
         warn "setcap failed – if binding port <1024 the service user may need additional privileges."
 else
     apt-get install -y -qq libcap2-bin
-    setcap 'cap_net_bind_service=+ep' "$UVICORN_BIN" || true
+    setcap 'cap_net_bind_service=+ep' "$PYTHON_EXECUTABLE" || true
 fi
 
-# ── 10. Install & enable systemd service ──────────────────────
+# ── 9. Install & enable systemd service ──────────────────────
 info "Installing systemd service…"
 
 # Write the service file (derived from ticketgal.service in repo)
@@ -246,11 +223,11 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo -e "  Install directory : ${CYAN}${INSTALL_DIR}${NC}"
 echo -e "  Config file       : ${CYAN}${ENV_FILE}${NC}"
-echo -e "  TLS certificate   : ${CYAN}${CERT_DIR}${NC}"
 echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
 echo -e "  1. Edit the config:  sudo nano ${ENV_FILE}"
-echo -e "  2. Start the service: sudo systemctl start ticketgal"
-echo -e "  3. Check status:      sudo systemctl status ticketgal"
-echo -e "  4. View logs:         sudo journalctl -u ticketgal -f"
+echo -e "  2. Start the app service: sudo systemctl start ticketgal"
+echo -e "  3. Optional reverse proxy: sudo bash ${INSTALL_DIR}/scripts/install_nginx_modsecurity.sh --server-name your-hostname"
+echo -e "  4. Check app status:     sudo systemctl status ticketgal"
+echo -e "  5. View logs:            sudo journalctl -u ticketgal -f"
 echo ""

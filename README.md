@@ -196,6 +196,51 @@ When running behind nginx (or another reverse proxy doing TLS termination), keep
 - Configure nginx to send `X-Forwarded-Proto: https`
 - Set `PUBLIC_BASE_URL` to your external HTTPS URL if you want fixed callback URLs, otherwise leave it blank to derive from request host.
 
+### Optional nginx + ModSecurity Edge
+
+This repo now includes a package-based Ubuntu bootstrap for running TicketGal behind nginx with ModSecurity v3 and OWASP CRS in front of the internal Uvicorn service.
+
+Recommended app settings for this mode:
+
+- `HOST=127.0.0.1`
+- `PORT=8000`
+- `HTTPS_ENABLED=0`
+- `PUBLIC_BASE_URL=https://your-public-hostname`
+
+Repo assets:
+
+- `deploy/nginx/ticketgal-http.conf.template`
+- `deploy/nginx/ticketgal-https.conf.template`
+- `deploy/modsecurity/modsecurity-ticketgal.conf`
+- `deploy/modsecurity/crs-setup-ticketgal.conf`
+- `deploy/modsecurity/ticketgal-exclusions.conf`
+- `scripts/install_nginx_modsecurity.sh`
+
+Ubuntu install example:
+
+```bash
+sudo bash scripts/install_nginx_modsecurity.sh --server-name tickets.example.com
+```
+
+With nginx-managed TLS:
+
+```bash
+sudo bash scripts/install_nginx_modsecurity.sh \
+   --server-name tickets.example.com \
+   --tls-cert /etc/letsencrypt/live/tickets.example.com/fullchain.pem \
+   --tls-key /etc/letsencrypt/live/tickets.example.com/privkey.pem
+```
+
+What the installer does:
+
+- Installs `nginx`, `libnginx-mod-http-modsecurity`, and `modsecurity-crs`
+- Places TicketGal-specific ModSecurity policy under `/etc/nginx/modsec/ticketgal`
+- Writes an nginx site that proxies to `127.0.0.1:8000`
+- Starts ModSecurity in `DetectionOnly` mode with CRS paranoia level 1
+- Enables `X-Forwarded-*` headers expected by the app
+
+Blocking mode is intentionally not the default. Review `/var/log/nginx/modsec_audit.log`, tune exclusions, then rerun with `--enable-blocking` or promote the generated config manually after normal traffic is clean.
+
 ## Workflow Notes
 
 - On startup, the app initializes SQLite tables and seeds the admin account from ADMIN_EMAIL/ADMIN_PASSWORD if it does not already exist.
