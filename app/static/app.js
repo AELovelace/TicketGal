@@ -64,6 +64,21 @@ const passwordResetInput = document.getElementById("password-reset-input");
 const passwordResetSubmit = document.getElementById("password-reset-submit");
 const passwordResetStatus = document.getElementById("password-reset-status");
 
+// Audit log modal elements
+const auditLogModal = document.getElementById("audit-log-modal");
+const auditLogClose = document.getElementById("audit-log-close");
+const auditLogBody = document.getElementById("audit-log-body");
+const auditLogStatus = document.getElementById("audit-log-status");
+const auditLogActionFilter = document.getElementById("audit-log-action-filter");
+const auditLogFilterBtn = document.getElementById("audit-log-filter-btn");
+const auditLogResetBtn = document.getElementById("audit-log-reset-btn");
+const auditLogPrev = document.getElementById("audit-log-prev");
+const auditLogNext = document.getElementById("audit-log-next");
+const auditLogPageInfo = document.getElementById("audit-log-page-info");
+
+let auditLogOffset = 0;
+const AUDIT_LOG_PAGE_SIZE = 50;
+
 let currentResetUserId = null;
 
 if (userSearchInput) {
@@ -956,6 +971,105 @@ async function clearLockoutEntry(keyType, keyValue) {
     if (lockoutStatusEl) {
       lockoutStatusEl.textContent = `Failed to clear lockout: ${error.message}`;
     }
+  }
+}
+
+function openAuditLogModal() {
+  if (!auditLogModal) return;
+  auditLogOffset = 0;
+  if (auditLogActionFilter) auditLogActionFilter.value = "";
+  auditLogModal.classList.remove("hidden");
+  auditLogModal.focus();
+  loadAuditLog();
+}
+
+function closeAuditLogModal() {
+  if (auditLogModal) auditLogModal.classList.add("hidden");
+}
+
+async function loadAuditLog() {
+  if (!auditLogBody || currentUser?.role !== "admin") return;
+
+  const actionFilter = safeText(auditLogActionFilter?.value || "").trim();
+  const params = new URLSearchParams({
+    limit: String(AUDIT_LOG_PAGE_SIZE),
+    offset: String(auditLogOffset),
+  });
+  if (actionFilter) params.set("action", actionFilter);
+
+  if (auditLogStatus) auditLogStatus.textContent = "Loading...";
+  if (auditLogPrev) auditLogPrev.disabled = true;
+  if (auditLogNext) auditLogNext.disabled = true;
+
+  try {
+    const data = await api(`/api/admin/audit-log?${params.toString()}`);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const total = Number(data?.total || 0);
+
+    auditLogBody.innerHTML = "";
+    if (!items.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.className = "muted";
+      cell.textContent = "No audit log entries found.";
+      row.appendChild(cell);
+      auditLogBody.appendChild(row);
+    } else {
+      items.forEach((entry) => {
+        const tr = document.createElement("tr");
+
+        const tdTime = document.createElement("td");
+        tdTime.className = "audit-col-time";
+        tdTime.textContent = formatUiDateTime(entry?.created_at);
+        tr.appendChild(tdTime);
+
+        const tdAction = document.createElement("td");
+        tdAction.className = "audit-col-action";
+        const actionBadge = document.createElement("span");
+        const action = safeText(entry?.action);
+        actionBadge.className = `audit-action-badge audit-action-${action.split(".")[0]}`;
+        actionBadge.textContent = action;
+        tdAction.appendChild(actionBadge);
+        tr.appendChild(tdAction);
+
+        const tdActor = document.createElement("td");
+        tdActor.textContent = safeText(entry?.actor_email) || (entry?.actor_user_id ? `#${entry.actor_user_id}` : "system");
+        tr.appendChild(tdActor);
+
+        const tdTarget = document.createElement("td");
+        tdTarget.textContent = safeText(entry?.target_email) || (entry?.target_user_id ? `#${entry.target_user_id}` : "—");
+        tr.appendChild(tdTarget);
+
+        const tdMeta = document.createElement("td");
+        tdMeta.className = "audit-col-meta";
+        if (entry?.metadata) {
+          try {
+            const parsed = JSON.parse(entry.metadata);
+            const parts = Object.entries(parsed)
+              .filter(([, v]) => v !== null && v !== undefined && v !== "")
+              .map(([k, v]) => `${k}: ${v}`);
+            tdMeta.textContent = parts.join("  ");
+          } catch {
+            tdMeta.textContent = safeText(entry.metadata);
+          }
+        } else {
+          tdMeta.textContent = "—";
+        }
+        tr.appendChild(tdMeta);
+
+        auditLogBody.appendChild(tr);
+      });
+    }
+
+    const pageNum = Math.floor(auditLogOffset / AUDIT_LOG_PAGE_SIZE) + 1;
+    const totalPages = Math.max(1, Math.ceil(total / AUDIT_LOG_PAGE_SIZE));
+    if (auditLogPageInfo) auditLogPageInfo.textContent = `Page ${pageNum} of ${totalPages}  (${total} total)`;
+    if (auditLogPrev) auditLogPrev.disabled = auditLogOffset <= 0;
+    if (auditLogNext) auditLogNext.disabled = auditLogOffset + AUDIT_LOG_PAGE_SIZE >= total;
+    if (auditLogStatus) auditLogStatus.textContent = "";
+  } catch (error) {
+    if (auditLogStatus) auditLogStatus.textContent = `Failed to load audit log: ${error.message}`;
   }
 }
 
@@ -3024,10 +3138,57 @@ if (passwordResetInput) {
   });
 }
 
+const openAuditLogBtn = document.getElementById("open-audit-log-btn");
+if (openAuditLogBtn) {
+  openAuditLogBtn.addEventListener("click", openAuditLogModal);
+}
+if (auditLogClose) {
+  auditLogClose.addEventListener("click", closeAuditLogModal);
+}
+if (auditLogModal) {
+  auditLogModal.addEventListener("click", (event) => {
+    if (event.target === auditLogModal) closeAuditLogModal();
+  });
+}
+if (auditLogFilterBtn) {
+  auditLogFilterBtn.addEventListener("click", () => {
+    auditLogOffset = 0;
+    loadAuditLog();
+  });
+}
+if (auditLogResetBtn) {
+  auditLogResetBtn.addEventListener("click", () => {
+    if (auditLogActionFilter) auditLogActionFilter.value = "";
+    auditLogOffset = 0;
+    loadAuditLog();
+  });
+}
+if (auditLogActionFilter) {
+  auditLogActionFilter.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") {
+      auditLogOffset = 0;
+      loadAuditLog();
+    }
+  });
+}
+if (auditLogPrev) {
+  auditLogPrev.addEventListener("click", () => {
+    auditLogOffset = Math.max(0, auditLogOffset - AUDIT_LOG_PAGE_SIZE);
+    loadAuditLog();
+  });
+}
+if (auditLogNext) {
+  auditLogNext.addEventListener("click", () => {
+    auditLogOffset += AUDIT_LOG_PAGE_SIZE;
+    loadAuditLog();
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeTicketViewer();
     closePasswordResetModal();
+    closeAuditLogModal();
   }
 });
 

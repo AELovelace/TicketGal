@@ -1702,6 +1702,71 @@ def log_audit_event(
         conn.commit()
 
 
+def get_audit_log_page(
+    limit: int = 100,
+    offset: int = 0,
+    action_filter: Optional[str] = None,
+    actor_user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return a page of audit log rows, newest first, with optional filtering."""
+    where_parts: list = []
+    params: list = []
+
+    if action_filter:
+        where_parts.append("a.action LIKE ?")
+        params.append(f"%{action_filter.strip()}%")
+    if actor_user_id is not None:
+        where_parts.append("a.actor_user_id = ?")
+        params.append(actor_user_id)
+
+    where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    count_params = list(params)
+    page_params = list(params) + [limit, offset]
+
+    with get_conn() as conn:
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM audit_log a {where_clause}", count_params
+        ).fetchone()
+        total = int(total_row["cnt"]) if total_row else 0
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                a.id,
+                a.actor_user_id,
+                actor.email  AS actor_email,
+                a.action,
+                a.target_user_id,
+                target.email AS target_email,
+                a.metadata_json,
+                a.created_at
+            FROM audit_log a
+            LEFT JOIN users actor ON actor.id = a.actor_user_id
+            LEFT JOIN users target ON target.id = a.target_user_id
+            {where_clause}
+            ORDER BY a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            page_params,
+        ).fetchall()
+
+    items = []
+    for row in rows:
+        items.append({
+            "id": row["id"],
+            "actor_user_id": row["actor_user_id"],
+            "actor_email": row["actor_email"],
+            "action": row["action"],
+            "target_user_id": row["target_user_id"],
+            "target_email": row["target_email"],
+            "metadata": row["metadata_json"],
+            "created_at": row["created_at"],
+        })
+
+    return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+
 def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None) -> Dict[str, Any]:
     """Return ticket counts and per-customer breakdowns for the requested period."""
     import sys

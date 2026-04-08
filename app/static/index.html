@@ -318,6 +318,12 @@
             <h2>Settings</h2>
 
             <div class="settings-section">
+              <h3>Audit Log</h3>
+              <p class="muted">Browse security and admin events recorded by the system.</p>
+              <button id="open-audit-log-btn" type="button">View Audit Log</button>
+            </div>
+
+            <div class="settings-section">
               <h3>Data Sync</h3>
               <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
                 <button id="admin-sync-tickets-btn" type="button">Sync Atera Tickets</button>
@@ -438,6 +444,40 @@
       <div id="ticket-viewer-update" class="ticket-viewer-update"></div>
       <p id="ticket-viewer-update-status" class="muted"></p>
       <div id="ticket-viewer-history" class="ticket-viewer-history"></div>
+    </div>
+  </div>
+
+  <div id="audit-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="audit-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="audit-log-modal-title">Audit Log</h2>
+        <button id="audit-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="audit-log-action-filter" type="search" placeholder="Filter by action (e.g. auth.login)" autocomplete="off">
+        <button id="audit-log-filter-btn" type="button">Apply</button>
+        <button id="audit-log-reset-btn" type="button">Reset</button>
+      </div>
+      <p id="audit-log-status" class="muted"></p>
+      <div id="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Action</th>
+              <th>Actor</th>
+              <th>Target</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="audit-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="audit-log-page-info"></span>
+        <button id="audit-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
     </div>
   </div>
 

@@ -42,6 +42,7 @@ from .database import (
     create_user,
     delete_user,
     delete_session,
+    get_session,
     claim_due_transactions,
     enqueue_transaction,
     get_cached_ticket_by_id,
@@ -63,6 +64,7 @@ from .database import (
     list_recent_transactions,
     list_cached_tickets,
     list_users,
+    log_audit_event,
     replace_cached_ticket_comments,
     replace_ticket_cache_snapshot,
     reset_user_password,
@@ -71,6 +73,7 @@ from .database import (
     set_user_theme_enabled,
     mark_transaction_completed,
     mark_transaction_retry,
+    get_audit_log_page,
     get_login_lockout_until,
     record_login_failure,
     update_pending_queue_create_payload,
@@ -844,6 +847,23 @@ def admin_queue_status(
     }
 
 
+@app.get("/api/admin/audit-log")
+def admin_audit_log(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    action: Optional[str] = Query(default=None, max_length=80),
+    actor_user_id: Optional[int] = Query(default=None),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return get_audit_log_page(
+        limit=limit,
+        offset=offset,
+        action_filter=action,
+        actor_user_id=actor_user_id,
+    )
+
+
 @app.get("/api/admin/security/login-rate-limits")
 def admin_login_rate_limits(
     limit: int = Query(default=100, ge=1, le=500),
@@ -862,6 +882,7 @@ def admin_clear_login_rate_limit_entry(
     cleared = clear_login_rate_limit_entry(request.key_type, request.key_value)
     if not cleared:
         raise HTTPException(status_code=404, detail="Rate-limit entry not found")
+    log_audit_event(int(user["id"]), "admin.lockout.cleared", None, json.dumps({"key_type": request.key_type, "key_value": request.key_value}))
     return {
         "message": "Rate-limit entry cleared",
         "key_type": request.key_type,
@@ -917,6 +938,7 @@ def register(request: RegisterRequest) -> Dict[str, Any]:
         password_hash=hash_password(request.password),
         approved=False,
     )
+    log_audit_event(None, "auth.register", int(user["id"]), json.dumps({"email": email}))
 
     return {
         "message": "Registration submitted. An administrator must approve your account.",
@@ -931,11 +953,13 @@ def login(login_request: LoginRequest, request: Request, response: Response) -> 
 
     lockout_until = get_login_lockout_until(email, client_ip)
     if lockout_until:
+        log_audit_event(None, "auth.login.locked_out", None, json.dumps({"email": email, "ip": client_ip}))
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
 
     user = get_user_by_email(email)
     if not user:
         record_login_failure(email, client_ip)
+        log_audit_event(None, "auth.login.failed", None, json.dumps({"email": email, "ip": client_ip, "reason": "user_not_found"}))
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if user.get("role") != "admin" and not settings.user_password_auth_enabled:
@@ -952,13 +976,16 @@ def login(login_request: LoginRequest, request: Request, response: Response) -> 
 
     if not user["password_hash"]:
         record_login_failure(email, client_ip)
+        log_audit_event(None, "auth.login.failed", int(user["id"]), json.dumps({"email": email, "ip": client_ip, "reason": "password_not_configured"}))
         raise HTTPException(status_code=401, detail="Account password is not configured")
 
     if not verify_password(login_request.password, user["password_hash"]):
         record_login_failure(email, client_ip)
+        log_audit_event(None, "auth.login.failed", int(user["id"]), json.dumps({"email": email, "ip": client_ip, "reason": "invalid_credentials"}))
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     clear_login_rate_limits(email, client_ip)
+    log_audit_event(int(user["id"]), "auth.login.success", None, json.dumps({"ip": client_ip}))
     _set_user_session(response, request, user)
 
     return {"message": "Logged in", "user": sanitize_user(user)}
@@ -1024,6 +1051,7 @@ def microsoft_callback(
     expected_state = request.cookies.get(MICROSOFT_STATE_COOKIE)
     nonce = request.cookies.get(MICROSOFT_NONCE_COOKIE)
     if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        log_audit_event(None, "auth.login.microsoft.failed", None, json.dumps({"reason": "state_mismatch", "ip": _get_client_ip(request)}))
         return _build_auth_redirect(message="Microsoft sign-in state validation failed")
 
     if not code or not nonce:
@@ -1054,6 +1082,7 @@ def microsoft_callback(
     if not microsoft_oid:
         return _build_auth_redirect(message="Microsoft account did not provide a stable identity")
     if not _microsoft_tenant_allowed(microsoft_tenant_id):
+        log_audit_event(None, "auth.login.microsoft.failed", None, json.dumps({"reason": "tenant_not_allowed", "tenant_id": microsoft_tenant_id, "ip": _get_client_ip(request)}))
         return _build_auth_redirect(message="Microsoft tenant is not allowed for this portal")
 
     try:
@@ -1078,6 +1107,7 @@ def microsoft_callback(
     if not bool(user.get("approved")):
         return _build_auth_redirect(message="Account pending admin approval")
 
+    log_audit_event(int(user["id"]), "auth.login.microsoft.success", None, json.dumps({"email": email, "ip": _get_client_ip(request)}))
     response = _build_auth_redirect(success="microsoft")
     _set_user_session(response, request, user)
     return response
@@ -1086,8 +1116,11 @@ def microsoft_callback(
 @app.post("/auth/logout")
 def logout(request: Request, response: Response) -> Dict[str, str]:
     token = request.cookies.get(settings.session_cookie_name)
+    session = get_session(token) if token else None
+    actor_id = int(session["user_id"]) if session and session.get("user_id") else None
     if token:
         delete_session(token)
+    log_audit_event(actor_id, "auth.logout", None, json.dumps({"ip": _get_client_ip(request)}))
 
     response.delete_cookie(settings.session_cookie_name)
     response.delete_cookie(CSRF_COOKIE_NAME)
@@ -1114,6 +1147,7 @@ def admin_approve_user(user_id: int, user: Dict[str, Any] = Depends(get_current_
     require_admin(user)
     if not approve_user(user_id):
         raise HTTPException(status_code=404, detail="User not found")
+    log_audit_event(int(user["id"]), "admin.user.approved", user_id, None)
     return {"message": "User approved"}
 
 
@@ -1126,6 +1160,7 @@ def admin_update_user_role(
     require_admin(user)
     if not update_user_role(user_id, request.role):
         raise HTTPException(status_code=404, detail="User not found")
+    log_audit_event(int(user["id"]), "admin.user.role_changed", user_id, json.dumps({"new_role": request.role}))
     return {"message": "User role updated"}
 
 
@@ -1136,6 +1171,7 @@ def admin_delete_user(user_id: int, user: Dict[str, Any] = Depends(get_current_u
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     if not delete_user(user_id):
         raise HTTPException(status_code=404, detail="User not found")
+    log_audit_event(int(user["id"]), "admin.user.deleted", user_id, None)
     return {"message": "User deleted"}
 
 
@@ -1149,6 +1185,7 @@ def admin_reset_user_password(
 
     if not reset_user_password(user_id, hash_password(request.new_password)):
         raise HTTPException(status_code=404, detail="User not found")
+    log_audit_event(int(user["id"]), "admin.user.password_reset", user_id, None)
 
     return {"message": "User password reset"}
 
@@ -1178,6 +1215,7 @@ def toggle_signups(
     current = get_signups_enabled()
     new_state = not current
     set_signups_enabled(new_state)
+    log_audit_event(int(user["id"]), "admin.signups.toggled", None, json.dumps({"enabled": new_state}))
     return {"signups_enabled": new_state, "message": "Signups " + ("enabled" if new_state else "disabled")}
 
 
@@ -1286,6 +1324,7 @@ async def admin_assign_user_property(
     if request.property_customer_id is None:
         if not assign_user_property(user_id, None, None):
             raise HTTPException(status_code=404, detail="User not found")
+        log_audit_event(int(user["id"]), "admin.user.property_assigned", user_id, json.dumps({"customer_id": None}))
         return {"message": "Property assignment cleared"}
 
     try:
@@ -1301,6 +1340,7 @@ async def admin_assign_user_property(
     property_name = matched.get("CustomerName") or request.property_name or ""
     if not assign_user_property(user_id, request.property_customer_id, property_name):
         raise HTTPException(status_code=404, detail="User not found")
+    log_audit_event(int(user["id"]), "admin.user.property_assigned", user_id, json.dumps({"customer_id": request.property_customer_id, "property_name": property_name}))
 
     return {"message": "User property assignment updated"}
 
