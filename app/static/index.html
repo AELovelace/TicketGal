@@ -302,6 +302,15 @@
             <h2>Settings</h2>
 
             <div class="settings-section">
+              <h3>Data Sync</h3>
+              <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
+                <button id="admin-sync-tickets-btn" type="button">Sync Atera Tickets</button>
+                <span id="admin-sync-tickets-status" class="muted"></span>
+              </div>
+              <p class="muted">Pulls all tickets from Atera into the local reporting cache.</p>
+            </div>
+
+            <div class="settings-section">
               <h3>Theme</h3>
               <label class="theme-toggle-label">
                 <input id="admin-theme-toggle" type="checkbox">
@@ -332,11 +341,6 @@
           <section id="admin-page-reports" class="admin-page card hidden">
             <p class="card-kicker">ANALYTICS</p>
             <h2>Ticket Reports</h2>
-
-            <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
-              <button id="admin-sync-tickets-btn" type="button">Sync Atera Tickets</button>
-              <span id="admin-sync-tickets-status" class="muted"></span>
-            </div>
 
             <div class="report-period-selector">
               <button type="button" class="period-btn" data-period="week">1 Week</button>

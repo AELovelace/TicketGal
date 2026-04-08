@@ -638,26 +638,34 @@ async def admin_sync_tickets(user: Dict[str, Any] = Depends(get_current_user)) -
     Admin-only operation.
     """
     require_admin(user)
-    
+    page_size = 50
+
     try:
         all_tickets: List[Dict[str, Any]] = []
         page = 1
         while True:
             result = await client.list_tickets(
                 page=page,
-                items_in_page=500,
+                items_in_page=page_size,
+                customer_id=None,
+                ticket_status=None,
                 include_relations=True,
             )
             items = result.get("items", []) if isinstance(result, dict) else []
             if not items:
                 break
             all_tickets.extend(items)
-            total = result.get("totalItemCount", 0) if isinstance(result, dict) else 0
-            if len(all_tickets) >= total:
+
+            total = int(result.get("totalItemCount", 0) or 0) if isinstance(result, dict) else 0
+            if total > 0 and len(all_tickets) >= total:
+                break
+            if len(items) < page_size:
                 break
             page += 1
     except AteraApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ticket sync failed: {exc}") from exc
     
     # Populate cache with all tickets
     count = replace_ticket_cache_snapshot(all_tickets)
