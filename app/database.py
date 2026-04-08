@@ -1191,6 +1191,7 @@ def log_audit_event(
 
 def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None) -> Dict[str, Any]:
     """Return ticket counts and per-customer breakdowns for the requested period."""
+    import sys
     with get_ticket_cache_conn() as conn:
         opened_where = "created_at >= ?"
         opened_params: tuple = (period_start,)
@@ -1202,12 +1203,23 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
             resolved_where += " AND changed_at < ?"
             resolved_params = (period_start, period_end)
 
+        # DEBUG: Log parameters and check database state
+        print(f"[REPORT DEBUG] period_start={period_start}, period_end={period_end}", file=sys.stderr)
+        
+        # Check sample data from database
+        sample_created = conn.execute("SELECT MIN(created_at) as min_created, MAX(created_at) as max_created FROM ticket_cache").fetchone()
+        print(f"[REPORT DEBUG] ticket_cache created_at range: {sample_created['min_created']} to {sample_created['max_created']}", file=sys.stderr)
+        
+        sample_changed = conn.execute("SELECT MIN(changed_at) as min_changed, MAX(changed_at) as max_changed FROM ticket_status_history").fetchone()
+        print(f"[REPORT DEBUG] ticket_status_history changed_at range: {sample_changed['min_changed']} to {sample_changed['max_changed']}", file=sys.stderr)
+
         opened_count = int(
             (conn.execute(
                 f"SELECT COUNT(*) AS cnt FROM ticket_cache WHERE {opened_where}",
                 opened_params,
             ).fetchone() or {})["cnt"] or 0
         )
+        print(f"[REPORT DEBUG] opened_count={opened_count} from query: {opened_where} with params {opened_params}", file=sys.stderr)
 
         resolved_count = int(
             (conn.execute(
