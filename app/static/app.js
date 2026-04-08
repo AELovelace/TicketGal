@@ -967,6 +967,7 @@ async function openTicketViewer(ticketId) {
     const result = await api(`/api/tickets/${ticketId}/history`);
     const ticket = result?.ticket || {};
     const comments = result?.comments || [];
+    const pendingOps = Array.isArray(result?.pending_ops) ? result.pending_ops : [];
     const historyFromCache = Boolean(result?.degraded) || safeText(result?.history_source).toLowerCase() === "cache";
 
     ticketViewerMeta.innerHTML = `
@@ -987,7 +988,9 @@ async function openTicketViewer(ticketId) {
       ticketViewerUpdate.appendChild(controls);
     }
 
-    if (!comments.length) {
+    ticketViewerHistory.innerHTML = "";
+
+    if (!comments.length && !pendingOps.length) {
       if (historyFromCache) {
         ticketViewerHistory.innerHTML = '<div class="history-entry muted">History is temporarily unavailable from Atera. Showing cached ticket details only.</div>';
       } else {
@@ -996,7 +999,6 @@ async function openTicketViewer(ticketId) {
       return;
     }
 
-    ticketViewerHistory.innerHTML = "";
     comments.forEach((entry) => {
       const el = document.createElement("div");
       el.className = "history-entry";
@@ -1020,6 +1022,42 @@ async function openTicketViewer(ticketId) {
       el.appendChild(comment);
       ticketViewerHistory.appendChild(el);
     });
+
+    // Render any pending (queued) operations that haven't synced to Atera yet
+    if (pendingOps.length > 0) {
+      const fmtDate = (iso) => {
+        if (!iso) return "";
+        const d = new Date(iso);
+        return isNaN(d.getTime()) ? safeText(iso) : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+      };
+      pendingOps.forEach((op) => {
+        if (op._type === "comment") {
+          const el = document.createElement("div");
+          el.className = "history-entry history-entry-queued";
+          const badge = document.createElement("div");
+          badge.className = "queued-badge";
+          badge.textContent = `⏳ Pending sync — queued ${fmtDate(op._createdAt)}`;
+          const commentEl = renderTicketCommentContent(op.Comment || "");
+          el.appendChild(badge);
+          el.appendChild(commentEl);
+          if (op.follow_up_status) {
+            const statusNote = document.createElement("div");
+            statusNote.className = "muted";
+            statusNote.textContent = `Status will change to: ${safeText(op.follow_up_status)}`;
+            el.appendChild(statusNote);
+          }
+          ticketViewerHistory.appendChild(el);
+        } else if (op._type === "status_change") {
+          const el = document.createElement("div");
+          el.className = "history-entry history-entry-queued";
+          const badge = document.createElement("div");
+          badge.className = "queued-badge";
+          badge.textContent = `⏳ Pending status change → "${safeText(op.new_status)}" — queued ${fmtDate(op._createdAt)}`;
+          el.appendChild(badge);
+          ticketViewerHistory.appendChild(el);
+        }
+      });
+    }
   } catch (error) {
     ticketViewerMeta.innerHTML = "";
     ticketViewerHistory.innerHTML = `<div class=\"history-entry\">Failed to load history: ${safeText(error.message)}</div>`;
@@ -1222,23 +1260,39 @@ function buildUpdateControls(ticket, isAdminTable) {
 
 function ticketListRow(ticket, isAdminTable) {
   const tr = document.createElement("tr");
+  const isQueued = Boolean(ticket._queued);
 
   const idTd = document.createElement("td");
-  idTd.textContent = safeText(ticket.TicketID);
+  idTd.textContent = isQueued ? "—" : safeText(ticket.TicketID);
   tr.appendChild(idTd);
 
   const titleTd = document.createElement("td");
-  const openBtn = document.createElement("button");
-  openBtn.type = "button";
-  openBtn.className = "ticket-open-btn";
-  openBtn.dataset.role = "open-ticket";
-  openBtn.dataset.ticketId = String(ticket.TicketID);
-  openBtn.textContent = safeText(ticket.TicketTitle);
-  titleTd.appendChild(openBtn);
+  if (isQueued) {
+    const span = document.createElement("span");
+    span.textContent = safeText(ticket.TicketTitle);
+    const badge = document.createElement("span");
+    badge.className = "queued-badge";
+    badge.textContent = " ⏳ Pending sync";
+    titleTd.appendChild(span);
+    titleTd.appendChild(badge);
+  } else {
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "ticket-open-btn";
+    openBtn.dataset.role = "open-ticket";
+    openBtn.dataset.ticketId = String(ticket.TicketID);
+    openBtn.textContent = safeText(ticket.TicketTitle);
+    titleTd.appendChild(openBtn);
+  }
   tr.appendChild(titleTd);
 
   const statusTd = document.createElement("td");
-  statusTd.appendChild(buildStatusReadOnlyCell(ticket));
+  if (isQueued) {
+    statusTd.className = "status-queued";
+    statusTd.textContent = "Queued";
+  } else {
+    statusTd.appendChild(buildStatusReadOnlyCell(ticket));
+  }
   tr.appendChild(statusTd);
 
   const companyTd = document.createElement("td");
@@ -1250,7 +1304,11 @@ function ticketListRow(ticket, isAdminTable) {
   tr.appendChild(emailTd);
 
   const updateTd = document.createElement("td");
-  updateTd.appendChild(buildUpdateControls(ticket, isAdminTable));
+  if (isQueued) {
+    updateTd.textContent = "—";
+  } else {
+    updateTd.appendChild(buildUpdateControls(ticket, isAdminTable));
+  }
   tr.appendChild(updateTd);
 
   return tr;
@@ -1258,75 +1316,101 @@ function ticketListRow(ticket, isAdminTable) {
 
 function statusManagementRow(ticket) {
   const tr = document.createElement("tr");
+  const isQueued = Boolean(ticket._queued);
 
   const idTd = document.createElement("td");
-  idTd.textContent = safeText(ticket.TicketID);
+  idTd.textContent = isQueued ? "—" : safeText(ticket.TicketID);
   tr.appendChild(idTd);
 
   const titleTd = document.createElement("td");
-  const openBtn = document.createElement("button");
-  openBtn.type = "button";
-  openBtn.className = "ticket-open-btn";
-  openBtn.dataset.role = "open-ticket";
-  openBtn.dataset.ticketId = String(ticket.TicketID);
-  openBtn.textContent = safeText(ticket.TicketTitle);
-  titleTd.appendChild(openBtn);
-
-  const descText = htmlToReadableText(ticket.FirstComment || "").trim();
-  if (descText) {
-    const desc = document.createElement("div");
-    desc.className = "muted ticket-description-preview";
-    desc.textContent = descText.length > 120 ? descText.slice(0, 120) + "…" : descText;
-    titleTd.appendChild(desc);
+  if (isQueued) {
+    const span = document.createElement("span");
+    span.textContent = safeText(ticket.TicketTitle);
+    const badge = document.createElement("span");
+    badge.className = "queued-badge";
+    badge.textContent = " ⏳ Pending sync";
+    titleTd.appendChild(span);
+    titleTd.appendChild(badge);
+  } else {
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "ticket-open-btn";
+    openBtn.dataset.role = "open-ticket";
+    openBtn.dataset.ticketId = String(ticket.TicketID);
+    openBtn.textContent = safeText(ticket.TicketTitle);
+    titleTd.appendChild(openBtn);
+    const descText = htmlToReadableText(ticket.FirstComment || "").trim();
+    if (descText) {
+      const desc = document.createElement("div");
+      desc.className = "muted ticket-description-preview";
+      desc.textContent = descText.length > 120 ? descText.slice(0, 120) + "…" : descText;
+      titleTd.appendChild(desc);
+    }
   }
-
   tr.appendChild(titleTd);
 
   const currentTd = document.createElement("td");
-  const statusClass = statusClassName(ticket.TicketStatus || "Open");
-  if (statusClass) {
-    currentTd.classList.add(statusClass);
+  if (isQueued) {
+    currentTd.className = "status-queued";
+    currentTd.textContent = "Queued";
+  } else {
+    const statusClass = statusClassName(ticket.TicketStatus || "Open");
+    if (statusClass) {
+      currentTd.classList.add(statusClass);
+    }
+    currentTd.textContent = safeText(ticket.TicketStatus || "Open");
   }
-  currentTd.textContent = safeText(ticket.TicketStatus || "Open");
   tr.appendChild(currentTd);
 
   const detailsTd = document.createElement("td");
   detailsTd.className = "ticket-details-cell";
-  const createdRaw = ticket.TicketCreatedDate || "";
-  const updatedRaw = ticket.LastEndUserCommentTimestamp || "";
   const fmt = (iso) => {
     if (!iso) return "\u2014";
     const d = new Date(iso);
     return isNaN(d.getTime()) ? safeText(iso) : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
   };
-  const createdLine = document.createElement("div");
-  createdLine.textContent = `Created: ${fmt(createdRaw)}`;
-  const updatedLine = document.createElement("div");
-  updatedLine.className = "muted";
-  updatedLine.textContent = `Last activity: ${fmt(updatedRaw)}`;
-  detailsTd.appendChild(createdLine);
-  detailsTd.appendChild(updatedLine);
+  if (isQueued) {
+    const queuedLine = document.createElement("div");
+    queuedLine.textContent = `Queued: ${fmt(ticket._queuedCreatedAt || "")}`;
+    const attLine = document.createElement("div");
+    attLine.className = "muted";
+    attLine.textContent = `Attempts: ${safeText(ticket._queuedAttempts || 0)}`;
+    detailsTd.appendChild(queuedLine);
+    detailsTd.appendChild(attLine);
+  } else {
+    const createdRaw = ticket.TicketCreatedDate || "";
+    const updatedRaw = ticket.LastEndUserCommentTimestamp || "";
+    const createdLine = document.createElement("div");
+    createdLine.textContent = `Created: ${fmt(createdRaw)}`;
+    const updatedLine = document.createElement("div");
+    updatedLine.className = "muted";
+    updatedLine.textContent = `Last activity: ${fmt(updatedRaw)}`;
+    detailsTd.appendChild(createdLine);
+    detailsTd.appendChild(updatedLine);
+  }
   tr.appendChild(detailsTd);
 
   const actionTd = document.createElement("td");
-  const select = document.createElement("select");
-  select.dataset.role = "admin-status-select";
-  ADMIN_STATUSES.forEach((status) => {
-    const option = document.createElement("option");
-    option.value = status;
-    option.textContent = status;
-    option.selected = status.toLowerCase() === safeText(ticket.TicketStatus || "Open").toLowerCase();
-    select.appendChild(option);
-  });
-
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.dataset.role = "admin-status-save";
-  btn.dataset.ticketId = String(ticket.TicketID);
-  btn.textContent = "Apply";
-
-  actionTd.appendChild(select);
-  actionTd.appendChild(btn);
+  if (isQueued) {
+    actionTd.textContent = "—";
+  } else {
+    const select = document.createElement("select");
+    select.dataset.role = "admin-status-select";
+    ADMIN_STATUSES.forEach((status) => {
+      const option = document.createElement("option");
+      option.value = status;
+      option.textContent = status;
+      option.selected = status.toLowerCase() === safeText(ticket.TicketStatus || "Open").toLowerCase();
+      select.appendChild(option);
+    });
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.role = "admin-status-save";
+    btn.dataset.ticketId = String(ticket.TicketID);
+    btn.textContent = "Apply";
+    actionTd.appendChild(select);
+    actionTd.appendChild(btn);
+  }
   tr.appendChild(actionTd);
 
   return tr;
@@ -1738,12 +1822,17 @@ async function loadTickets() {
       }
 
       items.forEach((ticket) => {
+        const isQueued = Boolean(ticket?._queued);
         const ticketStatus = String(ticket?.TicketStatus || "").trim().toLowerCase();
-        if (selectedStatuses.size > 0 && !selectedStatuses.has(ticketStatus)) {
+        // Queued (create-pending) tickets always show regardless of status filter
+        if (!isQueued && selectedStatuses.size > 0 && !selectedStatuses.has(ticketStatus)) {
           return;
         }
 
-        const ticketId = safeText(ticket?.TicketID);
+        // Use a synthetic key for queued tickets that have no real TicketID yet
+        const ticketId = isQueued
+          ? `_queued_${safeText(ticket._queuedTransactionId)}`
+          : safeText(ticket?.TicketID);
         if (!ticketId || seenTicketIds.has(ticketId)) return;
         seenTicketIds.add(ticketId);
         allTickets.push(ticket);

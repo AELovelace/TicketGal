@@ -1103,6 +1103,53 @@ def list_recent_transactions(limit: int = 20) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_pending_queue_creates(requested_by_user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Return pending/retry create_ticket queue items, optionally filtered by requesting user."""
+    with get_transactions_conn() as conn:
+        if requested_by_user_id is not None:
+            rows = conn.execute(
+                """
+                SELECT id, operation_type, ticket_id, payload_json, requested_by_user_id,
+                       attempts, status, created_at, updated_at
+                FROM transaction_queue
+                WHERE operation_type = 'create_ticket'
+                  AND status IN ('pending', 'retry', 'in_progress')
+                  AND requested_by_user_id = ?
+                ORDER BY id ASC
+                """,
+                (int(requested_by_user_id),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, operation_type, ticket_id, payload_json, requested_by_user_id,
+                       attempts, status, created_at, updated_at
+                FROM transaction_queue
+                WHERE operation_type = 'create_ticket'
+                  AND status IN ('pending', 'retry', 'in_progress')
+                ORDER BY id ASC
+                """,
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_pending_queue_items_for_ticket(ticket_id: int) -> List[Dict[str, Any]]:
+    """Return all pending/retry queue items for a specific ticket (status changes, comments)."""
+    with get_transactions_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, operation_type, ticket_id, payload_json, requested_by_user_id,
+                   attempts, status, created_at, updated_at
+            FROM transaction_queue
+            WHERE ticket_id = ?
+              AND status IN ('pending', 'retry', 'in_progress')
+            ORDER BY id ASC
+            """,
+            (int(ticket_id),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (email,)).fetchone()

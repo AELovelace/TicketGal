@@ -54,6 +54,8 @@ from .database import (
     init_db,
     link_user_microsoft_account,
     list_cached_ticket_comments,
+    list_pending_queue_creates,
+    list_pending_queue_items_for_ticket,
     list_recent_transactions,
     list_cached_tickets,
     list_users,
@@ -88,6 +90,7 @@ USER_LOCKED_STATUSES = {"pending", "closed", "pending closed"}
 OP_CREATE_TICKET = "create_ticket"
 OP_UPDATE_TICKET_STATUS = "update_ticket_status"
 OP_ADD_TICKET_COMMENT = "add_ticket_comment"
+OP_DISMISS_ALERT = "dismiss_alert"
 
 MICROSOFT_STATE_COOKIE = "ticketgal_ms_state"
 MICROSOFT_NONCE_COOKIE = "ticketgal_ms_nonce"
@@ -420,6 +423,8 @@ def _queue_enabled_for(operation_type: str) -> bool:
         return settings.enable_queue_for_status_update
     if operation_type == OP_ADD_TICKET_COMMENT:
         return settings.enable_queue_for_comment
+    if operation_type == OP_DISMISS_ALERT:
+        return settings.enable_write_queue
     return False
 
 
@@ -453,7 +458,6 @@ def _queue_write_or_raise(
 
 
 async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
-    tx_id = int(tx.get("id") or 0)
     op = str(tx.get("operation_type") or "").strip()
     payload_raw = tx.get("payload_json")
     payload: Dict[str, Any] = {}
@@ -495,6 +499,13 @@ async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
             "follow_up_status": follow_up_status or None,
         }
 
+    if op == OP_DISMISS_ALERT:
+        alert_id = str(payload.get("alert_id") or "").strip()
+        if not alert_id:
+            raise ValueError("Invalid queued dismiss alert payload")
+        result = await client.dismiss_alert(alert_id)
+        return {"ok": True, "operation_type": op, "result": result}
+
     raise ValueError(f"Unsupported queued operation_type: {op or 'empty'}")
 
 
@@ -534,6 +545,83 @@ def _resolve_ticket_for_write_from_cache_or_raise(
             ensure_ticket_owner_or_admin(user, cached_ticket)
             return cached_ticket
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def _inject_queued_creates(result: Dict[str, Any], user: Dict[str, Any]) -> None:
+    """Append pending create_ticket queue items as synthetic ticket entries in-place."""
+    if not isinstance(result, dict):
+        return
+    requested_by_user_id = None if user["role"] == "admin" else int(user["id"])
+    queued = list_pending_queue_creates(requested_by_user_id=requested_by_user_id)
+    if not queued:
+        return
+    synthetic: List[Dict[str, Any]] = []
+    for tx in queued:
+        payload: Dict[str, Any] = {}
+        try:
+            raw = tx.get("payload_json") or ""
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            pass
+        synthetic.append(
+            {
+                "TicketID": None,
+                "TicketTitle": payload.get("TicketTitle") or "(no title)",
+                "TicketStatus": "Queued",
+                "EndUserEmail": payload.get("EndUserEmail") or "",
+                "CustomerName": "",
+                "TicketPriority": payload.get("TicketPriority") or "",
+                "TicketType": payload.get("TicketType") or "",
+                "_queued": True,
+                "_queuedTransactionId": tx["id"],
+                "_queuedCreatedAt": tx.get("created_at") or "",
+                "_queuedAttempts": int(tx.get("attempts") or 0),
+                "_queuedStatus": tx.get("status") or "pending",
+            }
+        )
+    result["items"] = result.get("items", []) + synthetic
+    result["totalItemCount"] = int(result.get("totalItemCount") or 0) + len(synthetic)
+
+
+def _build_pending_ops(ticket_id: int) -> List[Dict[str, Any]]:
+    """Return a list of pending queue operations for a ticket as annotated dicts."""
+    raw_ops = list_pending_queue_items_for_ticket(ticket_id)
+    ops: List[Dict[str, Any]] = []
+    for item in raw_ops:
+        op_type = str(item.get("operation_type") or "")
+        payload: Dict[str, Any] = {}
+        try:
+            raw = item.get("payload_json") or ""
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            pass
+        if op_type == OP_UPDATE_TICKET_STATUS:
+            ops.append(
+                {
+                    "_queued": True,
+                    "_type": "status_change",
+                    "_transactionId": item["id"],
+                    "_createdAt": item.get("created_at") or "",
+                    "new_status": str(payload.get("ticket_status") or ""),
+                }
+            )
+        elif op_type == OP_ADD_TICKET_COMMENT:
+            comment_payload = payload.get("comment_payload") or {}
+            ops.append(
+                {
+                    "_queued": True,
+                    "_type": "comment",
+                    "_transactionId": item["id"],
+                    "_createdAt": item.get("created_at") or "",
+                    "Comment": str(comment_payload.get("CommentText") or ""),
+                    "follow_up_status": str(payload.get("follow_up_status") or ""),
+                }
+            )
+    return ops
 
 
 async def _drain_queue(limit: int) -> Dict[str, Any]:
@@ -589,6 +677,7 @@ def admin_queue_status(
             "create_ticket": _queue_enabled_for(OP_CREATE_TICKET),
             "update_ticket_status": _queue_enabled_for(OP_UPDATE_TICKET_STATUS),
             "add_ticket_comment": _queue_enabled_for(OP_ADD_TICKET_COMMENT),
+            "dismiss_alert": _queue_enabled_for(OP_DISMISS_ALERT),
         },
         "queue_config": {
             "enable_write_queue": settings.enable_write_queue,
@@ -1601,10 +1690,12 @@ async def list_tickets(
             fallback["degraded"] = True
             fallback["source"] = "cache"
             fallback["detail"] = exc.message
+            _inject_queued_creates(fallback, user)
             return fallback
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     if user["role"] == "admin":
+        _inject_queued_creates(result, user)
         return result
 
     items = result.get("items", []) if isinstance(result, dict) else []
@@ -1617,6 +1708,7 @@ async def list_tickets(
     if isinstance(result, dict):
         result["items"] = filtered_items
         result["totalItemCount"] = len(filtered_items)
+    _inject_queued_creates(result, user)
     return result
 
 
@@ -1633,11 +1725,6 @@ async def list_alerts(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[
         if isinstance(items, list):
             return {"items": items}
 
-    if isinstance(result, list):
-        return {"items": result}
-
-    return {"items": []}
-
 
 @app.post("/api/alerts/{alert_id}/dismiss")
 async def dismiss_alert(alert_id: str, user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
@@ -1650,7 +1737,14 @@ async def dismiss_alert(alert_id: str, user: Dict[str, Any] = Depends(get_curren
     try:
         result = await client.dismiss_alert(cleaned_alert_id)
     except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        return _queue_write_or_raise(
+            operation_type=OP_DISMISS_ALERT,
+            payload={"alert_id": cleaned_alert_id},
+            ticket_id=None,
+            requested_by_user_id=int(user["id"]),
+            exc=exc,
+            message=f"Atera is unavailable. Alert {cleaned_alert_id} dismissal was queued.",
+        )
 
     return {"message": "Alert dismissed", "result": result}
 
@@ -1871,6 +1965,7 @@ async def get_ticket_history(
             return {
                 "ticket": cached_ticket,
                 "comments": list_cached_ticket_comments(ticket_id),
+                "pending_ops": _build_pending_ops(ticket_id),
                 "degraded": True,
                 "source": "cache",
                 "history_source": "cache",
@@ -1887,6 +1982,7 @@ async def get_ticket_history(
             return {
                 "ticket": ticket,
                 "comments": list_cached_ticket_comments(ticket_id),
+                "pending_ops": _build_pending_ops(ticket_id),
                 "degraded": True,
                 "source": "atera",
                 "history_source": "cache",
@@ -1901,6 +1997,7 @@ async def get_ticket_history(
     return {
         "ticket": ticket,
         "comments": parsed_comments,
+        "pending_ops": _build_pending_ops(ticket_id),
     }
 
 

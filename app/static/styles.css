@@ -522,7 +522,24 @@ td select {
 }
 
 .status-closed {
+.status-closed {
   color: #d81b60;
+}
+
+.status-queued {
+  color: #6a5acd;
+  font-style: italic;
+}
+
+.queued-badge {
+  color: #6a5acd;
+  font-size: 0.82em;
+  font-style: italic;
+}
+
+.history-entry-queued {
+  border-color: #c8bfe8;
+  background: #f5f2ff;
 }
 
 .admin-grid {
@@ -724,14 +741,12 @@ td select {
   table,
   thead,
   tbody,
-  tr,
-  td,
-  th {
-    display: block;
+  .status-resolved {
+    color: #2e7d32;
   }
 
-  thead {
-    display: none;
+  .status-closed {
+    color: #d81b60;
   }
 
   tr {
@@ -1088,4 +1103,6 @@ body.theme-premium .report-ai-error {
   border-color: #d88f95;
   background: #f9e6e8;
   color: #7f2a30;
+}
+
 }
