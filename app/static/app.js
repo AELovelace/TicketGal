@@ -3538,6 +3538,7 @@ const kbEditorSave = document.getElementById("kb-editor-save");
 const kbEditorCancel = document.getElementById("kb-editor-cancel");
 const kbEditorDelete = document.getElementById("kb-editor-delete");
 const kbEditorStatus = document.getElementById("kb-editor-status");
+const kbEditorUploadHint = document.getElementById("kb-editor-upload-hint");
 
 function getKBContext(target = null) {
   const resolvedTarget = target || (currentUser?.role === "admin" ? "admin" : "user");
@@ -3718,22 +3719,154 @@ function closeKBEditor() {
   }
 }
 
+function getKBEditorTextarea() {
+  const textarea = document.getElementById("kb-content-fallback");
+  return textarea instanceof HTMLTextAreaElement ? textarea : null;
+}
+
+function insertTextAtCursor(textarea, text) {
+  if (!(textarea instanceof HTMLTextAreaElement)) return;
+  const start = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : textarea.value.length;
+  const end = Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : textarea.value.length;
+  const prefix = textarea.value.slice(0, start);
+  const suffix = textarea.value.slice(end);
+  textarea.value = `${prefix}${text}${suffix}`;
+  const nextCursor = start + text.length;
+  textarea.selectionStart = nextCursor;
+  textarea.selectionEnd = nextCursor;
+  textarea.focus();
+}
+
+async function copyTextToClipboard(text) {
+  if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+    return false;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeKBImageMarkdown(markdown) {
+  const normalized = safeText(markdown || "").trim();
+  return normalized ? `${normalized}\n` : "";
+}
+
+async function uploadKBImage(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return api("/api/knowledgebase/assets", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+function isKBImageFile(file) {
+  if (!file) return false;
+  const fileType = safeText(file.type).toLowerCase();
+  if (fileType.startsWith("image/")) {
+    return true;
+  }
+  const fileName = safeText(file.name).toLowerCase();
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].some((extension) => fileName.endsWith(extension));
+}
+
+async function handleKBEditorImageDrop(fileList) {
+  const textarea = getKBEditorTextarea();
+  if (!textarea || !kbEditorStatus) return;
+
+  const files = Array.from(fileList || []).filter((file) => isKBImageFile(file));
+  if (!files.length) {
+    kbEditorStatus.textContent = "Drop a PNG, JPG, GIF, or WebP image into the editor.";
+    return;
+  }
+
+  kbEditorStatus.textContent = files.length === 1 ? "Uploading image..." : `Uploading ${files.length} images...`;
+
+  try {
+    const uploaded = [];
+    for (const file of files) {
+      const result = await uploadKBImage(file);
+      uploaded.push(result);
+    }
+
+    const markdownBlock = uploaded
+      .map((result) => normalizeKBImageMarkdown(result?.markdown))
+      .filter(Boolean)
+      .join("\n");
+
+    if (markdownBlock) {
+      const prefix = textarea.value && !textarea.value.endsWith("\n") ? "\n" : "";
+      insertTextAtCursor(textarea, `${prefix}${markdownBlock}`);
+    }
+
+    const lastUrl = uploaded[uploaded.length - 1]?.url || "";
+    const copied = lastUrl ? await copyTextToClipboard(lastUrl) : false;
+    kbEditorStatus.textContent = copied
+      ? "Image uploaded. Markdown inserted and the image URL was copied to your clipboard."
+      : "Image uploaded and markdown inserted.";
+  } catch (error) {
+    kbEditorStatus.textContent = `Image upload failed: ${safeText(error.message)}`;
+  }
+}
+
+function bindKBEditorImageDrop(container, textarea) {
+  if (!container || !(textarea instanceof HTMLTextAreaElement) || container.dataset.uploadBound === "true") {
+    return;
+  }
+
+  const onDragEnter = (event) => {
+    event.preventDefault();
+    container.classList.add("dragover");
+  };
+  const onDragLeave = (event) => {
+    event.preventDefault();
+    container.classList.remove("dragover");
+  };
+  const onDrop = async (event) => {
+    event.preventDefault();
+    container.classList.remove("dragover");
+    const files = event.dataTransfer?.files;
+    if (files && files.length) {
+      await handleKBEditorImageDrop(files);
+    }
+  };
+
+  [container, textarea].forEach((element) => {
+    element.addEventListener("dragenter", onDragEnter);
+    element.addEventListener("dragover", onDragEnter);
+    element.addEventListener("dragleave", onDragLeave);
+    element.addEventListener("drop", onDrop);
+  });
+
+  container.dataset.uploadBound = "true";
+}
+
 function initializeCodeMirrorContainer() {
   const container = document.getElementById("kb-editor-codemirror");
   if (!container) return;
-  if (container.querySelector("textarea")) return; // Already initialized
-  
-  // Create fallback textarea if CodeMirror not available
-  const textarea = document.createElement("textarea");
-  textarea.id = "kb-content-fallback";
-  textarea.rows = 15;
-  textarea.style.width = "100%";
-  textarea.style.padding = "0.75rem";
-  textarea.style.fontFamily = '"Courier New", monospace';
-  textarea.style.fontSize = "0.9rem";
-  textarea.style.border = "1px solid #ccbfa3";
-  textarea.style.borderRadius = "6px";
-  container.appendChild(textarea);
+
+  let textarea = container.querySelector("#kb-content-fallback");
+  if (!(textarea instanceof HTMLTextAreaElement)) {
+    textarea = document.createElement("textarea");
+    textarea.id = "kb-content-fallback";
+    textarea.rows = 15;
+    textarea.style.width = "100%";
+    textarea.style.padding = "0.75rem";
+    textarea.style.fontFamily = '"Courier New", monospace';
+    textarea.style.fontSize = "0.9rem";
+    textarea.style.border = "1px solid #ccbfa3";
+    textarea.style.borderRadius = "6px";
+    container.appendChild(textarea);
+  }
+
+  bindKBEditorImageDrop(container, textarea);
+
+  if (kbEditorUploadHint) {
+    kbEditorUploadHint.textContent = "Drag a PNG, JPG, GIF, or WebP image into the editor to upload it and insert markdown automatically.";
+  }
 }
 
 async function loadKBProperties() {

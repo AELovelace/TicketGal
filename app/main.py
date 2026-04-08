@@ -115,6 +115,22 @@ OP_UPDATE_TICKET_STATUS = "update_ticket_status"
 OP_ADD_TICKET_COMMENT = "add_ticket_comment"
 OP_DISMISS_ALERT = "dismiss_alert"
 
+KB_IMAGE_CONTENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+KB_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+KB_ASSET_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+KB_ASSET_DIR = Path("app/knowledgebase/assets")
+
 MICROSOFT_STATE_COOKIE = "ticketgal_ms_state"
 MICROSOFT_NONCE_COOKIE = "ticketgal_ms_nonce"
 MICROSOFT_FLOW_COOKIE_MAX_AGE = 600
@@ -3009,6 +3025,90 @@ async def get_reports_summary(
 # ========================
 # Knowledgebase Endpoints
 # ========================
+
+
+def _sanitize_kb_asset_name(filename: str) -> str:
+    base_name = Path(filename or "image").stem
+    sanitized = re.sub(r"[^a-zA-Z0-9]+", "-", base_name).strip("-").lower()
+    return sanitized[:60] or "image"
+
+
+def _normalize_kb_image_extension(filename: str, content_type: str) -> str:
+    extension = Path(filename or "").suffix.lower()
+    if extension == ".jpeg":
+        extension = ".jpg"
+    if content_type in KB_IMAGE_CONTENT_TYPES:
+        return KB_IMAGE_CONTENT_TYPES[content_type]
+    if extension in KB_IMAGE_EXTENSIONS:
+        return extension
+    raise HTTPException(status_code=400, detail="Only PNG, JPG, GIF, and WebP images are supported")
+
+
+def _build_kb_image_markdown(url: str, filename: str) -> str:
+    alt_text = _sanitize_kb_asset_name(filename).replace("-", " ").strip() or "image"
+    return f"![{alt_text}]({url})"
+
+
+@app.post("/api/knowledgebase/assets")
+async def upload_kb_image_endpoint(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, str]:
+    """Upload a knowledgebase image for markdown embedding (admin only)."""
+    require_admin(user)
+
+    content_type = (file.content_type or "").strip().lower()
+    extension = _normalize_kb_image_extension(file.filename or "", content_type)
+
+    max_upload_bytes = 8 * 1024 * 1024
+    content = await file.read(max_upload_bytes + 1)
+    if len(content) > max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Image exceeds 8 MB limit")
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded image was empty")
+
+    KB_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{_sanitize_kb_asset_name(file.filename or 'image')}-{secrets.token_hex(8)}{extension}"
+    destination = KB_ASSET_DIR / stored_name
+
+    try:
+        destination.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to store uploaded image") from exc
+
+    image_url = f"/api/knowledgebase/assets/{stored_name}"
+
+    log_audit_event(
+        int(user["id"]),
+        "kb.asset.uploaded",
+        None,
+        json.dumps({"file_name": stored_name, "original_name": file.filename or "image"}),
+    )
+
+    return {
+        "url": image_url,
+        "markdown": _build_kb_image_markdown(image_url, file.filename or stored_name),
+        "file_name": stored_name,
+    }
+
+
+@app.get("/api/knowledgebase/assets/{asset_name}")
+async def get_kb_image_endpoint(
+    asset_name: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> FileResponse:
+    """Serve an uploaded knowledgebase image to authenticated users."""
+    _ = user
+
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", asset_name or ""):
+        raise HTTPException(status_code=400, detail="Invalid asset name")
+
+    asset_path = KB_ASSET_DIR / asset_name
+    if not asset_path.exists() or not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    media_type = KB_ASSET_MEDIA_TYPES.get(asset_path.suffix.lower(), "application/octet-stream")
+    return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
 
 
 @app.get("/api/knowledgebase/articles")
