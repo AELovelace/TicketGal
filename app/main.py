@@ -1507,6 +1507,7 @@ async def get_reports_summary(
     period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
     custom_start: Optional[str] = Query(default=None),
     custom_end: Optional[str] = Query(default=None),
+    include_ai: bool = Query(default=False),
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
     require_admin(user)
@@ -1597,6 +1598,23 @@ async def get_reports_summary(
     ai_summary: Optional[str] = None
     pending_request_context: Optional[str] = None
     ai_error: Optional[str] = None
+
+    if not include_ai:
+        result: Dict[str, Any] = {
+            "period": period,
+            "period_start": period_start,
+            **stats,
+        }
+        if period_end:
+            result["period_end"] = period_end
+        if pending_by_customer or pending_sample_titles:
+            pending_parts: List[str] = []
+            if pending_by_customer:
+                pending_parts.append("By property: " + "; ".join(pending_by_customer))
+            if pending_sample_titles:
+                pending_parts.append("Recent pending examples: " + "; ".join(pending_sample_titles[:5]))
+            result["pending_appendix"] = "Pending watchlist (net-neutral): " + " | ".join(pending_parts)
+        return result
 
     try:
         def _strip_css_noise(text: str) -> str:
