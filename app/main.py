@@ -396,7 +396,13 @@ async def register_page() -> FileResponse:
 
 
 @app.get("/health")
-async def health() -> Dict[str, Any]:
+async def health(request: Request) -> Dict[str, Any]:
+    # Only expose detailed dependency status to authenticated admins.
+    token = request.cookies.get(settings.session_cookie_name)
+    session = get_session(token) if token else None
+    user_row = get_user_by_id(int(session["user_id"])) if session and session.get("user_id") else None
+    is_admin = bool(user_row and user_row.get("role") == "admin")
+
     dependencies: Dict[str, Any] = {
         "atera": {
             "status": "skipped",
@@ -411,19 +417,20 @@ async def health() -> Dict[str, Any]:
             dependencies["atera"] = {"status": "up"}
         except AteraApiError as exc:
             degraded = True
-            dependencies["atera"] = {
-                "status": "down",
-                "status_code": exc.status_code,
-                "detail": exc.message,
-            }
+            if is_admin:
+                dependencies["atera"] = {
+                    "status": "down",
+                    "status_code": exc.status_code,
+                    "detail": exc.message,
+                }
+            else:
+                dependencies["atera"] = {"status": "down"}
 
-    return {
-        "status": "degraded" if degraded else "ok",
-        "dependencies": dependencies,
-        "cache": {
-            "last_seen_sync_at": get_ticket_cache_last_sync_at(),
-        },
-    }
+    response: Dict[str, Any] = {"status": "degraded" if degraded else "ok"}
+    if is_admin:
+        response["dependencies"] = dependencies
+        response["cache"] = {"last_seen_sync_at": get_ticket_cache_last_sync_at()}
+    return response
 
 
 def _can_use_cache_fallback(exc: AteraApiError) -> bool:
@@ -776,7 +783,7 @@ async def _drain_queue(limit: int) -> Dict[str, Any]:
             processed.append({"id": tx_id, **retry_result, "detail": exc.message})
         except Exception as exc:
             retry_result = mark_transaction_retry(tx_id, f"Queue processor error: {exc}", retry_delay)
-            processed.append({"id": tx_id, **retry_result, "detail": str(exc)})
+            processed.append({"id": tx_id, **retry_result, "detail": "Internal queue processing error"})
 
     return {
         "claimed": len(txs),
@@ -1107,6 +1114,14 @@ def microsoft_callback(
     if not bool(user.get("approved")):
         return _build_auth_redirect(message="Account pending admin approval")
 
+    # Enforce MFA when configured
+    if settings.microsoft_require_mfa:
+        amr_claim = claims.get("amr") if isinstance(claims, dict) else None
+        amr_values = amr_claim if isinstance(amr_claim, list) else ([amr_claim] if amr_claim else [])
+        if "mfa" not in amr_values:
+            log_audit_event(None, "auth.login.microsoft.failed", int(user["id"]), json.dumps({"reason": "mfa_not_satisfied", "email": email, "ip": _get_client_ip(request)}))
+            return _build_auth_redirect(message="Multi-factor authentication is required. Please sign in again with MFA.")
+
     log_audit_event(int(user["id"]), "auth.login.microsoft.success", None, json.dumps({"email": email, "ip": _get_client_ip(request)}))
     response = _build_auth_redirect(success="microsoft")
     _set_user_session(response, request, user)
@@ -1255,7 +1270,7 @@ async def admin_sync_tickets(user: Dict[str, Any] = Depends(get_current_user)) -
     except AteraApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ticket sync failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Ticket sync failed due to an internal error") from exc
     
     # Populate cache with all tickets
     count = replace_ticket_cache_snapshot(all_tickets)
@@ -1694,7 +1709,13 @@ async def parse_dropped_email(
 
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
-    content = await file.read()
+    if extension not in {".eml", ".msg"}:
+        raise HTTPException(status_code=400, detail="Only .eml and .msg files are accepted")
+
+    MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 5 MB limit")
     if not content:
         raise HTTPException(status_code=400, detail="Dropped file was empty")
 
@@ -1818,7 +1839,7 @@ async def ai_assist_ticket(
                 )
                 body = response.json() if response.content else {}
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"AI provider request failed: {str(exc)}") from exc
+        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
 
     if response is None:
         raise HTTPException(status_code=502, detail="AI provider did not return a response")
@@ -1896,12 +1917,16 @@ async def list_tickets(
     include_relations: bool = False,
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Any:
+    normalized_status: Optional[str] = None
+    if ticket_status is not None:
+        normalized_status = _normalize_status_input(ticket_status)
+
     try:
         result = await client.list_tickets(
             page=page,
             items_in_page=items_in_page,
             customer_id=customer_id,
-            ticket_status=ticket_status,
+            ticket_status=normalized_status,
             include_relations=include_relations,
         )
     except AteraApiError as exc:
@@ -1910,7 +1935,7 @@ async def list_tickets(
                 page=page,
                 items_in_page=items_in_page,
                 customer_id=customer_id,
-                ticket_status=ticket_status,
+                ticket_status=normalized_status,
                 end_user_email=None if user["role"] == "admin" else user["email"],
             )
             fallback["degraded"] = True
