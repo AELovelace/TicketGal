@@ -50,6 +50,10 @@ body {
   gap: 1rem;
 }
 
+.shell.user-mode {
+  width: 90vw;
+}
+
 .shell.admin-mode {
   width: min(1700px, 98vw);
 }
@@ -755,6 +759,10 @@ td select {
 
   .shell.admin-mode {
     width: 96vw;
+  }
+
+  .shell.user-mode {
+    width: 90vw;
   }
 
   .admin-shell,

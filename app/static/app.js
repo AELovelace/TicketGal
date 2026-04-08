@@ -1446,6 +1446,7 @@ function showAuth() {
   appView.classList.add("hidden");
   if (shell) {
     shell.classList.remove("admin-mode");
+    shell.classList.remove("user-mode");
   }
 }
 
@@ -1495,6 +1496,7 @@ function applyRoleView() {
 
   if (shell) {
     shell.classList.toggle("admin-mode", isAdmin);
+    shell.classList.toggle("user-mode", !isAdmin);
   }
 
   if (alertsFeed) {
