@@ -1505,6 +1505,14 @@ body.theme-premium .report-ai-error {
   border-radius: 6px;
   font-size: 0.9rem;
   font-family: inherit;
+  color: #192432;
+  background: #fff;
+}
+
+.kb-editor-form select option,
+.kb-editor-form select optgroup {
+  color: #192432;
+  background: #fff;
 }
 
 .kb-editor-form input[type="text"]:focus,
@@ -1626,6 +1634,13 @@ body.theme-premium .kb-editor-form input[type="text"],
 body.theme-premium .kb-editor-form input[type="email"],
 body.theme-premium .kb-editor-form select {
   border-color: #d4a0a8;
+  background: #fff8f9;
+  color: #3d1f2a;
+}
+
+body.theme-premium .kb-editor-form select option,
+body.theme-premium .kb-editor-form select optgroup {
+  color: #3d1f2a;
   background: #fff8f9;
 }
 
