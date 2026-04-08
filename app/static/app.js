@@ -96,6 +96,7 @@ if (userSearchInput) {
 
 const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
 const adminPages = Array.from(document.querySelectorAll(".admin-page"));
+const openKBNavBtn = document.getElementById("open-kb-nav-btn");
 const adminPropertySelect = document.getElementById("admin-ticket-property");
 const ticketViewer = document.getElementById("ticket-viewer");
 const ticketViewerClose = document.getElementById("ticket-viewer-close");
@@ -2958,9 +2959,15 @@ if (adminStatusFilter) {
 
 navButtons.forEach((button) => {
   button.addEventListener("click", () => {
-    setAdminPage(button.dataset.adminPage);
+    if (button.dataset.adminPage) {
+      setAdminPage(button.dataset.adminPage);
+    }
   });
 });
+
+if (openKBNavBtn) {
+  openKBNavBtn.addEventListener("click", openKBModal);
+}
 
 document.querySelectorAll(".period-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
