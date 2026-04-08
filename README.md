@@ -149,6 +149,7 @@ To enable resilience when Atera is unavailable, these flags are supported:
 - `QUEUE_PROCESS_BATCH_LIMIT` (default `25`): max queued items processed per drain request.
 - `QUEUE_AUTO_PROCESS_ENABLED` (default `1`): automatically process queued writes in the background.
 - `QUEUE_AUTO_PROCESS_INTERVAL_SECONDS` (default `30`): seconds between automatic queue-drain cycles.
+- Ticket sync now also caches ticket comment history locally, and ticket history reads use that local comment cache during upstream outages.
 
 Admin queue endpoints:
 

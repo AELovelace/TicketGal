@@ -176,6 +176,24 @@ def _create_ticket_cache_schema() -> None:
             ON ticket_status_history(new_status, changed_at)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_comment_cache (
+                ticket_id INTEGER NOT NULL,
+                comment_key TEXT NOT NULL,
+                comment_date TEXT,
+                raw_json TEXT NOT NULL,
+                last_seen_sync_at TEXT NOT NULL,
+                PRIMARY KEY (ticket_id, comment_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ticket_comment_cache_ticket
+            ON ticket_comment_cache(ticket_id, comment_date)
+            """
+        )
         conn.commit()
 
 
@@ -787,6 +805,89 @@ def get_cached_ticket_by_id(ticket_id: int) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _comment_cache_key(ticket_id: int, comment: Dict[str, Any]) -> str:
+    comment_id = str(comment.get("TicketCommentID") or comment.get("CommentID") or "").strip()
+    if comment_id:
+        return f"id:{comment_id}"
+
+    date = str(comment.get("Date") or "").strip()
+    author = str(comment.get("FirstName") or comment.get("Email") or "").strip().lower()
+    body = str(comment.get("Comment") or "").strip()
+    digest = hashlib.sha256(f"{ticket_id}|{date}|{author}|{body}".encode("utf-8")).hexdigest()
+    return f"sha:{digest}"
+
+
+def replace_cached_ticket_comments(ticket_id: int, comments: List[Dict[str, Any]]) -> int:
+    tid = int(ticket_id)
+    sync_marker = _utc_now_iso()
+    rows: List[tuple] = []
+
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        key = _comment_cache_key(tid, comment)
+        comment_date = str(comment.get("Date") or "").strip() or None
+        raw_json = json.dumps(comment, separators=(",", ":"), ensure_ascii=True)
+        rows.append((tid, key, comment_date, raw_json, sync_marker))
+
+    with get_ticket_cache_conn() as conn:
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO ticket_comment_cache(
+                    ticket_id,
+                    comment_key,
+                    comment_date,
+                    raw_json,
+                    last_seen_sync_at
+                )
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(ticket_id, comment_key) DO UPDATE SET
+                    comment_date = excluded.comment_date,
+                    raw_json = excluded.raw_json,
+                    last_seen_sync_at = excluded.last_seen_sync_at
+                """,
+                rows,
+            )
+
+        conn.execute(
+            """
+            DELETE FROM ticket_comment_cache
+            WHERE ticket_id = ?
+              AND last_seen_sync_at <> ?
+            """,
+            (tid, sync_marker),
+        )
+        conn.commit()
+
+    return len(rows)
+
+
+def list_cached_ticket_comments(ticket_id: int, limit: int = 500) -> List[Dict[str, Any]]:
+    tid = int(ticket_id)
+    with get_ticket_cache_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT raw_json
+            FROM ticket_comment_cache
+            WHERE ticket_id = ?
+            ORDER BY COALESCE(comment_date, ''), comment_key
+            LIMIT ?
+            """,
+            (tid, max(1, int(limit))),
+        ).fetchall()
+
+    comments: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            parsed = json.loads(row["raw_json"])
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            comments.append(parsed)
+    return comments
 
 
 def get_ticket_cache_last_sync_at() -> Optional[str]:

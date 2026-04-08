@@ -53,9 +53,11 @@ from .database import (
     get_user_theme_enabled,
     init_db,
     link_user_microsoft_account,
+    list_cached_ticket_comments,
     list_recent_transactions,
     list_cached_tickets,
     list_users,
+    replace_cached_ticket_comments,
     replace_ticket_cache_snapshot,
     reset_user_password,
     seed_admin,
@@ -63,6 +65,7 @@ from .database import (
     set_user_theme_enabled,
     mark_transaction_completed,
     mark_transaction_retry,
+    upsert_cached_ticket,
     update_user_role,
 )
 from .schemas import (
@@ -469,6 +472,7 @@ async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
         if ticket_id <= 0 or not status:
             raise ValueError("Invalid queued status update payload")
         result = await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": status})
+        await _refresh_cached_ticket_from_atera(ticket_id)
         return {"ok": True, "operation_type": op, "ticket_id": ticket_id, "result": result}
 
     if op == OP_ADD_TICKET_COMMENT:
@@ -482,6 +486,7 @@ async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
         if follow_up_status:
             await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": follow_up_status})
 
+        await _refresh_cached_ticket_from_atera(ticket_id)
         return {
             "ok": True,
             "operation_type": op,
@@ -491,6 +496,44 @@ async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     raise ValueError(f"Unsupported queued operation_type: {op or 'empty'}")
+
+
+async def _fetch_all_ticket_comments(ticket_id: int, page_size: int = 50, max_pages: int = 50) -> List[Dict[str, Any]]:
+    comments: List[Dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        result = await client.list_ticket_comments(ticket_id=ticket_id, page=page, items_in_page=page_size)
+        items = result.get("items", []) if isinstance(result, dict) else []
+        parsed = [item for item in items if isinstance(item, dict)]
+        if not parsed:
+            break
+        comments.extend(parsed)
+
+        total = int(result.get("totalItemCount", 0) or 0) if isinstance(result, dict) else 0
+        if total > 0 and len(comments) >= total:
+            break
+        if len(parsed) < page_size:
+            break
+    return comments
+
+
+async def _refresh_cached_ticket_from_atera(ticket_id: int, changed_by_user_id: Optional[int] = None) -> None:
+    ticket = await client.get_ticket(ticket_id)
+    upsert_cached_ticket(ticket, changed_by_user_id=changed_by_user_id)
+    comments = await _fetch_all_ticket_comments(ticket_id)
+    replace_cached_ticket_comments(ticket_id, comments)
+
+
+def _resolve_ticket_for_write_from_cache_or_raise(
+    ticket_id: int,
+    user: Dict[str, Any],
+    exc: AteraApiError,
+) -> Dict[str, Any]:
+    if _can_use_cache_fallback(exc):
+        cached_ticket = get_cached_ticket_by_id(ticket_id)
+        if cached_ticket:
+            ensure_ticket_owner_or_admin(user, cached_ticket)
+            return cached_ticket
+    raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 async def _drain_queue(limit: int) -> Dict[str, Any]:
@@ -903,15 +946,37 @@ async def admin_sync_tickets(user: Dict[str, Any] = Depends(get_current_user)) -
     
     # Populate cache with all tickets
     count = replace_ticket_cache_snapshot(all_tickets)
-    
+
+    comments_cached_tickets = 0
+    comments_cached_total = 0
+    for ticket in all_tickets:
+        try:
+            tid = int(ticket.get("TicketID") or 0)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0:
+            continue
+        try:
+            comments = await _fetch_all_ticket_comments(tid)
+        except AteraApiError:
+            continue
+        replace_cached_ticket_comments(tid, comments)
+        comments_cached_tickets += 1
+        comments_cached_total += len(comments)
+
     # Trigger backfill of dates and status history for newly synced tickets
     # This re-runs the same logic from startup but is safe due to NOT EXISTS guards
     init_db()
-    
+
     return {
         "status": "success",
-        "message": f"Synced {count} tickets from Atera and backfilled dates/history",
+        "message": (
+            f"Synced {count} tickets from Atera and backfilled dates/history. "
+            f"Cached comments for {comments_cached_tickets} tickets ({comments_cached_total} comments)."
+        ),
         "ticket_count": count,
+        "comments_cached_tickets": comments_cached_tickets,
+        "comments_cached_total": comments_cached_total,
     }
 
 
@@ -1655,7 +1720,7 @@ async def set_ticket_status(
     try:
         ticket = await client.get_ticket(ticket_id)
     except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        ticket = _resolve_ticket_for_write_from_cache_or_raise(ticket_id, user, exc)
 
     ensure_ticket_owner_or_admin(user, ticket)
 
@@ -1666,7 +1731,7 @@ async def set_ticket_status(
 
     payload = {"TicketStatus": normalized_status}
     try:
-        return await client.update_ticket(ticket_id=ticket_id, payload=payload)
+        result = await client.update_ticket(ticket_id=ticket_id, payload=payload)
     except AteraApiError as exc:
         return _queue_write_or_raise(
             operation_type=OP_UPDATE_TICKET_STATUS,
@@ -1680,6 +1745,13 @@ async def set_ticket_status(
             message=f"Atera is unavailable. Status change for ticket {ticket_id} was queued.",
         )
 
+    try:
+        await _refresh_cached_ticket_from_atera(ticket_id, changed_by_user_id=int(user["id"]))
+    except AteraApiError:
+        pass
+
+    return result
+
 
 @app.post("/api/tickets/{ticket_id}/updates")
 async def add_ticket_update(
@@ -1690,7 +1762,7 @@ async def add_ticket_update(
     try:
         ticket = await client.get_ticket(ticket_id)
     except AteraApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        ticket = _resolve_ticket_for_write_from_cache_or_raise(ticket_id, user, exc)
 
     ensure_ticket_owner_or_admin(user, ticket)
 
@@ -1749,6 +1821,12 @@ async def add_ticket_update(
             message=f"Atera is unavailable. Comment update for ticket {ticket_id} was queued.",
         )
 
+    try:
+        comments = await _fetch_all_ticket_comments(ticket_id)
+        replace_cached_ticket_comments(ticket_id, comments)
+    except AteraApiError:
+        pass
+
     if follow_up_status:
         try:
             await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": follow_up_status})
@@ -1764,6 +1842,11 @@ async def add_ticket_update(
                 exc=exc,
                 message=f"Atera is unavailable. Follow-up status change for ticket {ticket_id} was queued.",
             )
+
+    try:
+        await _refresh_cached_ticket_from_atera(ticket_id, changed_by_user_id=int(user["id"]))
+    except AteraApiError:
+        pass
 
     return comment_result
 
@@ -1787,7 +1870,7 @@ async def get_ticket_history(
             ensure_ticket_owner_or_admin(user, cached_ticket)
             return {
                 "ticket": cached_ticket,
-                "comments": [],
+                "comments": list_cached_ticket_comments(ticket_id),
                 "degraded": True,
                 "source": "cache",
                 "history_source": "cache",
@@ -1803,7 +1886,7 @@ async def get_ticket_history(
         if _can_use_cache_fallback(exc):
             return {
                 "ticket": ticket,
-                "comments": [],
+                "comments": list_cached_ticket_comments(ticket_id),
                 "degraded": True,
                 "source": "atera",
                 "history_source": "cache",
@@ -1812,9 +1895,12 @@ async def get_ticket_history(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     comments = comments_result.get("items", []) if isinstance(comments_result, dict) else []
+    parsed_comments = [entry for entry in comments if isinstance(entry, dict)]
+    replace_cached_ticket_comments(ticket_id, parsed_comments)
+    upsert_cached_ticket(ticket)
     return {
         "ticket": ticket,
-        "comments": comments,
+        "comments": parsed_comments,
     }
 
 
