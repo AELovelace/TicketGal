@@ -67,74 +67,50 @@
         <div id="alerts-list" class="alerts-list"></div>
       </aside>
 
-      <section id="user-shell" class="hidden">
-        <section class="card">
-          <p class="card-kicker">SERVICE INTAKE</p>
-          <h2>Create Ticket</h2>
-          <div id="drop-zone" class="drop-zone" aria-label="Drop email file here">
-            Drop a .eml email file here to auto-fill fields
-          </div>
-          <p id="drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+      <section id="user-shell" class="hidden user-shell-layout">
+        <aside class="user-sidenav card">
+          <p class="card-kicker">PORTAL NAVIGATION</p>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-in-progress">In Progress</button>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-tickets">All Tickets</button>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-knowledgebase">Knowledgebase</button>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-create">Create Ticket</button>
+        </aside>
 
-          <form id="create-ticket-form" class="grid">
-            <label>
-              Title
-              <input id="ticket-title" type="text" required>
-            </label>
-
-            <label>
-              End User Email
-              <input id="end-user-email" type="email" placeholder="user@company.com">
-            </label>
-
-            <label class="span-2">
-              Description
-              <textarea id="ticket-description" rows="6" required></textarea>
-            </label>
-
-            <label>
-              Priority
-              <select id="ticket-priority">
-                <option>Low</option>
-                <option>Medium</option>
-                <option>High</option>
-                <option>Critical</option>
-              </select>
-            </label>
-
-            <label>
-              Type
-              <select id="ticket-type">
-                <option>Incident</option>
-                <option>Problem</option>
-                <option>Request</option>
-                <option>Change</option>
-              </select>
-            </label>
-
-            <label>
-              Technician ID (admin optional)
-              <input id="technician-id" type="number" min="1">
-            </label>
-
-            <label>
-              Initial Status
-              <select id="ticket-status"></select>
-            </label>
-
-            <div class="span-2 actions">
-              <button type="submit">Create Ticket</button>
-              <span id="create-status" class="muted"></span>
+        <div class="user-content">
+          <section id="user-page-in-progress" class="user-page card hidden">
+            <div class="list-header">
+              <div>
+                <p class="card-kicker">ACTIVE WORK</p>
+                <h2>In-Progress Tickets</h2>
+                <p class="muted">Open, pending, and queued requests that still need action.</p>
+              </div>
+              <div class="actions">
+                <button id="user-in-progress-refresh-btn" type="button">Refresh</button>
+              </div>
             </div>
-          </form>
-        </section>
 
-        <section class="card">
-          <div class="list-header">
-            <div>
-              <p class="card-kicker">ACTIVE WORK</p>
-              <h2>Tickets</h2>
-            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Status</th>
+                  <th>Company</th>
+                  <th>End User</th>
+                  <th>Update</th>
+                </tr>
+              </thead>
+              <tbody id="user-in-progress-body"></tbody>
+            </table>
+            <p id="user-in-progress-status" class="muted"></p>
+          </section>
+
+          <section id="user-page-tickets" class="user-page card hidden">
+            <div class="list-header">
+              <div>
+                <p class="card-kicker">TICKET HISTORY</p>
+                <h2>All Tickets</h2>
+              </div>
               <div class="actions">
                 <button id="refresh-btn" type="button">Refresh</button>
                 <div id="user-status-filter" class="status-filter-checks">
@@ -143,24 +119,111 @@
                   <label><input type="checkbox" value="Resolved" checked> Resolved</label>
                   <label><input type="checkbox" value="Closed" checked> Closed</label>
                 </div>
+              </div>
             </div>
-          </div>
 
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Title</th>
-                <th>Status</th>
-                <th>Company</th>
-                <th>End User</th>
-                <th>Update</th>
-              </tr>
-            </thead>
-            <tbody id="tickets-body"></tbody>
-          </table>
-          <p id="list-status" class="muted"></p>
-        </section>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Status</th>
+                  <th>Company</th>
+                  <th>End User</th>
+                  <th>Update</th>
+                </tr>
+              </thead>
+              <tbody id="tickets-body"></tbody>
+            </table>
+            <p id="list-status" class="muted"></p>
+          </section>
+
+          <section id="user-page-knowledgebase" class="user-page card hidden">
+            <div class="user-kb-hero">
+              <div>
+                <p class="card-kicker">PROPERTY RESOURCES</p>
+                <h2>Knowledgebase</h2>
+                <p class="muted">Articles pinned to your property, plus any public resources you can access.</p>
+              </div>
+              <div class="user-property-chip-wrap">
+                <span id="user-property-chip" class="user-property-chip">No property assigned</span>
+              </div>
+            </div>
+
+            <div class="kb-controls kb-controls-user">
+              <div class="kb-search-box">
+                <input id="user-kb-search-input" type="search" placeholder="Search articles..." maxlength="200">
+                <button id="user-kb-search-btn" type="button">Search</button>
+              </div>
+            </div>
+            <div class="kb-content">
+              <div id="user-kb-articles-list" class="kb-articles-list"></div>
+              <div id="user-kb-article-viewer" class="kb-article-viewer hidden"></div>
+            </div>
+          </section>
+
+          <section id="user-page-create" class="user-page card hidden">
+            <p class="card-kicker">SERVICE INTAKE</p>
+            <h2>Create Ticket</h2>
+            <p id="user-property-note" class="muted"></p>
+            <div id="drop-zone" class="drop-zone" aria-label="Drop email file here">
+              Drop a .eml email file here to auto-fill fields
+            </div>
+            <p id="drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+            <form id="create-ticket-form" class="grid">
+              <label>
+                Title
+                <input id="ticket-title" type="text" required>
+              </label>
+
+              <label>
+                End User Email
+                <input id="end-user-email" type="email" placeholder="user@company.com">
+              </label>
+
+              <label class="span-2">
+                Description
+                <textarea id="ticket-description" rows="6" required></textarea>
+              </label>
+
+              <label>
+                Priority
+                <select id="ticket-priority">
+                  <option>Low</option>
+                  <option>Medium</option>
+                  <option>High</option>
+                  <option>Critical</option>
+                </select>
+              </label>
+
+              <label>
+                Type
+                <select id="ticket-type">
+                  <option>Incident</option>
+                  <option>Problem</option>
+                  <option>Request</option>
+                  <option>Change</option>
+                </select>
+              </label>
+
+              <label>
+                Technician ID (admin optional)
+                <input id="technician-id" type="number" min="1">
+              </label>
+
+              <label>
+                Initial Status
+                <select id="ticket-status"></select>
+              </label>
+
+              <div class="span-2 actions">
+                <button type="submit">Create Ticket</button>
+                <span id="create-status" class="muted"></span>
+              </div>
+            </form>
+          </section>
+        </div>
       </section>
 
       <section id="admin-shell" class="hidden admin-shell">

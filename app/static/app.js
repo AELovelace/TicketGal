@@ -4,6 +4,8 @@ const shell = document.querySelector(".shell");
 const userShell = document.getElementById("user-shell");
 const adminShell = document.getElementById("admin-shell");
 const welcomeText = document.getElementById("welcome-text");
+const userNavButtons = Array.from(document.querySelectorAll(".user-nav-btn"));
+const userPages = Array.from(document.querySelectorAll(".user-page"));
 
 const loginForm = document.getElementById("login-form");
 const logoutBtn = document.getElementById("logout-btn");
@@ -22,6 +24,11 @@ const userListStatus = document.getElementById("list-status");
 const userCreateStatus = document.getElementById("create-status");
 const userRefreshBtn = document.getElementById("refresh-btn");
 const userStatusFilter = document.getElementById("user-status-filter");
+const userInProgressBody = document.getElementById("user-in-progress-body");
+const userInProgressStatus = document.getElementById("user-in-progress-status");
+const userInProgressRefreshBtn = document.getElementById("user-in-progress-refresh-btn");
+const userPropertyNote = document.getElementById("user-property-note");
+const userPropertyChip = document.getElementById("user-property-chip");
 
 const userDropZone = document.getElementById("drop-zone");
 const userDropHint = document.getElementById("drop-hint");
@@ -115,6 +122,7 @@ const USER_LOCKED_CURRENT = ["pending", "closed", "pending closed"];
 
 let currentUser = null;
 let currentAdminPage = "admin-page-create";
+let currentUserPage = "user-page-in-progress";
 let cachedTickets = [];
 let cachedProperties = [];
 let alertsPollTimer = null;
@@ -925,8 +933,40 @@ function setAdminPage(pageId) {
     loadUsers();
   }
   if (pageId === "admin-page-knowledgebase") {
-    loadKBArticles();
+    loadKBArticles("admin");
   }
+}
+
+function setUserPage(pageId) {
+  currentUserPage = pageId;
+  userPages.forEach((page) => page.classList.toggle("hidden", page.id !== pageId));
+  userNavButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.userPage === pageId));
+  if (pageId === "user-page-knowledgebase") {
+    loadKBArticles("user");
+  }
+}
+
+function updateUserPropertyContext() {
+  const propertyName = safeText(currentUser?.property_name).trim();
+
+  if (userPropertyNote) {
+    userPropertyNote.textContent = propertyName
+      ? `New tickets will be assigned to ${propertyName}.`
+      : "No property is assigned to your account yet. New tickets will stay unpinned until an admin assigns one.";
+  }
+
+  if (userPropertyChip) {
+    userPropertyChip.textContent = propertyName || "No property assigned";
+    userPropertyChip.classList.toggle("is-unassigned", !propertyName);
+  }
+}
+
+function isUserInProgressTicket(ticket) {
+  if (Boolean(ticket?._queued)) {
+    return true;
+  }
+  const normalizedStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
+  return normalizedStatus === "open" || normalizedStatus === "pending" || normalizedStatus === "pending closed";
 }
 
 function formatUiDateTime(value) {
@@ -1492,6 +1532,9 @@ function applyRoleView() {
 
   if (isAdmin) {
     setAdminPage(currentAdminPage);
+  } else {
+    updateUserPropertyContext();
+    setUserPage(currentUserPage);
   }
 }
 
@@ -2195,13 +2238,6 @@ async function loadTickets() {
 
       items.forEach((ticket) => {
         const isQueued = Boolean(ticket?._queued);
-        const ticketStatus = String(ticket?.TicketStatus || "").trim().toLowerCase();
-        // Queued (create-pending) tickets always show regardless of status filter
-        if (!isQueued && selectedStatuses.size > 0 && !selectedStatuses.has(ticketStatus)) {
-          return;
-        }
-
-        // Use a synthetic key for queued tickets that have no real TicketID yet
         const ticketId = isQueued
           ? `_queued_${safeText(ticket._queuedTransactionId)}`
           : safeText(ticket?.TicketID);
@@ -2274,23 +2310,49 @@ async function loadTickets() {
 
     cachedTickets = allTickets;
 
+    const userFilteredTickets = currentUser?.role === "admin"
+      ? []
+      : cachedTickets.filter((ticket) => {
+          const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
+          return Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
+        });
+    const userInProgressTickets = currentUser?.role === "admin"
+      ? []
+      : cachedTickets.filter((ticket) => isUserInProgressTicket(ticket));
+    const adminVisibleTickets = currentUser?.role === "admin"
+      ? cachedTickets.filter((ticket) => {
+          const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
+          return Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
+        })
+      : [];
+
     userTicketsBody.innerHTML = "";
+    if (userInProgressBody) {
+      userInProgressBody.innerHTML = "";
+    }
     adminStatusBody.innerHTML = "";
 
-    cachedTickets.forEach((ticket) => {
-      if (currentUser?.role === "admin") {
+    if (currentUser?.role === "admin") {
+      adminVisibleTickets.forEach((ticket) => {
         adminStatusBody.appendChild(statusManagementRow(ticket));
-      } else {
+      });
+    } else {
+      userFilteredTickets.forEach((ticket) => {
         userTicketsBody.appendChild(ticketListRow(ticket, false));
+      });
+      if (userInProgressBody) {
+        userInProgressTickets.forEach((ticket) => {
+          userInProgressBody.appendChild(ticketListRow(ticket, false));
+        });
       }
-    });
+    }
 
     const pagesText = pagesFetched === 1 ? "1 page" : `${pagesFetched} pages`;
 
     if (currentUser?.role === "admin") {
-      const queuedCount = cachedTickets.filter((ticket) => Boolean(ticket?._queued)).length;
-      adminStatusMessage.textContent = cachedTickets.length
-        ? `Loaded ${cachedTickets.length} tickets from ${pagesText}.`
+      const queuedCount = adminVisibleTickets.filter((ticket) => Boolean(ticket?._queued)).length;
+      adminStatusMessage.textContent = adminVisibleTickets.length
+        ? `Loaded ${adminVisibleTickets.length} tickets from ${pagesText}.`
         : "No tickets found.";
       if (queuedCount > 0) {
         adminStatusMessage.textContent += ` ${queuedCount} queued ticket${queuedCount === 1 ? " is" : "s are"} awaiting replay.`;
@@ -2300,10 +2362,20 @@ async function loadTickets() {
         adminStatusMessage.textContent += ` Running in degraded mode using cached data.${detail}`;
       }
     } else {
-      userListStatus.textContent = `Loaded ${cachedTickets.length} tickets from ${pagesText}.`;
+      userListStatus.textContent = userFilteredTickets.length
+        ? `Loaded ${userFilteredTickets.length} tickets from ${pagesText}.`
+        : "No tickets match the selected statuses.";
+      if (userInProgressStatus) {
+        userInProgressStatus.textContent = userInProgressTickets.length
+          ? `Showing ${userInProgressTickets.length} ticket${userInProgressTickets.length === 1 ? "" : "s"} still in progress.`
+          : "No in-progress tickets right now.";
+      }
       if (usingCacheFallback) {
         const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
         userListStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
+        if (userInProgressStatus) {
+          userInProgressStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
+        }
       }
     }
   } catch (error) {
@@ -2311,6 +2383,9 @@ async function loadTickets() {
       adminStatusMessage.textContent = `Failed to load statuses: ${error.message}`;
     } else {
       userListStatus.textContent = `Failed to load tickets: ${error.message}`;
+      if (userInProgressStatus) {
+        userInProgressStatus.textContent = `Failed to load tickets: ${error.message}`;
+      }
     }
   }
 }
@@ -2866,6 +2941,7 @@ logoutBtn.addEventListener("click", async () => {
     alertsStatus.textContent = "Sign in to view alerts.";
   }
   applyTheme(false);
+  updateKBButtonVisibility();
   showAuth();
 });
 
@@ -2903,6 +2979,9 @@ if (adminAiAssistBtn) {
 }
 
 userRefreshBtn.addEventListener("click", loadTickets);
+if (userInProgressRefreshBtn) {
+  userInProgressRefreshBtn.addEventListener("click", loadTickets);
+}
 if (adminStatusRefreshBtn) {
   adminStatusRefreshBtn.addEventListener("click", async () => {
     await Promise.all([loadTickets(), loadAlerts()]);
@@ -2967,6 +3046,14 @@ navButtons.forEach((button) => {
   });
 });
 
+userNavButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    if (button.dataset.userPage) {
+      setUserPage(button.dataset.userPage);
+    }
+  });
+});
+
 document.querySelectorAll(".period-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     const period = btn.dataset.period;
@@ -3026,6 +3113,47 @@ userTicketsBody.addEventListener("click", async (event) => {
     }
   }
 });
+
+if (userInProgressBody) {
+  userInProgressBody.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    const openBtn = target.closest("[data-role='open-ticket']");
+    if (openBtn instanceof HTMLElement) {
+      const ticketId = openBtn.dataset.ticketId;
+      if (ticketId) {
+        await openTicketViewer(ticketId);
+      }
+      return;
+    }
+
+    const openQueuedBtn = target.closest("[data-role='open-queued-ticket']");
+    if (openQueuedBtn instanceof HTMLElement) {
+      const queueId = openQueuedBtn.dataset.queuedTransactionId;
+      if (queueId) {
+        await openQueuedTicketViewer(queueId);
+      }
+      return;
+    }
+
+    const commentSaveBtn = target.closest("[data-role='comment-save']");
+    if (commentSaveBtn instanceof HTMLElement) {
+      const row = commentSaveBtn.closest("tr");
+      const ticketId = commentSaveBtn.dataset.ticketId;
+      const queueId = commentSaveBtn.dataset.queuedTransactionId;
+      if (!row || (!ticketId && !queueId)) return;
+
+      try {
+        await postUpdateFromRow(row, ticketId || "", false, userInProgressStatus);
+      } catch (error) {
+        if (userInProgressStatus) {
+          userInProgressStatus.textContent = `Update failed: ${error.message}`;
+        }
+      }
+    }
+  });
+}
 
 adminStatusBody.addEventListener("click", async (event) => {
   const target = event.target;
@@ -3334,6 +3462,7 @@ async function refreshMe() {
   try {
     const result = await api("/auth/me");
     currentUser = result.user;
+    updateKBButtonVisibility();
     applyRoleView();
     loadAdminThemePreference();
     if (currentUser.role === "admin") {
@@ -3360,6 +3489,7 @@ async function refreshMe() {
     }
   } catch {
     currentUser = null;
+    updateKBButtonVisibility();
     stopAlertsPolling();
     if (alertsList) {
       alertsList.innerHTML = "";
@@ -3393,6 +3523,10 @@ const kbSearchBtn = document.getElementById("kb-search-btn");
 const kbNewArticleBtn = document.getElementById("kb-new-article-btn");
 const kbArticlesList = document.getElementById("kb-articles-list");
 const kbArticleViewer = document.getElementById("kb-article-viewer");
+const userKbSearchInput = document.getElementById("user-kb-search-input");
+const userKbSearchBtn = document.getElementById("user-kb-search-btn");
+const userKbArticlesList = document.getElementById("user-kb-articles-list");
+const userKbArticleViewer = document.getElementById("user-kb-article-viewer");
 const kbEditorTitleHeading = document.getElementById("kb-editor-title-heading");
 const kbEditorTitleInput = document.getElementById("kb-editor-title-input");
 const kbEditorVisibility = document.getElementById("kb-editor-visibility");
@@ -3403,71 +3537,100 @@ const kbEditorCancel = document.getElementById("kb-editor-cancel");
 const kbEditorDelete = document.getElementById("kb-editor-delete");
 const kbEditorStatus = document.getElementById("kb-editor-status");
 
+function getKBContext(target = null) {
+  const resolvedTarget = target || (currentUser?.role === "admin" ? "admin" : "user");
+  if (resolvedTarget === "user") {
+    return {
+      target: "user",
+      searchInput: userKbSearchInput,
+      searchBtn: userKbSearchBtn,
+      articlesList: userKbArticlesList,
+      articleViewer: userKbArticleViewer,
+      allowEdit: false,
+    };
+  }
+
+  return {
+    target: "admin",
+    searchInput: kbSearchInput,
+    searchBtn: kbSearchBtn,
+    articlesList: kbArticlesList,
+    articleViewer: kbArticleViewer,
+    allowEdit: true,
+  };
+}
+
 function openKBModal() {
   if (currentUser?.role === "admin") {
     setAdminPage("admin-page-knowledgebase");
     return;
   }
-  loadKBArticles();
+  setUserPage("user-page-knowledgebase");
 }
 
 function closeKBModal() {
   kbCurrentArticle = null;
-  if (kbArticleViewer) {
-    kbArticleViewer.classList.add("hidden");
-    kbArticleViewer.innerHTML = "";
-  }
+  [kbArticleViewer, userKbArticleViewer].forEach((viewer) => {
+    if (!viewer) return;
+    viewer.classList.add("hidden");
+    viewer.innerHTML = "";
+  });
 }
 
-async function loadKBArticles(search = "") {
-  if (!kbArticlesList) return;
-  kbArticlesList.innerHTML = '<p class="muted">Loading articles...</p>';
+async function loadKBArticles(target = null, search = "") {
+  const context = getKBContext(target);
+  if (!context.articlesList) return;
+
+  const effectiveSearch = safeText(search || context.searchInput?.value || "").trim();
+  context.articlesList.innerHTML = '<p class="muted">Loading articles...</p>';
   
   try {
-    const query = search ? `?search=${encodeURIComponent(search)}` : "";
+    const query = effectiveSearch ? `?search=${encodeURIComponent(effectiveSearch)}` : "";
     const result = await api(`/api/knowledgebase/articles${query}`);
-    kbArticlesList.innerHTML = "";
+    context.articlesList.innerHTML = "";
     
     if (!result.items || result.items.length === 0) {
-      kbArticlesList.innerHTML = '<p class="muted">No articles found.</p>';
+      context.articlesList.innerHTML = '<p class="muted">No articles found.</p>';
+      if (context.articleViewer) {
+        context.articleViewer.classList.add("hidden");
+        context.articleViewer.innerHTML = "";
+      }
       return;
     }
     
     result.items.forEach((article) => {
       const item = document.createElement("div");
       item.className = "kb-article-item";
+      item.dataset.articleSlug = safeText(article.slug);
       item.innerHTML = `
         <div class="kb-article-title">${safeText(article.title)}</div>
         <span class="kb-article-badge kb-badge-${article.visibility_type}">${safeText(article.visibility_type).replace(/_/g, " ")}</span>
       `;
-      item.addEventListener("click", () => displayKBArticle(article.slug));
-      kbArticlesList.appendChild(item);
+      item.addEventListener("click", () => displayKBArticle(article.slug, context.target));
+      context.articlesList.appendChild(item);
     });
   } catch (error) {
-    kbArticlesList.innerHTML = `<p class="muted error">Failed to load articles: ${safeText(error.message)}</p>`;
+    context.articlesList.innerHTML = `<p class="muted error">Failed to load articles: ${safeText(error.message)}</p>`;
   }
 }
 
-async function displayKBArticle(slug) {
+async function displayKBArticle(slug, target = null) {
+  const context = getKBContext(target);
+  if (!context.articleViewer) return;
+
   try {
     const article = await api(`/api/knowledgebase/articles/${slug}`);
     kbCurrentArticle = article;
     
-    // Highlight selected article in list
-    const items = document.querySelectorAll(".kb-article-item");
-    items.forEach((item) => item.classList.remove("active"));
-    items.forEach((item) => {
-      if (item.querySelector(".kb-article-title").textContent === article.title) {
-        item.classList.add("active");
-      }
+    Array.from(context.articlesList?.querySelectorAll(".kb-article-item") || []).forEach((item) => {
+      item.classList.toggle("active", item.dataset.articleSlug === safeText(article.slug));
     });
     
-    // Render article content
-    kbArticleViewer.classList.remove("hidden");
-    const isAdmin = currentUser && currentUser.role === "admin";
-    const editBtn = isAdmin ? `<button id="kb-edit-article-btn" type="button">Edit</button>` : "";
+    context.articleViewer.classList.remove("hidden");
+    const isAdminEditor = Boolean(currentUser && currentUser.role === "admin" && context.allowEdit);
+    const editBtn = isAdminEditor ? `<button id="kb-edit-article-btn" type="button">Edit</button>` : "";
     
-    kbArticleViewer.innerHTML = `
+    context.articleViewer.innerHTML = `
       <div class="kb-article-header">
         <h1>${safeText(article.title)}</h1>
         <div class="kb-article-actions">
@@ -3477,8 +3640,7 @@ async function displayKBArticle(slug) {
       <div class="kb-article-content" id="kb-article-markdown"></div>
     `;
     
-    // Render markdown content using marked.js if available, otherwise plain text
-    const markdownEl = document.getElementById("kb-article-markdown");
+    const markdownEl = context.articleViewer.querySelector("#kb-article-markdown");
     if (markdownEl) {
       if (typeof marked !== "undefined") {
         markdownEl.innerHTML = marked(article.content || "");
@@ -3488,21 +3650,22 @@ async function displayKBArticle(slug) {
       }
     }
     
-    // Add edit button listener if admin
-    if (isAdmin) {
-      const editBtn = document.getElementById("kb-edit-article-btn");
+    if (isAdminEditor) {
+      const editBtn = context.articleViewer.querySelector("#kb-edit-article-btn");
       if (editBtn) {
         editBtn.addEventListener("click", () => openKBEditor(article));
       }
     }
   } catch (error) {
-    kbArticleViewer.classList.remove("hidden");
-    kbArticleViewer.innerHTML = `<p class="muted error">Failed to load article: ${safeText(error.message)}</p>`;
+    context.articleViewer.classList.remove("hidden");
+    context.articleViewer.innerHTML = `<p class="muted error">Failed to load article: ${safeText(error.message)}</p>`;
   }
 }
 
 async function openKBEditor(article = null) {
   if (!kbEditorModal) return;
+
+  kbCurrentArticle = article;
 
   if (kbEditorTitleHeading) {
     kbEditorTitleHeading.textContent = article ? "Edit Article" : "New Article";
@@ -3576,13 +3739,18 @@ async function loadKBProperties() {
     const result = await api("/api/admin/properties");
     kbProperties = result.items || [];
     
-    // Populate customer dropdown
     if (kbEditorCustomerId) {
-      const options = kbProperties.map((p) => `<option value="${p.CustomerID}">${safeText(p.CustomerName)}</option>`).join("");
+      const options = kbProperties
+        .map((property) => {
+          const customerId = property.customer_id ?? property.CustomerID ?? "";
+          const customerName = property.customer_name ?? property.CustomerName ?? "";
+          return `<option value="${customerId}">${safeText(customerName)}</option>`;
+        })
+        .join("");
       kbEditorCustomerId.innerHTML = '<option value="">-- Select a property --</option>' + options;
     }
-  } catch (error) {
-    console.error("Failed to load properties:", error);
+  } catch {
+    kbProperties = [];
   }
 }
 
@@ -3629,7 +3797,7 @@ async function saveKBArticle() {
     kbEditorStatus.textContent = "Saved successfully!";
     setTimeout(() => {
       closeKBEditor();
-      loadKBArticles();
+      loadKBArticles("admin");
     }, 800);
   } catch (error) {
     kbEditorStatus.textContent = `Error: ${safeText(error.message)}`;
@@ -3651,7 +3819,7 @@ async function deleteKBArticle() {
     kbEditorStatus.textContent = "Deleted successfully!";
     setTimeout(() => {
       closeKBEditor();
-      loadKBArticles();
+      loadKBArticles("admin");
     }, 800);
   } catch (error) {
     kbEditorStatus.textContent = `Error: ${safeText(error.message)}`;
@@ -3704,8 +3872,7 @@ function sanitizeElement(el) {
 // Event listeners
 if (kbSearchBtn) {
   kbSearchBtn.addEventListener("click", () => {
-    const query = kbSearchInput ? kbSearchInput.value : "";
-    loadKBArticles(query);
+    loadKBArticles("admin");
   });
 }
 
@@ -3713,6 +3880,20 @@ if (kbSearchInput) {
   kbSearchInput.addEventListener("keypress", (e) => {
     if (e.key === "Enter") {
       kbSearchBtn?.click();
+    }
+  });
+}
+
+if (userKbSearchBtn) {
+  userKbSearchBtn.addEventListener("click", () => {
+    loadKBArticles("user");
+  });
+}
+
+if (userKbSearchInput) {
+  userKbSearchInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      userKbSearchBtn?.click();
     }
   });
 }
@@ -3743,14 +3924,10 @@ if (kbEditorDelete) {
 
 // Show/hide KB button based on user role
 function updateKBButtonVisibility() {
-  if (!kbNewArticleBtn || !currentUser) return;
-  kbNewArticleBtn.style.display = currentUser.role === "admin" ? "block" : "none";
+  if (!kbNewArticleBtn) return;
+  kbNewArticleBtn.style.display = currentUser?.role === "admin" ? "block" : "none";
 }
 
-// Update KB button visibility after user loads
-const origRefreshMe = window.refreshMe;
-if (typeof origRefreshMe === "function") {
-  setTimeout(() => {
-    updateKBButtonVisibility();
-  }, 100);
-}
+setTimeout(() => {
+  updateKBButtonVisibility();
+}, 100);
