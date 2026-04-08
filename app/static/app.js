@@ -1696,9 +1696,14 @@ function bindDropZone(zone, hint, prefix) {
 
 async function loadTickets() {
   try {
-    const statusFilter = currentUser?.role === "admin"
-      ? (adminStatusFilter?.value || "")
-      : (userStatusFilter?.value || "");
+    const statusFilterContainer = currentUser?.role === "admin"
+      ? adminStatusFilter
+      : userStatusFilter;
+    const selectedStatuses = new Set(
+      Array.from(statusFilterContainer?.querySelectorAll("input[type='checkbox']:checked") || [])
+        .map((input) => String(input.value || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
 
     const pageSize = 50;
     const maxPages = 200;
@@ -1711,9 +1716,6 @@ async function loadTickets() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("items_in_page", String(pageSize));
-      if (statusFilter) {
-        params.set("ticket_status", statusFilter);
-      }
 
       const result = await api(`/api/tickets?${params.toString()}`);
       const items = Array.isArray(result?.items) ? result.items : [];
@@ -1725,6 +1727,11 @@ async function loadTickets() {
       }
 
       items.forEach((ticket) => {
+        const ticketStatus = String(ticket?.TicketStatus || "").trim().toLowerCase();
+        if (selectedStatuses.size > 0 && !selectedStatuses.has(ticketStatus)) {
+          return;
+        }
+
         const ticketId = safeText(ticket?.TicketID);
         if (!ticketId || seenTicketIds.has(ticketId)) return;
         seenTicketIds.add(ticketId);
