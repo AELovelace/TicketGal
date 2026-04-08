@@ -522,7 +522,6 @@ td select {
 }
 
 .status-closed {
-.status-closed {
   color: #d81b60;
 }
 
@@ -1103,6 +1102,4 @@ body.theme-premium .report-ai-error {
   border-color: #d88f95;
   background: #f9e6e8;
   color: #7f2a30;
-}
-
 }

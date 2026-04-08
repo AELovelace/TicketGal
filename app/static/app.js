@@ -2525,17 +2525,19 @@ userTicketsBody.addEventListener("click", async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
 
-  if (target.dataset.role === "open-ticket") {
-    const ticketId = target.dataset.ticketId;
+  const openBtn = target.closest("[data-role='open-ticket']");
+  if (openBtn instanceof HTMLElement) {
+    const ticketId = openBtn.dataset.ticketId;
     if (ticketId) {
       await openTicketViewer(ticketId);
     }
     return;
   }
 
-  if (target.dataset.role === "comment-save") {
-    const row = target.closest("tr");
-    const ticketId = target.dataset.ticketId;
+  const commentSaveBtn = target.closest("[data-role='comment-save']");
+  if (commentSaveBtn instanceof HTMLElement) {
+    const row = commentSaveBtn.closest("tr");
+    const ticketId = commentSaveBtn.dataset.ticketId;
     if (!row || !ticketId) return;
 
     try {
@@ -2550,17 +2552,19 @@ adminStatusBody.addEventListener("click", async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
 
-  if (target.dataset.role === "open-ticket") {
-    const ticketId = target.dataset.ticketId;
+  const openBtn = target.closest("[data-role='open-ticket']");
+  if (openBtn instanceof HTMLElement) {
+    const ticketId = openBtn.dataset.ticketId;
     if (ticketId) {
       await openTicketViewer(ticketId);
     }
     return;
   }
 
-  if (target.dataset.role === "admin-status-save") {
-    const row = target.closest("tr");
-    const ticketId = target.dataset.ticketId;
+  const saveBtn = target.closest("[data-role='admin-status-save']");
+  if (saveBtn instanceof HTMLElement) {
+    const row = saveBtn.closest("tr");
+    const ticketId = saveBtn.dataset.ticketId;
     const select = row?.querySelector("[data-role='admin-status-select']");
     if (!ticketId || !(select instanceof HTMLSelectElement)) return;
 
@@ -2584,10 +2588,11 @@ if (ticketViewer) {
   ticketViewer.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    if (target.dataset.role !== "comment-save") return;
+    const saveBtn = target.closest("[data-role='comment-save']");
+    if (!(saveBtn instanceof HTMLElement)) return;
 
-    const row = target.closest(".viewer-update-form");
-    const ticketId = target.dataset.ticketId;
+    const row = saveBtn.closest(".viewer-update-form");
+    const ticketId = saveBtn.dataset.ticketId;
     if (!row || !ticketId) return;
 
     try {
