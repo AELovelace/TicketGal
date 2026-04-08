@@ -1476,7 +1476,28 @@ function statusManagementRow(ticket) {
 
   const actionTd = document.createElement("td");
   if (isQueued) {
-    actionTd.appendChild(buildUpdateControls(ticket, true));
+    const select = document.createElement("select");
+    select.dataset.role = "admin-status-select";
+    const noChangeOption = document.createElement("option");
+    noChangeOption.value = "";
+    noChangeOption.textContent = "— no change —";
+    noChangeOption.selected = true;
+    select.appendChild(noChangeOption);
+    ADMIN_STATUSES.forEach((status) => {
+      const option = document.createElement("option");
+      option.value = status;
+      option.textContent = status;
+      select.appendChild(option);
+    });
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.role = "admin-status-save";
+    btn.dataset.queuedTransactionId = String(ticket._queuedTransactionId || "");
+    btn.textContent = "Apply";
+
+    actionTd.appendChild(select);
+    actionTd.appendChild(btn);
   } else {
     const select = document.createElement("select");
     select.dataset.role = "admin-status-select";
@@ -2737,34 +2758,29 @@ adminStatusBody.addEventListener("click", async (event) => {
   if (saveBtn instanceof HTMLElement) {
     const row = saveBtn.closest("tr");
     const ticketId = saveBtn.dataset.ticketId;
+    const queuedTransactionId = saveBtn.dataset.queuedTransactionId;
     const select = row?.querySelector("[data-role='admin-status-select']");
-    if (!ticketId || !(select instanceof HTMLSelectElement)) return;
+    if ((!ticketId && !queuedTransactionId) || !(select instanceof HTMLSelectElement) || !select.value) return;
 
     try {
-      const result = await api(`/api/tickets/${ticketId}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket_status: select.value }),
-      });
-      adminStatusMessage.textContent = Boolean(result?.queued)
-        ? `Status change for ticket ${ticketId} was queued and will sync when Atera recovers.`
-        : `Updated status for ticket ${ticketId}.`;
+      const result = await api(
+        queuedTransactionId
+          ? `/api/queued-tickets/${queuedTransactionId}/status`
+          : `/api/tickets/${ticketId}/status`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticket_status: select.value }),
+        }
+      );
+      adminStatusMessage.textContent = queuedTransactionId
+        ? `Status change for queued ticket ${queuedTransactionId} was stored for replay.`
+        : Boolean(result?.queued)
+          ? `Status change for ticket ${ticketId} was queued and will sync when Atera recovers.`
+          : `Updated status for ticket ${ticketId}.`;
       await loadTickets();
     } catch (error) {
       adminStatusMessage.textContent = `Status update failed: ${error.message}`;
-    }
-  }
-
-  const commentSaveBtn = target.closest("[data-role='comment-save']");
-  if (commentSaveBtn instanceof HTMLElement) {
-    const row = commentSaveBtn.closest("tr");
-    const queuedTransactionId = commentSaveBtn.dataset.queuedTransactionId;
-    if (!row || !queuedTransactionId) return;
-
-    try {
-      await postUpdateFromRow(row, "", true);
-    } catch (error) {
-      adminStatusMessage.textContent = `Queued update failed: ${error.message}`;
     }
   }
 });
