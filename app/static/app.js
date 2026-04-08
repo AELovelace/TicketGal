@@ -44,6 +44,12 @@ const refreshUsersBtn = document.getElementById("refresh-users-btn");
 const pendingUsersEl = document.getElementById("pending-users");
 const userManagementListEl = document.getElementById("user-management-list");
 const userSearchInput = document.getElementById("user-search");
+const lockoutKeyTypeEl = document.getElementById("lockout-key-type");
+const lockoutKeyValueEl = document.getElementById("lockout-key-value");
+const clearLockoutBtn = document.getElementById("clear-lockout-btn");
+const refreshLockoutsBtn = document.getElementById("refresh-lockouts-btn");
+const lockoutStatusEl = document.getElementById("lockout-status");
+const lockoutListEl = document.getElementById("lockout-list");
 const alertsFeed = document.getElementById("alerts-feed");
 const alertsStatus = document.getElementById("alerts-status");
 const alertsList = document.getElementById("alerts-list");
@@ -900,6 +906,150 @@ function setAdminPage(pageId) {
   currentAdminPage = pageId;
   adminPages.forEach((page) => page.classList.toggle("hidden", page.id !== pageId));
   navButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.adminPage === pageId));
+  if (pageId === "admin-page-users" && currentUser?.role === "admin") {
+    loadUsers();
+  }
+}
+
+function formatUiDateTime(value) {
+  const text = safeText(value).trim();
+  if (!text) return "-";
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime())
+    ? text
+    : parsed.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+}
+
+function normalizeLockoutKeyValue(keyType, keyValue) {
+  const raw = safeText(keyValue).trim();
+  if (!raw) return "";
+  return keyType === "email" ? raw.toLowerCase() : raw;
+}
+
+async function clearLockoutEntry(keyType, keyValue) {
+  const normalizedType = safeText(keyType).trim().toLowerCase();
+  const normalizedValue = normalizeLockoutKeyValue(normalizedType, keyValue);
+  if (!normalizedValue) {
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = "Provide an email or IP value to clear.";
+    }
+    return;
+  }
+
+  try {
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = "Clearing lockout entry...";
+    }
+    await api("/api/admin/security/login-rate-limits/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key_type: normalizedType,
+        key_value: normalizedValue,
+      }),
+    });
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = `Cleared ${normalizedType} lockout entry for ${normalizedValue}.`;
+    }
+    await loadLoginRateLimits();
+  } catch (error) {
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = `Failed to clear lockout: ${error.message}`;
+    }
+  }
+}
+
+async function loadLoginRateLimits() {
+  if (currentUser?.role !== "admin" || !lockoutListEl) return;
+
+  if (lockoutStatusEl) {
+    lockoutStatusEl.textContent = "Loading lockout data...";
+  }
+
+  try {
+    const snapshot = await api("/api/admin/security/login-rate-limits?limit=100");
+    const activeLockouts = Array.isArray(snapshot?.active_lockouts) ? snapshot.active_lockouts : [];
+    const recentFailures = Array.isArray(snapshot?.recent_failed_attempts) ? snapshot.recent_failed_attempts : [];
+
+    lockoutListEl.innerHTML = "";
+
+    const activeHeader = document.createElement("h4");
+    activeHeader.textContent = `Active Lockouts (${activeLockouts.length})`;
+    lockoutListEl.appendChild(activeHeader);
+
+    if (!activeLockouts.length) {
+      const emptyActive = document.createElement("p");
+      emptyActive.className = "muted";
+      emptyActive.textContent = "No active lockouts.";
+      lockoutListEl.appendChild(emptyActive);
+    } else {
+      activeLockouts.forEach((entry) => {
+        const row = document.createElement("div");
+        row.className = "pending-row";
+
+        const details = document.createElement("span");
+        const entryType = safeText(entry?.key_type).toUpperCase();
+        const entryValue = safeText(entry?.key_value);
+        const count = Number(entry?.failure_count || 0);
+        const remainingSeconds = Number(entry?.seconds_until_unlock || 0);
+        details.textContent = `${entryType}: ${entryValue} | Failures: ${count} | Unlocks in ${remainingSeconds}s`;
+
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.textContent = "Clear";
+        clearBtn.dataset.lockoutKeyType = safeText(entry?.key_type).toLowerCase();
+        clearBtn.dataset.lockoutKeyValue = entryValue;
+
+        row.appendChild(details);
+        row.appendChild(clearBtn);
+        lockoutListEl.appendChild(row);
+      });
+    }
+
+    const recentHeader = document.createElement("h4");
+    recentHeader.textContent = `Recent Failed Attempts (${recentFailures.length})`;
+    lockoutListEl.appendChild(recentHeader);
+
+    if (!recentFailures.length) {
+      const emptyRecent = document.createElement("p");
+      emptyRecent.className = "muted";
+      emptyRecent.textContent = "No recent failed attempts in the current window.";
+      lockoutListEl.appendChild(emptyRecent);
+    } else {
+      recentFailures.forEach((entry) => {
+        const row = document.createElement("div");
+        row.className = "pending-row";
+
+        const details = document.createElement("span");
+        const entryType = safeText(entry?.key_type).toUpperCase();
+        const entryValue = safeText(entry?.key_value);
+        const count = Number(entry?.failure_count || 0);
+        const lockedLabel = entry?.is_locked ? "LOCKED" : "not locked";
+        details.textContent = `${entryType}: ${entryValue} | Failures: ${count} | Last failed: ${formatUiDateTime(entry?.last_failed_at)} | ${lockedLabel}`;
+
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.textContent = "Clear";
+        clearBtn.dataset.lockoutKeyType = safeText(entry?.key_type).toLowerCase();
+        clearBtn.dataset.lockoutKeyValue = entryValue;
+
+        row.appendChild(details);
+        row.appendChild(clearBtn);
+        lockoutListEl.appendChild(row);
+      });
+    }
+
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = `Window ${snapshot?.window_minutes || 15}m, lockout ${snapshot?.lockout_minutes || 30}m. Email max ${snapshot?.max_attempts_per_email || 5}, IP max ${snapshot?.max_attempts_per_ip || 20}.`;
+    }
+  } catch (error) {
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = `Failed to load lockout data: ${error.message}`;
+    }
+    if (lockoutListEl) {
+      lockoutListEl.innerHTML = "";
+    }
+  }
 }
 
 function closeTicketViewer() {
@@ -2175,9 +2325,14 @@ async function loadUsers() {
       mgmtRow.appendChild(deleteBtn);
       userManagementListEl.appendChild(mgmtRow);
     });
+
+    await loadLoginRateLimits();
   } catch (error) {
     pendingUsersEl.textContent = `Failed: ${error.message}`;
     userManagementListEl.textContent = `Failed: ${error.message}`;
+    if (lockoutStatusEl) {
+      lockoutStatusEl.textContent = `Failed to load lockout data: ${error.message}`;
+    }
   }
 }
 
@@ -2637,6 +2792,27 @@ if (adminStatusRefreshBtn) {
   });
 }
 refreshUsersBtn.addEventListener("click", loadUsers);
+if (refreshLockoutsBtn) {
+  refreshLockoutsBtn.addEventListener("click", () => loadLoginRateLimits());
+}
+if (clearLockoutBtn) {
+  clearLockoutBtn.addEventListener("click", async () => {
+    const keyType = safeText(lockoutKeyTypeEl?.value || "email").toLowerCase();
+    const keyValue = safeText(lockoutKeyValueEl?.value || "");
+    await clearLockoutEntry(keyType, keyValue);
+  });
+}
+if (lockoutListEl) {
+  lockoutListEl.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const button = target.closest("button[data-lockout-key-type][data-lockout-key-value]");
+    if (!(button instanceof HTMLButtonElement)) return;
+    const keyType = safeText(button.dataset.lockoutKeyType || "").toLowerCase();
+    const keyValue = safeText(button.dataset.lockoutKeyValue || "");
+    await clearLockoutEntry(keyType, keyValue);
+  });
+}
 if (alertsRefreshBtn) {
   alertsRefreshBtn.addEventListener("click", () => loadAlerts());
 }

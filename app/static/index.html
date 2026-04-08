@@ -294,6 +294,22 @@
                 <p class="muted">Assign a property to a user to auto-assign their future tickets.</p>
                 <div id="user-management-list"></div>
               </div>
+
+              <div class="span-2">
+                <h3>Login Lockouts</h3>
+                <p class="muted">Monitor active lockouts and clear a specific email/IP entry for emergency unblocking.</p>
+                <div class="actions lockout-controls">
+                  <select id="lockout-key-type" aria-label="Lockout key type">
+                    <option value="email">Email</option>
+                    <option value="ip">IP</option>
+                  </select>
+                  <input id="lockout-key-value" type="text" placeholder="user@company.com or 192.0.2.10" aria-label="Lockout key value">
+                  <button id="clear-lockout-btn" type="button">Clear Lockout</button>
+                  <button id="refresh-lockouts-btn" type="button">Refresh Lockouts</button>
+                </div>
+                <p id="lockout-status" class="muted"></p>
+                <div id="lockout-list"></div>
+              </div>
             </div>
           </section>
 
