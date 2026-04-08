@@ -303,8 +303,131 @@ def _migrate_legacy_ticket_cache_to_dedicated_db() -> None:
         conn.execute("VACUUM")
 
 
+def _backfill_status_history() -> None:
+    """Backfill synthetic history rows for tickets that have no history entry yet.
+    Uses updated_at (LastEndUserCommentTimestamp) as the proxy timestamp for all tickets.
+    For Closed/Resolved tickets this reflects the last real activity date.
+    The NOT EXISTS guard makes this a no-op for already-seeded tickets."""
+    with get_ticket_cache_conn() as conn:
+        # Repair older synthetic rows that used last_seen_sync_at as changed_at.
+        # Prefer real ticket dates so period reports reflect historical activity.
+        conn.execute(
+            """
+            UPDATE ticket_status_history
+            SET changed_at = (
+                SELECT COALESCE(tc.updated_at, tc.created_at)
+                FROM ticket_cache tc
+                WHERE tc.ticket_id = ticket_status_history.ticket_id
+            )
+            WHERE old_status IS NULL
+              AND changed_by_user_id IS NULL
+              AND (
+                  changed_at IS NULL
+                  OR changed_at = ''
+                  OR changed_at = (
+                      SELECT tc.last_seen_sync_at
+                      FROM ticket_cache tc
+                      WHERE tc.ticket_id = ticket_status_history.ticket_id
+                  )
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM ticket_cache tc
+                  WHERE tc.ticket_id = ticket_status_history.ticket_id
+                    AND COALESCE(tc.updated_at, tc.created_at) IS NOT NULL
+              )
+            """
+        )
+
+        conn.execute(
+            """
+            INSERT INTO ticket_status_history(
+                ticket_id, old_status, new_status, changed_by_user_id, changed_at
+            )
+            SELECT
+                tc.ticket_id,
+                NULL,
+                tc.ticket_status,
+                NULL,
+                                COALESCE(tc.updated_at, tc.created_at)
+            FROM ticket_cache tc
+            WHERE tc.ticket_status IS NOT NULL
+                            AND COALESCE(tc.updated_at, tc.created_at) IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM ticket_status_history h
+                  WHERE h.ticket_id = tc.ticket_id
+              )
+            """
+        )
+        conn.commit()
+
+
+def _backfill_ticket_cache_dates() -> None:
+    """Populate missing created_at/updated_at in ticket_cache from raw_json.
+
+    This repairs legacy rows written before TicketCreatedDate /
+    LastEndUserCommentTimestamp mapping was added, so period reports can use
+    historical first-opened and last-activity timestamps.
+    """
+    with get_ticket_cache_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT ticket_id, raw_json, created_at, updated_at
+            FROM ticket_cache
+            WHERE created_at IS NULL OR created_at = '' OR updated_at IS NULL OR updated_at = ''
+            """
+        ).fetchall()
+
+        updates: List[tuple] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["raw_json"] or "{}")
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            created = str(
+                payload.get("TicketCreatedDate")
+                or payload.get("CreatedDate")
+                or payload.get("CreationDate")
+                or payload.get("CreatedAt")
+                or ""
+            ).strip() or None
+
+            updated = str(
+                payload.get("LastEndUserCommentTimestamp")
+                or payload.get("LastUpdateDate")
+                or payload.get("LastActionDate")
+                or payload.get("UpdatedDate")
+                or ""
+            ).strip() or None
+
+            current_created = str(row["created_at"] or "").strip() or None
+            current_updated = str(row["updated_at"] or "").strip() or None
+
+            next_created = current_created or created
+            next_updated = current_updated or updated
+
+            if next_created != current_created or next_updated != current_updated:
+                updates.append((next_created, next_updated, int(row["ticket_id"])))
+
+        if updates:
+            conn.executemany(
+                """
+                UPDATE ticket_cache
+                SET created_at = ?, updated_at = ?
+                WHERE ticket_id = ?
+                """,
+                updates,
+            )
+            conn.commit()
+
+
 def init_db() -> None:
     _create_ticket_cache_schema()
+    _backfill_ticket_cache_dates()
+    _backfill_status_history()
     _create_transactions_schema()
     _recover_in_progress_transactions()
     _migrate_legacy_ticket_cache_to_dedicated_db()
@@ -434,8 +557,8 @@ def _ticket_cache_row(ticket: Dict[str, Any], sync_marker: str) -> Optional[tupl
     customer_name = str(ticket.get("CustomerName") or "").strip() or None
     end_user_email = str(ticket.get("EndUserEmail") or "").strip().lower() or None
     ticket_title = str(ticket.get("TicketTitle") or "").strip() or None
-    created_at = str(ticket.get("CreatedDate") or ticket.get("CreationDate") or ticket.get("CreatedAt") or "").strip() or None
-    updated_at = str(ticket.get("LastUpdateDate") or ticket.get("LastActionDate") or ticket.get("UpdatedDate") or "").strip() or None
+    created_at = str(ticket.get("TicketCreatedDate") or ticket.get("CreatedDate") or ticket.get("CreationDate") or ticket.get("CreatedAt") or "").strip() or None
+    updated_at = str(ticket.get("LastEndUserCommentTimestamp") or ticket.get("LastUpdateDate") or ticket.get("LastActionDate") or ticket.get("UpdatedDate") or "").strip() or None
     raw_json = json.dumps(ticket, separators=(",", ":"), ensure_ascii=True)
 
     return (
@@ -1066,23 +1189,33 @@ def log_audit_event(
         conn.commit()
 
 
-def get_ticket_report_stats(period_start: str) -> Dict[str, Any]:
+def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None) -> Dict[str, Any]:
     """Return ticket counts and per-customer breakdowns for the requested period."""
     with get_ticket_cache_conn() as conn:
+        opened_where = "created_at >= ?"
+        opened_params: tuple = (period_start,)
+        resolved_where = "new_status IN ('Closed', 'Resolved') AND changed_at >= ?"
+        resolved_params: tuple = (period_start,)
+        if period_end:
+            opened_where += " AND created_at < ?"
+            opened_params = (period_start, period_end)
+            resolved_where += " AND changed_at < ?"
+            resolved_params = (period_start, period_end)
+
         opened_count = int(
             (conn.execute(
-                "SELECT COUNT(*) AS cnt FROM ticket_cache WHERE created_at >= ?",
-                (period_start,),
+                f"SELECT COUNT(*) AS cnt FROM ticket_cache WHERE {opened_where}",
+                opened_params,
             ).fetchone() or {})["cnt"] or 0
         )
 
         resolved_count = int(
             (conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS cnt FROM ticket_status_history
-                WHERE new_status IN ('Closed', 'Resolved') AND changed_at >= ?
+                WHERE {resolved_where}
                 """,
-                (period_start,),
+                resolved_params,
             ).fetchone() or {})["cnt"] or 0
         )
 
@@ -1098,41 +1231,90 @@ def get_ticket_report_stats(period_start: str) -> Dict[str, Any]:
             ).fetchone() or {})["cnt"] or 0
         )
 
+        opened_case = "created_at >= ?"
+        by_customer_params: tuple = (period_start,)
+        resolved_period_where = "tsh.new_status IN ('Closed', 'Resolved') AND tsh.changed_at >= ?"
+        resolved_by_customer_params: tuple = (period_start,)
+        if period_end:
+            opened_case += " AND created_at < ?"
+            by_customer_params = (period_start, period_end)
+            resolved_period_where += " AND tsh.changed_at < ?"
+            resolved_by_customer_params = (period_start, period_end)
+
         by_customer_rows = conn.execute(
-            """
+            f"""
             SELECT customer_name,
-                   SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS opened
+                   SUM(CASE WHEN {opened_case} THEN 1 ELSE 0 END) AS opened
             FROM ticket_cache
             GROUP BY customer_name
             """,
-            (period_start,),
+            by_customer_params,
         ).fetchall()
 
         resolved_by_customer_rows = conn.execute(
-            """
+            f"""
             SELECT tc.customer_name, COUNT(*) AS resolved
             FROM ticket_status_history tsh
             JOIN ticket_cache tc ON tc.ticket_id = tsh.ticket_id
-            WHERE tsh.new_status IN ('Closed', 'Resolved') AND tsh.changed_at >= ?
+            WHERE {resolved_period_where}
             GROUP BY tc.customer_name
             """,
-            (period_start,),
+            resolved_by_customer_params,
         ).fetchall()
 
-        sample_title_rows = conn.execute(
+        pending_by_customer_rows = conn.execute(
             """
+            SELECT customer_name, COUNT(*) AS pending
+            FROM ticket_cache
+            WHERE ticket_status = 'Pending'
+            GROUP BY customer_name
+            ORDER BY pending DESC, customer_name ASC
+            LIMIT 10
+            """
+        ).fetchall()
+
+        sample_where = "tsh.new_status IN ('Closed', 'Resolved') AND tsh.changed_at >= ?"
+        sample_params: tuple = (period_start,)
+        if period_end:
+            sample_where += " AND tsh.changed_at < ?"
+            sample_params = (period_start, period_end)
+
+        sample_title_rows = conn.execute(
+            f"""
             SELECT tc.ticket_title
             FROM ticket_status_history tsh
             JOIN ticket_cache tc ON tc.ticket_id = tsh.ticket_id
-            WHERE tsh.new_status IN ('Closed', 'Resolved') AND tsh.changed_at >= ?
+            WHERE {sample_where}
             ORDER BY tsh.changed_at DESC
             LIMIT 8
             """,
-            (period_start,),
+            sample_params,
+        ).fetchall()
+
+        pending_title_rows = conn.execute(
+            """
+            SELECT ticket_title
+            FROM ticket_cache
+            WHERE ticket_status = 'Pending'
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            LIMIT 8
+            """
+        ).fetchall()
+
+        pending_request_rows = conn.execute(
+            """
+            SELECT ticket_id, customer_name, ticket_title, created_at, updated_at, raw_json
+            FROM ticket_cache
+            WHERE ticket_status = 'Pending'
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            """
         ).fetchall()
 
     resolved_map: Dict[str, int] = {
         str(r["customer_name"] or ""): int(r["resolved"]) for r in resolved_by_customer_rows
+    }
+    pending_map: Dict[str, int] = {
+        str(r["customer_name"] or ""): int(r["pending"]) for r in pending_by_customer_rows
     }
 
     by_customer: List[Dict[str, Any]] = []
@@ -1140,13 +1322,55 @@ def get_ticket_report_stats(period_start: str) -> Dict[str, Any]:
         name = str(r["customer_name"] or "Unknown")
         opened = int(r["opened"] or 0)
         resolved = resolved_map.get(str(r["customer_name"] or ""), 0)
-        if opened > 0 or resolved > 0:
-            by_customer.append({"customer_name": name, "opened": opened, "resolved": resolved})
+        pending = pending_map.get(str(r["customer_name"] or ""), 0)
+        if opened > 0 or resolved > 0 or pending > 0:
+            by_customer.append({
+                "customer_name": name,
+                "opened": opened,
+                "resolved": resolved,
+                "pending": pending,
+            })
     by_customer = by_customer[:10]
 
     sample_titles: List[str] = [
         str(r["ticket_title"]) for r in sample_title_rows if r["ticket_title"]
     ]
+
+    pending_by_customer: List[Dict[str, Any]] = [
+        {
+            "customer_name": str(r["customer_name"] or "Unknown"),
+            "pending": int(r["pending"] or 0),
+        }
+        for r in pending_by_customer_rows
+        if int(r["pending"] or 0) > 0
+    ]
+
+    pending_sample_titles: List[str] = [
+        str(r["ticket_title"]) for r in pending_title_rows if r["ticket_title"]
+    ]
+
+    pending_request_tickets: List[Dict[str, Any]] = []
+    for r in pending_request_rows:
+        payload: Dict[str, Any] = {}
+        try:
+            parsed = json.loads(r["raw_json"] or "{}")
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+
+        ticket_type = str(payload.get("TicketType") or "").strip()
+
+        pending_request_tickets.append(
+            {
+                "ticket_id": int(r["ticket_id"]),
+                "customer_name": str(r["customer_name"] or "Unknown"),
+                "title": str(r["ticket_title"] or ""),
+                "created_at": str(r["created_at"] or ""),
+                "last_activity_at": str(r["updated_at"] or ""),
+                "ticket_type": ticket_type or "Request",
+            }
+        )
 
     return {
         "opened_count": opened_count,
@@ -1155,4 +1379,7 @@ def get_ticket_report_stats(period_start: str) -> Dict[str, Any]:
         "currently_pending_count": currently_pending,
         "by_customer": by_customer,
         "sample_titles": sample_titles,
+        "pending_by_customer": pending_by_customer,
+        "pending_sample_titles": pending_sample_titles,
+        "pending_request_tickets": pending_request_tickets,
     }

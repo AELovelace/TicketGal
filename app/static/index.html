@@ -246,19 +246,15 @@
           </section>
 
           <section id="admin-page-status" class="admin-page card hidden">
-            <div class="list-header">
-              <div>
-                <p class="card-kicker">STATUS GOVERNANCE</p>
-                <h2>Ticket Statuses</h2>
-              </div>
-              <div class="actions">
-                <button id="admin-status-refresh-btn" type="button">Refresh</button>
-                <div id="admin-status-filter" class="status-filter-checks">
-                  <label><input type="checkbox" value="Open" checked> Open</label>
-                  <label><input type="checkbox" value="Pending" checked> Pending</label>
-                  <label><input type="checkbox" value="Resolved" checked> Resolved</label>
-                  <label><input type="checkbox" value="Closed" checked> Closed</label>
-                </div>
+            <p class="card-kicker">STATUS GOVERNANCE</p>
+            <h2>Ticket Statuses</h2>
+            <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
+              <button id="admin-status-refresh-btn" type="button">Refresh</button>
+              <div id="admin-status-filter" class="status-filter-checks">
+                <label><input type="checkbox" value="Open" checked> Open</label>
+                <label><input type="checkbox" value="Pending" checked> Pending</label>
+                <label><input type="checkbox" value="Resolved" checked> Resolved</label>
+                <label><input type="checkbox" value="Closed" checked> Closed</label>
               </div>
             </div>
 
@@ -341,6 +337,19 @@
               <button type="button" class="period-btn" data-period="week">1 Week</button>
               <button type="button" class="period-btn" data-period="month">1 Month</button>
               <button type="button" class="period-btn" data-period="year">1 Year</button>
+              <button type="button" class="period-btn" data-period="custom">Custom Range</button>
+            </div>
+
+            <div id="report-custom-controls" class="report-custom-controls hidden">
+              <label>
+                Start Date
+                <input id="report-custom-start" type="date">
+              </label>
+              <label>
+                End Date
+                <input id="report-custom-end" type="date">
+              </label>
+              <button id="report-custom-run" type="button">Run Custom</button>
             </div>
 
             <p id="report-loading" class="muted hidden">Generating report&hellip;</p>
@@ -372,6 +381,7 @@
                     <th>Property</th>
                     <th>Opened</th>
                     <th>Resolved</th>
+                    <th>Pending</th>
                   </tr>
                 </thead>
                 <tbody id="report-customer-body"></tbody>
@@ -379,7 +389,7 @@
             </div>
 
             <div id="report-ai-section" class="hidden">
-              <h3>AI Analysis</h3>
+              <h3>Workload Analysis</h3>
               <div id="report-ai-summary" class="report-ai-summary"></div>
             </div>
           </section>

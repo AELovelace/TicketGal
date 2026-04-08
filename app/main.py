@@ -1,8 +1,10 @@
+import hashlib
 import os
 import json
 import re
 import secrets
 import tempfile
+from datetime import datetime, time, timedelta, timezone
 from urllib.parse import urlencode
 from email import policy
 from email.parser import BytesParser
@@ -38,6 +40,7 @@ from .database import (
     delete_user,
     delete_session,
     get_signups_enabled,
+    get_ticket_report_stats,
     get_user_by_email,
     get_user_by_id,
     get_user_by_microsoft_identity,
@@ -287,16 +290,39 @@ def _resolve_microsoft_user(email: str, microsoft_oid: str, microsoft_tenant_id:
     )
 
 
+def _file_hash(path: Path) -> str:
+    """Return a short content hash for cache-busting query strings."""
+    try:
+        h = hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+    except OSError:
+        h = "dev"
+    return h
+
+
+_ASSET_HASHES: Dict[str, str] = {}
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
     if settings.admin_email and settings.admin_password:
         seed_admin(settings.admin_email, hash_password(settings.admin_password))
+    _ASSET_HASHES["app.js"] = _file_hash(static_dir / "app.js")
+    _ASSET_HASHES["styles.css"] = _file_hash(static_dir / "styles.css")
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(static_dir / "index.html")
+async def index() -> Response:
+    html = (static_dir / "index.html").read_text(encoding="utf-8")
+    # Replace any existing ?v=... query strings with current content hashes
+    import re as _re
+    html = _re.sub(r'/static/styles\.css\?v=[^"]+', f'/static/styles.css?v={_ASSET_HASHES.get("styles.css", "dev")}', html)
+    html = _re.sub(r'/static/app\.js\?v=[^"]+', f'/static/app.js?v={_ASSET_HASHES.get("app.js", "dev")}', html)
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/register")
@@ -1380,7 +1406,11 @@ async def add_ticket_update(
     try:
         comment_result = await client.add_comment(ticket_id=ticket_id, payload=payload)
 
-        if user["role"] != "admin" and request.mark_resolved:
+        if user["role"] == "admin" and request.ticket_status:
+            if request.ticket_status not in ADMIN_ALLOWED_STATUSES:
+                raise HTTPException(status_code=400, detail="Unsupported admin status")
+            await client.update_ticket(ticket_id=ticket_id, payload={"TicketStatus": request.ticket_status})
+        elif user["role"] != "admin" and request.mark_resolved:
             current_status = (ticket.get("TicketStatus") or "").strip().lower()
             if current_status in USER_LOCKED_STATUSES:
                 raise HTTPException(
@@ -1417,3 +1447,387 @@ async def get_ticket_history(
         "ticket": ticket,
         "comments": comments,
     }
+
+
+@app.get("/api/reports/summary")
+async def get_reports_summary(
+    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
+    custom_start: Optional[str] = Query(default=None),
+    custom_end: Optional[str] = Query(default=None),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+
+    now = datetime.now(tz=timezone.utc)
+    period_end: Optional[str] = None
+    if period == "week":
+        period_start = (now - timedelta(weeks=1)).isoformat()
+    elif period == "month":
+        period_start = (now - timedelta(days=30)).isoformat()
+    elif period == "year":
+        period_start = (now - timedelta(days=365)).isoformat()
+    else:
+        if not custom_start or not custom_end:
+            raise HTTPException(status_code=400, detail="custom_start and custom_end are required for custom period")
+        try:
+            start_date = datetime.fromisoformat(custom_start).date()
+            end_date = datetime.fromisoformat(custom_end).date()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid custom date format; use YYYY-MM-DD") from exc
+        if end_date < start_date:
+            raise HTTPException(status_code=400, detail="custom_end must be on or after custom_start")
+
+        start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+        end_exclusive_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        period_start = start_dt.isoformat()
+        period_end = end_exclusive_dt.isoformat()
+
+    stats = get_ticket_report_stats(period_start, period_end)
+
+    period_label_map = {"week": "past 7 days", "month": "past 30 days", "year": "past 365 days"}
+    if period == "custom":
+        period_label = f"{custom_start} to {custom_end}"
+    else:
+        period_label = period_label_map.get(period, period)
+
+    top_customers = [
+        f"{row['customer_name']} (opened {row['opened']}, resolved {row['resolved']})"
+        for row in (stats.get("by_customer") or [])[:5]
+    ]
+    pending_by_customer = [
+        f"{row['customer_name']} ({row['pending']})"
+        for row in (stats.get("pending_by_customer") or [])[:5]
+    ]
+    pending_request_tickets = stats.get("pending_request_tickets") or []
+    sample_titles = stats.get("sample_titles") or []
+    pending_sample_titles = stats.get("pending_sample_titles") or []
+
+    prompt_lines = [
+        f"Ticket activity summary for the {period_label}:",
+        f"- Tickets opened: {stats['opened_count']}",
+        f"- Tickets resolved or closed: {stats['resolved_count']}",
+        f"- Currently open: {stats['currently_open_count']}",
+        f"- Currently pending: {stats['currently_pending_count']}",
+    ]
+    if top_customers:
+        prompt_lines.append("Top customers: " + "; ".join(top_customers))
+    if sample_titles:
+        prompt_lines.append("Recent resolved ticket titles: " + "; ".join(sample_titles[:5]))
+    if pending_by_customer:
+        prompt_lines.append("Pending by customer (watchlist): " + "; ".join(pending_by_customer))
+    if pending_sample_titles:
+        prompt_lines.append("Recent pending ticket titles: " + "; ".join(pending_sample_titles[:5]))
+    prompt_lines.append(
+        "Write a concise 2-3 sentence plain-text summary suitable for an IT manager. "
+        "Use a gracious, constructive tone. Treat pending tickets as net-neutral operational waiting items "
+        "(parts, vendor, customer scheduling) unless data explicitly indicates risk. "
+        "Do not frame pending count as negative throughput by default. "
+        "Do not use markdown, bullet points, or headers."
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an IT service desk analyst producing brief executive summaries. "
+                "Be gracious and balanced. Pending tickets are neutral waiting-state workload unless "
+                "there is explicit evidence of escalation risk."
+            ),
+        },
+        {"role": "user", "content": "\n".join(prompt_lines)},
+    ]
+
+    headers = {"Content-Type": "application/json"}
+    if settings.openai_api_key:
+        headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+
+    ai_summary: Optional[str] = None
+    pending_request_context: Optional[str] = None
+    ai_error: Optional[str] = None
+
+    try:
+        def _strip_css_noise(text: str) -> str:
+            value = str(text or "")
+            value = re.sub(
+                r"^((?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\s*,\s*)+(?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\s*\{[^{}]{0,5000}\}\s*",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            )
+            value = re.sub(r"^(?:[a-z-]+\s*:\s*[^;\n]+;\s*){2,}", "", value, flags=re.IGNORECASE)
+            return value.strip()
+
+        def _comment_excerpt(text: str, max_len: int = 260) -> str:
+            cleaned = unescape(re.sub(r"<[^>]+>", " ", str(text or "")))
+            cleaned = _strip_css_noise(cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if len(cleaned) > max_len:
+                return cleaned[: max_len - 1] + "…"
+            return cleaned
+
+        pending_lines: List[str] = []
+        for t in pending_request_tickets:
+            tid = int(t.get("ticket_id") or 0)
+            if tid <= 0:
+                continue
+
+            # Re-validate against live ticket status so AI analysis does not
+            # include stale cache entries that have already been closed/resolved.
+            try:
+                live_ticket = await client.get_ticket(tid)
+            except AteraApiError:
+                live_ticket = None
+
+            live_status = str((live_ticket or {}).get("TicketStatus") or "").strip().lower()
+            if live_status and live_status != "pending":
+                continue
+
+            try:
+                comments_result = await client.list_ticket_comments(ticket_id=tid, page=1, items_in_page=50)
+                comments = comments_result.get("items", []) if isinstance(comments_result, dict) else []
+            except AteraApiError:
+                comments = []
+
+            comments = sorted(
+                [c for c in comments if isinstance(c, dict)],
+                key=lambda c: str(c.get("Date") or ""),
+            )
+
+            message_parts: List[str] = []
+            history_count = 0
+            first_comment_at = ""
+            last_comment_at = ""
+            for entry in comments:
+                history_count += 1
+                c_text = _comment_excerpt(str(entry.get("Comment") or ""))
+                if not c_text:
+                    continue
+                c_date = str(entry.get("Date") or "").strip()
+                author = str(entry.get("FirstName") or entry.get("Email") or "Unknown").strip()
+                if c_date and not first_comment_at:
+                    first_comment_at = c_date
+                if c_date:
+                    last_comment_at = c_date
+                if c_date:
+                    message_parts.append(f"[{c_date}] {author}: {c_text}")
+                else:
+                    message_parts.append(f"{author}: {c_text}")
+
+            # Keep broad context but avoid overwhelming/echo-prone prompts.
+            if len(message_parts) > 8:
+                tail = message_parts[-8:]
+                messages_blob = (
+                    f"{history_count} total comments. Showing latest 8 entries: " + " || ".join(tail)
+                )
+            elif message_parts:
+                messages_blob = f"{history_count} total comments: " + " || ".join(message_parts)
+            else:
+                messages_blob = "No comment history available"
+
+            activity_meta = []
+            if first_comment_at:
+                activity_meta.append(f"First comment: {first_comment_at}")
+            if last_comment_at:
+                activity_meta.append(f"Last comment: {last_comment_at}")
+            if history_count:
+                activity_meta.append(f"Comment count: {history_count}")
+
+            pending_lines.append(
+                f"Ticket #{tid}\n"
+                f"Property: {t.get('customer_name') or 'Unknown'}\n"
+                f"Title: {t.get('title') or '(untitled)'}\n"
+                f"Status: Pending\n"
+                f"Opened: {t.get('created_at') or 'unknown'}\n"
+                f"Last activity: {t.get('last_activity_at') or 'unknown'}\n"
+                f"{'; '.join(activity_meta) if activity_meta else 'Comment count: 0'}\n"
+                f"Messages: {messages_blob}"
+            )
+
+        async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
+            if _looks_like_ollama_base_url(settings.openai_base_url):
+                native_payload: Dict[str, Any] = {
+                    "model": settings.openai_model,
+                    "messages": messages,
+                    "stream": False,
+                    "think": False,
+                    "options": {
+                        "temperature": 0.4,
+                        "num_ctx": 8192,
+                    },
+                }
+                response = await http_client.post(
+                    _get_ollama_native_endpoint(settings.openai_base_url),
+                    headers=headers,
+                    json=native_payload,
+                )
+            else:
+                payload: Dict[str, Any] = {
+                    "model": settings.openai_model,
+                    "messages": messages,
+                    "temperature": 0.4,
+                    "stream": False,
+                }
+                response = await http_client.post(
+                    f"{settings.openai_base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+
+            if response.status_code >= 400:
+                ai_error = f"AI service returned HTTP {response.status_code}."
+            else:
+                body = response.json() if response.content else {}
+                if _looks_like_ollama_base_url(settings.openai_base_url):
+                    ai_summary = ((body.get("message") or {}).get("content") or "").strip() or None
+                else:
+                    choices = body.get("choices") or []
+                    ai_summary = (
+                        ((choices[0].get("message") or {}).get("content") or "").strip()
+                        if choices else None
+                    )
+
+            if pending_lines:
+                pending_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an IT operations analyst. Provide a business-style breakdown for each pending ticket. "
+                            "For each ticket, summarize current blocker context from its message history and give a concrete next action. "
+                            "Pending is net-neutral waiting work unless clear risk is present. "
+                            "If Comment count is greater than 1, never say 'No activity since opening'. "
+                            "Never echo raw metadata fields, CSS text, timestamps list, or full message dumps."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Create a per-ticket pending breakdown for the {period_label}.\n"
+                            "Output one line per ticket in this format exactly: "
+                            "#<id> - <context from messages>. Next action: <action>.\n"
+                            "Use Comment count, First comment, Last comment, and Messages fields to infer communication history.\n"
+                            "If Comment count > 1, describe ongoing communication rather than no-activity wording.\n"
+                            "Do not include property/title/opened/last-activity metadata in output lines.\n"
+                            "Do not include the words 'Messages:' or 'Comment count:' in output lines.\n"
+                            "Use plain text only, no markdown bullets or headings.\n\n"
+                            + "\n".join(pending_lines)
+                        ),
+                    },
+                ]
+
+                if _looks_like_ollama_base_url(settings.openai_base_url):
+                    pending_payload: Dict[str, Any] = {
+                        "model": settings.openai_model,
+                        "messages": pending_messages,
+                        "stream": False,
+                        "think": False,
+                        "options": {
+                            "temperature": 0.25,
+                            "num_ctx": 32768,
+                        },
+                    }
+                    pending_response = await http_client.post(
+                        _get_ollama_native_endpoint(settings.openai_base_url),
+                        headers=headers,
+                        json=pending_payload,
+                    )
+                else:
+                    pending_payload = {
+                        "model": settings.openai_model,
+                        "messages": pending_messages,
+                        "temperature": 0.25,
+                        "stream": False,
+                    }
+                    pending_response = await http_client.post(
+                        f"{settings.openai_base_url}/chat/completions",
+                        headers=headers,
+                        json=pending_payload,
+                    )
+
+                if pending_response.status_code < 400:
+                    pending_body = pending_response.json() if pending_response.content else {}
+                    if _looks_like_ollama_base_url(settings.openai_base_url):
+                        pending_request_context = (
+                            ((pending_body.get("message") or {}).get("content") or "").strip() or None
+                        )
+                    else:
+                        pending_choices = pending_body.get("choices") or []
+                        pending_request_context = (
+                            ((pending_choices[0].get("message") or {}).get("content") or "").strip()
+                            if pending_choices else None
+                        ) or None
+
+                    if pending_request_context and pending_request_context.count(" | ") >= 3:
+                        rewrite_messages = [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Rewrite pending ticket analysis into concise business lines only. "
+                                    "Keep one line per ticket using: '#<id> - <context>. Next action: <action>." 
+                                    "Do not include metadata fields, delimiters, timestamps, or raw message dumps."
+                                ),
+                            },
+                            {"role": "user", "content": pending_request_context},
+                        ]
+
+                        if _looks_like_ollama_base_url(settings.openai_base_url):
+                            rewrite_payload: Dict[str, Any] = {
+                                "model": settings.openai_model,
+                                "messages": rewrite_messages,
+                                "stream": False,
+                                "think": False,
+                                "options": {"temperature": 0.2, "num_ctx": 8192},
+                            }
+                            rewrite_response = await http_client.post(
+                                _get_ollama_native_endpoint(settings.openai_base_url),
+                                headers=headers,
+                                json=rewrite_payload,
+                            )
+                        else:
+                            rewrite_payload = {
+                                "model": settings.openai_model,
+                                "messages": rewrite_messages,
+                                "temperature": 0.2,
+                                "stream": False,
+                            }
+                            rewrite_response = await http_client.post(
+                                f"{settings.openai_base_url}/chat/completions",
+                                headers=headers,
+                                json=rewrite_payload,
+                            )
+
+                        if rewrite_response.status_code < 400:
+                            rewrite_body = rewrite_response.json() if rewrite_response.content else {}
+                            if _looks_like_ollama_base_url(settings.openai_base_url):
+                                rewritten = ((rewrite_body.get("message") or {}).get("content") or "").strip()
+                            else:
+                                rewrite_choices = rewrite_body.get("choices") or []
+                                rewritten = (
+                                    ((rewrite_choices[0].get("message") or {}).get("content") or "").strip()
+                                    if rewrite_choices else ""
+                                )
+                            if rewritten:
+                                pending_request_context = rewritten
+    except Exception as exc:  # noqa: BLE001
+        ai_error = f"AI summary unavailable: {exc}"
+
+    result: Dict[str, Any] = {
+        "period": period,
+        "period_start": period_start,
+        **stats,
+    }
+    if period_end:
+        result["period_end"] = period_end
+    if pending_by_customer or pending_sample_titles:
+        pending_parts: List[str] = []
+        if pending_by_customer:
+            pending_parts.append("By property: " + "; ".join(pending_by_customer))
+        if pending_sample_titles:
+            pending_parts.append("Recent pending examples: " + "; ".join(pending_sample_titles[:5]))
+        result["pending_appendix"] = "Pending watchlist (net-neutral): " + " | ".join(pending_parts)
+    if pending_request_context:
+        result["pending_request_context"] = pending_request_context
+    if ai_summary:
+        result["ai_summary"] = ai_summary
+    if ai_error:
+        result["ai_error"] = ai_error
+    return result

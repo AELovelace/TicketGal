@@ -78,6 +78,8 @@ const adminPages = Array.from(document.querySelectorAll(".admin-page"));
 const adminPropertySelect = document.getElementById("admin-ticket-property");
 const ticketViewer = document.getElementById("ticket-viewer");
 const ticketViewerClose = document.getElementById("ticket-viewer-close");
+
+let reportLoadedPeriod = null;
 const ticketViewerMeta = document.getElementById("ticket-viewer-meta");
 const ticketViewerUpdate = document.getElementById("ticket-viewer-update");
 const ticketViewerUpdateStatus = document.getElementById("ticket-viewer-update-status");
@@ -1184,7 +1186,25 @@ function buildUpdateControls(ticket, isAdminTable) {
   wrap.appendChild(comment);
   wrap.appendChild(tech);
   wrap.appendChild(internalLabel);
-  if (!isAdminTable) {
+  if (isAdminTable) {
+    const statusLabel = document.createElement("label");
+    statusLabel.textContent = "Set status: ";
+    const statusSelect = document.createElement("select");
+    statusSelect.dataset.role = "update-status-select";
+    const noChangeOption = document.createElement("option");
+    noChangeOption.value = "";
+    noChangeOption.textContent = "— no change —";
+    statusSelect.appendChild(noChangeOption);
+    ADMIN_STATUSES.forEach((s) => {
+      const opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = s;
+      opt.selected = s === (ticket.TicketStatus || "");
+      statusSelect.appendChild(opt);
+    });
+    statusLabel.appendChild(statusSelect);
+    wrap.appendChild(statusLabel);
+  } else {
     wrap.appendChild(resolveLabel);
   }
   wrap.appendChild(saveBtn);
@@ -1243,6 +1263,15 @@ function statusManagementRow(ticket) {
   openBtn.dataset.ticketId = String(ticket.TicketID);
   openBtn.textContent = safeText(ticket.TicketTitle);
   titleTd.appendChild(openBtn);
+
+  const descText = htmlToReadableText(ticket.FirstComment || "").trim();
+  if (descText) {
+    const desc = document.createElement("div");
+    desc.className = "muted ticket-description-preview";
+    desc.textContent = descText.length > 120 ? descText.slice(0, 120) + "…" : descText;
+    titleTd.appendChild(desc);
+  }
+
   tr.appendChild(titleTd);
 
   const currentTd = document.createElement("td");
@@ -1252,6 +1281,24 @@ function statusManagementRow(ticket) {
   }
   currentTd.textContent = safeText(ticket.TicketStatus || "Open");
   tr.appendChild(currentTd);
+
+  const detailsTd = document.createElement("td");
+  detailsTd.className = "ticket-details-cell";
+  const createdRaw = ticket.TicketCreatedDate || "";
+  const updatedRaw = ticket.LastEndUserCommentTimestamp || "";
+  const fmt = (iso) => {
+    if (!iso) return "\u2014";
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? safeText(iso) : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+  };
+  const createdLine = document.createElement("div");
+  createdLine.textContent = `Created: ${fmt(createdRaw)}`;
+  const updatedLine = document.createElement("div");
+  updatedLine.className = "muted";
+  updatedLine.textContent = `Last activity: ${fmt(updatedRaw)}`;
+  detailsTd.appendChild(createdLine);
+  detailsTd.appendChild(updatedLine);
+  tr.appendChild(detailsTd);
 
   const actionTd = document.createElement("td");
   const select = document.createElement("select");
@@ -1909,6 +1956,116 @@ async function loadProperties() {
   }
 }
 
+async function loadReport(period, customStart = null, customEnd = null) {
+  const loading = document.getElementById("report-loading");
+  const statsEl = document.getElementById("report-stats");
+  const customerSection = document.getElementById("report-customer-section");
+  const aiSection = document.getElementById("report-ai-section");
+  const customerBody = document.getElementById("report-customer-body");
+  const aiSummaryEl = document.getElementById("report-ai-summary");
+  const customControls = document.getElementById("report-custom-controls");
+
+  document.querySelectorAll(".period-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.period === period);
+  });
+
+  if (customControls) {
+    customControls.classList.toggle("hidden", period !== "custom");
+  }
+
+  if (loading) loading.classList.remove("hidden");
+  if (statsEl) statsEl.classList.add("hidden");
+  if (customerSection) customerSection.classList.add("hidden");
+  if (aiSection) aiSection.classList.add("hidden");
+
+  try {
+    const params = new URLSearchParams();
+    params.set("period", period);
+    if (period === "custom") {
+      if (!customStart || !customEnd) {
+        throw new Error("Select both start and end dates for custom range.");
+      }
+      params.set("custom_start", customStart);
+      params.set("custom_end", customEnd);
+    }
+
+    const result = await api(`/api/reports/summary?${params.toString()}`);
+
+    const openedEl = document.getElementById("report-opened-count");
+    const resolvedEl = document.getElementById("report-resolved-count");
+    const openEl = document.getElementById("report-open-count");
+    const pendingEl = document.getElementById("report-pending-count");
+    if (openedEl) openedEl.textContent = String(result.opened_count ?? "\u2014");
+    if (resolvedEl) resolvedEl.textContent = String(result.resolved_count ?? "\u2014");
+    if (openEl) openEl.textContent = String(result.currently_open_count ?? "\u2014");
+    if (pendingEl) pendingEl.textContent = String(result.currently_pending_count ?? "\u2014");
+    if (statsEl) statsEl.classList.remove("hidden");
+
+    if (customerBody) {
+      customerBody.innerHTML = "";
+      const customers = Array.isArray(result.by_customer) ? result.by_customer : [];
+      customers.forEach((row) => {
+        const tr = document.createElement("tr");
+        const nameTd = document.createElement("td");
+        nameTd.textContent = safeText(row.customer_name);
+        const openedTd = document.createElement("td");
+        openedTd.textContent = String(row.opened ?? 0);
+        const resolvedTd = document.createElement("td");
+        resolvedTd.textContent = String(row.resolved ?? 0);
+        const pendingTd = document.createElement("td");
+        pendingTd.textContent = String(row.pending ?? 0);
+        tr.appendChild(nameTd);
+        tr.appendChild(openedTd);
+        tr.appendChild(resolvedTd);
+        tr.appendChild(pendingTd);
+        customerBody.appendChild(tr);
+      });
+      if (customers.length > 0 && customerSection) customerSection.classList.remove("hidden");
+    }
+
+    if (aiSummaryEl && aiSection) {
+      const pendingText = safeText(result.pending_appendix || "")
+        .replace(/^Pending watchlist \(net-neutral\):\s*/i, "")
+        .trim();
+
+      if (result.ai_error) {
+        aiSummaryEl.className = "report-ai-error";
+        aiSummaryEl.textContent = pendingText
+          ? `AI service unavailable\n\nPending Watchlist (Net-Neutral)\n${pendingText}`
+          : safeText(result.ai_error);
+      } else {
+        const sections = [];
+        if (result.ai_summary) {
+          sections.push(`Summary\n${safeText(result.ai_summary).trim()}`);
+        }
+        if (result.pending_request_context) {
+          sections.push(`Pending Ticket Breakdown\n${safeText(result.pending_request_context).trim()}`);
+        }
+        if (pendingText) {
+          sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);
+        }
+        aiSummaryEl.className = "report-ai-summary";
+        aiSummaryEl.textContent = sections.length
+          ? sections.join("\n\n")
+          : "No AI summary available.";
+      }
+      aiSection.classList.remove("hidden");
+    }
+
+    reportLoadedPeriod = period === "custom"
+      ? `custom:${customStart || ""}:${customEnd || ""}`
+      : period;
+  } catch (error) {
+    if (statsEl) {
+      statsEl.classList.remove("hidden");
+      const openedEl = document.getElementById("report-opened-count");
+      if (openedEl) openedEl.textContent = "Error";
+    }
+  } finally {
+    if (loading) loading.classList.add("hidden");
+  }
+}
+
 async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   const comment = row.querySelector("[data-role='comment-text']");
   const techId = row.querySelector("[data-role='tech-id']");
@@ -1926,6 +2083,13 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
 
   if (isAdmin && techId.value) {
     payload.technician_id = Number(techId.value);
+  }
+
+  if (isAdmin) {
+    const statusSelect = row.querySelector("[data-role='update-status-select']");
+    if (statusSelect instanceof HTMLSelectElement && statusSelect.value) {
+      payload.ticket_status = statusSelect.value;
+    }
   }
 
   if (!isAdmin && resolve instanceof HTMLInputElement) {
@@ -2067,6 +2231,29 @@ navButtons.forEach((button) => {
     setAdminPage(button.dataset.adminPage);
   });
 });
+
+document.querySelectorAll(".period-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const period = btn.dataset.period;
+    if (period === "custom") {
+      const customControls = document.getElementById("report-custom-controls");
+      if (customControls) customControls.classList.remove("hidden");
+      return;
+    }
+    loadReport(period);
+  });
+});
+
+const reportCustomRunBtn = document.getElementById("report-custom-run");
+if (reportCustomRunBtn) {
+  reportCustomRunBtn.addEventListener("click", () => {
+    const startInput = document.getElementById("report-custom-start");
+    const endInput = document.getElementById("report-custom-end");
+    const customStart = startInput instanceof HTMLInputElement ? startInput.value : "";
+    const customEnd = endInput instanceof HTMLInputElement ? endInput.value : "";
+    loadReport("custom", customStart, customEnd);
+  });
+}
 
 userTicketsBody.addEventListener("click", async (event) => {
   const target = event.target;
