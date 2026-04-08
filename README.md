@@ -147,6 +147,8 @@ To enable resilience when Atera is unavailable, these flags are supported:
 - `ENABLE_QUEUE_FOR_STATUS_UPDATE` (default `1`): allow queue fallback for status updates.
 - `ENABLE_QUEUE_FOR_COMMENT` (default `1`): allow queue fallback for ticket comments/updates.
 - `QUEUE_PROCESS_BATCH_LIMIT` (default `25`): max queued items processed per drain request.
+- `QUEUE_AUTO_PROCESS_ENABLED` (default `1`): automatically process queued writes in the background.
+- `QUEUE_AUTO_PROCESS_INTERVAL_SECONDS` (default `30`): seconds between automatic queue-drain cycles.
 
 Admin queue endpoints:
 

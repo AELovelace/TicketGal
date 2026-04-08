@@ -25,6 +25,8 @@ class Settings:
         self.enable_queue_for_status_update = _flag("ENABLE_QUEUE_FOR_STATUS_UPDATE", "1")
         self.enable_queue_for_comment = _flag("ENABLE_QUEUE_FOR_COMMENT", "1")
         self.queue_process_batch_limit = max(1, int(os.getenv("QUEUE_PROCESS_BATCH_LIMIT", "25")))
+        self.queue_auto_process_enabled = _flag("QUEUE_AUTO_PROCESS_ENABLED", "1")
+        self.queue_auto_process_interval_seconds = max(5, int(os.getenv("QUEUE_AUTO_PROCESS_INTERVAL_SECONDS", "30")))
         self.host = os.getenv("HOST", "127.0.0.1")
         self.port = int(os.getenv("PORT", "8000"))
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")

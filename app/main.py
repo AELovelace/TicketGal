@@ -1,4 +1,5 @@
 import hashlib
+import asyncio
 import os
 import json
 import re
@@ -313,6 +314,7 @@ def _file_hash(path: Path) -> str:
 
 
 _ASSET_HASHES: Dict[str, str] = {}
+_QUEUE_WORKER_TASK: Optional[asyncio.Task[Any]] = None
 
 
 @app.on_event("startup")
@@ -322,6 +324,30 @@ def startup() -> None:
         seed_admin(settings.admin_email, hash_password(settings.admin_password))
     _ASSET_HASHES["app.js"] = _file_hash(static_dir / "app.js")
     _ASSET_HASHES["styles.css"] = _file_hash(static_dir / "styles.css")
+
+
+@app.on_event("startup")
+async def startup_queue_worker() -> None:
+    global _QUEUE_WORKER_TASK
+    if not settings.queue_auto_process_enabled:
+        return
+    if _QUEUE_WORKER_TASK and not _QUEUE_WORKER_TASK.done():
+        return
+    _QUEUE_WORKER_TASK = asyncio.create_task(_queue_worker_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown_queue_worker() -> None:
+    global _QUEUE_WORKER_TASK
+    if _QUEUE_WORKER_TASK is None:
+        return
+    _QUEUE_WORKER_TASK.cancel()
+    try:
+        await _QUEUE_WORKER_TASK
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _QUEUE_WORKER_TASK = None
 
 
 @app.get("/")
@@ -467,26 +493,7 @@ async def _process_single_transaction(tx: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError(f"Unsupported queued operation_type: {op or 'empty'}")
 
 
-@app.get("/api/admin/queue/status")
-def admin_queue_status(
-    limit: int = Query(default=20, ge=1, le=100),
-    user: Dict[str, Any] = Depends(get_current_user),
-) -> Dict[str, Any]:
-    require_admin(user)
-    return {
-        "queue_enabled": settings.enable_write_queue,
-        "summary": get_transaction_queue_summary(),
-        "recent": list_recent_transactions(limit=limit),
-    }
-
-
-@app.post("/api/admin/queue/process")
-async def admin_process_queue(
-    limit: int = Query(default=25, ge=1, le=100),
-    user: Dict[str, Any] = Depends(get_current_user),
-) -> Dict[str, Any]:
-    require_admin(user)
-
+async def _drain_queue(limit: int) -> Dict[str, Any]:
     batch_limit = min(limit, settings.queue_process_batch_limit)
     txs = claim_due_transactions(limit=batch_limit)
     processed: List[Dict[str, Any]] = []
@@ -511,6 +518,56 @@ async def admin_process_queue(
         "processed": processed,
         "summary": get_transaction_queue_summary(),
     }
+
+
+async def _queue_worker_loop() -> None:
+    interval = max(5, settings.queue_auto_process_interval_seconds)
+    while True:
+        try:
+            if settings.enable_write_queue:
+                await _drain_queue(settings.queue_process_batch_limit)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Keep the worker alive even if one cycle fails.
+            pass
+        await asyncio.sleep(interval)
+
+
+@app.get("/api/admin/queue/status")
+def admin_queue_status(
+    limit: int = Query(default=20, ge=1, le=100),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return {
+        "queue_enabled": settings.enable_write_queue,
+        "queue_features": {
+            "create_ticket": _queue_enabled_for(OP_CREATE_TICKET),
+            "update_ticket_status": _queue_enabled_for(OP_UPDATE_TICKET_STATUS),
+            "add_ticket_comment": _queue_enabled_for(OP_ADD_TICKET_COMMENT),
+        },
+        "queue_config": {
+            "enable_write_queue": settings.enable_write_queue,
+            "enable_queue_for_create_ticket": settings.enable_queue_for_create_ticket,
+            "enable_queue_for_status_update": settings.enable_queue_for_status_update,
+            "enable_queue_for_comment": settings.enable_queue_for_comment,
+            "queue_process_batch_limit": settings.queue_process_batch_limit,
+            "queue_auto_process_enabled": settings.queue_auto_process_enabled,
+            "queue_auto_process_interval_seconds": settings.queue_auto_process_interval_seconds,
+        },
+        "summary": get_transaction_queue_summary(),
+        "recent": list_recent_transactions(limit=limit),
+    }
+
+
+@app.post("/api/admin/queue/process")
+async def admin_process_queue(
+    limit: int = Query(default=25, ge=1, le=100),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return await _drain_queue(limit)
 
 
 @app.get("/auth/providers")
