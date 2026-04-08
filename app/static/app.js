@@ -82,6 +82,7 @@ const adminSyncTicketsBtn = document.getElementById("admin-sync-tickets-btn");
 const adminSyncTicketsStatus = document.getElementById("admin-sync-tickets-status");
 
 let reportLoadedPeriod = null;
+let reportRequestSeq = 0;
 const ticketViewerMeta = document.getElementById("ticket-viewer-meta");
 const ticketViewerUpdate = document.getElementById("ticket-viewer-update");
 const ticketViewerUpdateStatus = document.getElementById("ticket-viewer-update-status");
@@ -1959,12 +1960,14 @@ async function loadProperties() {
 }
 
 async function loadReport(period, customStart = null, customEnd = null) {
+  const requestId = ++reportRequestSeq;
   const loading = document.getElementById("report-loading");
   const statsEl = document.getElementById("report-stats");
   const customerSection = document.getElementById("report-customer-section");
   const aiSection = document.getElementById("report-ai-section");
   const customerBody = document.getElementById("report-customer-body");
   const aiSummaryEl = document.getElementById("report-ai-summary");
+  const aiLoadingEl = document.getElementById("report-ai-loading");
   const customControls = document.getElementById("report-custom-controls");
 
   document.querySelectorAll(".period-btn").forEach((btn) => {
@@ -1979,6 +1982,7 @@ async function loadReport(period, customStart = null, customEnd = null) {
   if (statsEl) statsEl.classList.add("hidden");
   if (customerSection) customerSection.classList.add("hidden");
   if (aiSection) aiSection.classList.add("hidden");
+  if (aiLoadingEl) aiLoadingEl.classList.add("hidden");
 
   try {
     const params = new URLSearchParams();
@@ -1993,6 +1997,9 @@ async function loadReport(period, customStart = null, customEnd = null) {
     }
 
     const result = await api(`/api/reports/summary?${params.toString()}`);
+    if (requestId !== reportRequestSeq) {
+      return;
+    }
 
     const openedEl = document.getElementById("report-opened-count");
     const resolvedEl = document.getElementById("report-resolved-count");
@@ -2027,42 +2034,77 @@ async function loadReport(period, customStart = null, customEnd = null) {
     }
 
     if (aiSummaryEl && aiSection) {
-      const pendingText = safeText(result.pending_appendix || "")
-        .replace(/^Pending watchlist \(net-neutral\):\s*/i, "")
-        .trim();
-
-      if (result.ai_error) {
-        aiSummaryEl.className = "report-ai-error";
-        aiSummaryEl.textContent = pendingText
-          ? `AI service unavailable\n\nPending Watchlist (Net-Neutral)\n${pendingText}`
-          : safeText(result.ai_error);
-      } else {
-        const sections = [];
-        if (result.ai_summary) {
-          sections.push(`Summary\n${safeText(result.ai_summary).trim()}`);
-        }
-        if (result.pending_request_context) {
-          sections.push(`Pending Ticket Breakdown\n${safeText(result.pending_request_context).trim()}`);
-        }
-        if (pendingText) {
-          sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);
-        }
-        aiSummaryEl.className = "report-ai-summary";
-        aiSummaryEl.textContent = sections.length
-          ? sections.join("\n\n")
-          : "No AI summary available.";
-      }
+      aiSummaryEl.className = "report-ai-summary";
+      aiSummaryEl.textContent = "";
       aiSection.classList.remove("hidden");
+    }
+    if (aiLoadingEl) {
+      aiLoadingEl.classList.remove("hidden");
     }
 
     reportLoadedPeriod = period === "custom"
       ? `custom:${customStart || ""}:${customEnd || ""}`
       : period;
+
+    // Fetch AI analysis separately so core report stats render immediately.
+    const aiParams = new URLSearchParams(params);
+    aiParams.set("include_ai", "1");
+    try {
+      const aiResult = await api(`/api/reports/summary?${aiParams.toString()}`);
+      if (requestId !== reportRequestSeq) {
+        return;
+      }
+
+      if (aiSummaryEl && aiSection) {
+        const pendingText = safeText(aiResult.pending_appendix || "")
+          .replace(/^Pending watchlist \(net-neutral\):\s*/i, "")
+          .trim();
+
+        if (aiResult.ai_error) {
+          aiSummaryEl.className = "report-ai-error";
+          aiSummaryEl.textContent = pendingText
+            ? `AI service unavailable\n\nPending Watchlist (Net-Neutral)\n${pendingText}`
+            : safeText(aiResult.ai_error);
+        } else {
+          const sections = [];
+          if (aiResult.ai_summary) {
+            sections.push(`Summary\n${safeText(aiResult.ai_summary).trim()}`);
+          }
+          if (aiResult.pending_request_context) {
+            sections.push(`Pending Ticket Breakdown\n${safeText(aiResult.pending_request_context).trim()}`);
+          }
+          if (pendingText) {
+            sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);
+          }
+          aiSummaryEl.className = "report-ai-summary";
+          aiSummaryEl.textContent = sections.length
+            ? sections.join("\n\n")
+            : "No AI summary available.";
+        }
+        aiSection.classList.remove("hidden");
+      }
+    } catch (error) {
+      if (requestId !== reportRequestSeq) {
+        return;
+      }
+      if (aiSummaryEl && aiSection) {
+        aiSummaryEl.className = "report-ai-error";
+        aiSummaryEl.textContent = `AI summary unavailable: ${error.message}`;
+        aiSection.classList.remove("hidden");
+      }
+    } finally {
+      if (requestId === reportRequestSeq && aiLoadingEl) {
+        aiLoadingEl.classList.add("hidden");
+      }
+    }
   } catch (error) {
     if (statsEl) {
       statsEl.classList.remove("hidden");
       const openedEl = document.getElementById("report-opened-count");
       if (openedEl) openedEl.textContent = "Error";
+    }
+    if (aiLoadingEl) {
+      aiLoadingEl.classList.add("hidden");
     }
   } finally {
     if (loading) loading.classList.add("hidden");

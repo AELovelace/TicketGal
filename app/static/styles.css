@@ -1006,6 +1006,33 @@ body.theme-premium .user-search-bar input[type="search"] {
   padding: 0.8rem;
 }
 
+.report-ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.report-ai-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #d9cfba;
+  border-top-color: #8f7440;
+  border-radius: 50%;
+  animation: report-spin 0.85s linear infinite;
+}
+
+@keyframes report-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .report-ai-error {
   border-color: #e7b9b6;
   background: #fae8e7;
@@ -1016,6 +1043,15 @@ body.theme-premium .report-ai-summary {
   border-color: #e0c0c4;
   background: #fff8f9;
   color: #3d1f2a;
+}
+
+body.theme-premium .report-ai-loading {
+  color: #7b5760;
+}
+
+body.theme-premium .report-ai-spinner {
+  border-color: #e0c0c4;
+  border-top-color: #9d6674;
 }
 
 body.theme-premium .report-ai-error {
