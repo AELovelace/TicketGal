@@ -1,274 +1,284 @@
 # TicketGal Architecture
 
-## 1. Overview
+## Overview
 
-TicketGal is a FastAPI web application that sits in front of the Atera Ticket API. It provides:
+TicketGal is a single-service FastAPI application that combines:
 
-- Login-first web experience
-- Role-based access control (user/admin)
-- Domain-restricted user self-registration
-- Admin approval workflow for new users
-- Ticket creation/list/status/comment operations against Atera
-- Role-aware ticket visibility and status permissions
+- a browser-facing support portal
+- a local identity and session system
+- an Atera API integration layer
+- a local caching and queueing subsystem
+- a markdown knowledgebase
 
-The app is a single deployable service that serves both backend APIs and frontend static assets.
+The system is intentionally lightweight to deploy. It avoids external infrastructure beyond Atera and optional AI and Microsoft identity providers, but it trades that simplicity for a fairly large application core concentrated in a few Python modules, especially [app/main.py](/c:/Scripts/TicketGal/app/main.py).
 
-## 2. High-Level Components
+## High-Level Shape
 
-### 2.1 Backend API Layer
+### Runtime Components
 
-- Framework: FastAPI
-- Entry point: app/main.py
-- Responsibilities:
-  - Serve frontend assets
-  - Handle auth routes and session lifecycle
-  - Enforce authorization and business rules
-  - Proxy ticket operations to Atera
+- FastAPI application for API routes and static file serving
+- Browser UI delivered from [app/static](/c:/Scripts/TicketGal/app/static)
+- Atera client wrapper with a strict upstream route allowlist in [app/atera_client.py](/c:/Scripts/TicketGal/app/atera_client.py)
+- SQLite-backed local state and migrations in [app/database.py](/c:/Scripts/TicketGal/app/database.py)
+- Background queue worker started during app startup
 
-### 2.2 Atera Integration Layer
+### External Dependencies
 
-- Module: app/atera_client.py
-- Responsibilities:
-  - Attach X-API-KEY header
-  - Call Atera ticket endpoints
-  - Normalize HTTP error handling for backend routes
+- Atera API for ticket, comment, customer, and alert operations
+- Microsoft Entra ID through `msal` for optional SSO
+- OpenAI-compatible chat endpoint for AI ticket rewriting and report narratives
+- Optional Nginx + ModSecurity edge in production
 
-### 2.3 Authentication and Authorization Layer
+## Component Breakdown
 
-- Module: app/auth.py
-- Responsibilities:
-  - Password hashing/verification for local accounts
-  - Session token generation
-  - Email/domain normalization and validation
-  - Current-user resolution from session cookie
-  - Role and ownership checks
+### 1. Web Layer
 
-- Module: app/main.py
-- Additional auth responsibilities:
-  - Microsoft Entra OAuth callback handling with MSAL
-  - Linking Microsoft identities to local users on first successful SSO
-  - Creating the same app session cookie for either password auth or Microsoft auth
+[app/main.py](/c:/Scripts/TicketGal/app/main.py) owns:
 
-### 2.4 Persistence Layer (Local App State)
+- FastAPI app creation
+- static file mounting
+- page routes for `/`, `/register`, and `/kb-editor`
+- middleware for CSRF and security headers
+- nearly all API routes
+- queue worker startup and shutdown
 
-- Module: app/database.py
-- Engine: SQLite
-- Tables:
-  - users: identity, role, approval state
-  - sessions: cookie session tokens and expiry
+This is the operational center of the app. It works, but it is also the main architectural pressure point because auth, ticketing, queue logic, AI integration, reporting, and knowledgebase behaviors are all coordinated from one module.
 
-App state stored locally includes users and sessions only. Ticket data remains in Atera.
+### 2. Frontend Layer
 
-### 2.5 Frontend UI Layer
+The frontend is plain static HTML, CSS, and vanilla JavaScript:
 
-- Files:
-  - app/static/index.html
-  - app/static/app.js
-  - app/static/styles.css
-- Responsibilities:
-  - Login and registration UX
-  - Role-based view routing (user/admin)
-  - Ticket create/list/update interactions
-  - Admin panel for pending-user approvals
+- [index.html](/c:/Scripts/TicketGal/app/static/index.html)
+- [app.js](/c:/Scripts/TicketGal/app/static/app.js)
+- [register.html](/c:/Scripts/TicketGal/app/static/register.html)
+- [register.js](/c:/Scripts/TicketGal/app/static/register.js)
+- [kb-editor.html](/c:/Scripts/TicketGal/app/static/kb-editor.html)
+- [kb-editor-window.js](/c:/Scripts/TicketGal/app/static/kb-editor-window.js)
 
-## 3. Runtime and Deployment Model
+It does not depend on a frontend build pipeline, which keeps deployment simple. The tradeoff is that a large amount of client behavior lives in one big script file, similar to the backend pattern.
 
-### 3.1 Process Model
+### 3. Auth And Access Control
 
-- Uvicorn hosts FastAPI app
-- Static files are served by FastAPI StaticFiles
-- SQLite file is opened by the app process on demand
+[app/auth.py](/c:/Scripts/TicketGal/app/auth.py) provides:
 
-### 3.2 Configuration Model
+- PBKDF2 password hashing and verification
+- session token generation
+- email normalization and allowed-domain checks
+- current-user lookup from cookie session
+- admin and ownership enforcement helpers
 
-Configuration is loaded from environment variables (including .env loaded at startup in config):
+The access model is straightforward:
 
-- ATERA_API_KEY
-- ATERA_BASE_URL
-- HOST
-- PORT
-- DB_PATH
-- SESSION_COOKIE_NAME
-- SESSION_HOURS
-- ALLOWED_EMAIL_DOMAINS
-- ADMIN_EMAIL
-- ADMIN_PASSWORD
-- PUBLIC_BASE_URL
-- MICROSOFT_CLIENT_ID
-- MICROSOFT_CLIENT_SECRET
-- MICROSOFT_TENANT_ID
-- ALLOWED_MICROSOFT_TENANT_IDS
-- MICROSOFT_REDIRECT_PATH
-- MICROSOFT_SCOPES
+- `admin` can see and manage everything
+- `user` is scoped to tickets whose `EndUserEmail` matches the logged-in account
 
-### 3.3 Startup Initialization
+Additional auth behavior lives in [app/main.py](/c:/Scripts/TicketGal/app/main.py) for:
+
+- local registration and login
+- Microsoft OAuth initiation and callback handling
+- account linking
+- approval and role management flows
+- CSRF cookie issuance
+
+### 4. Atera Integration
+
+[app/atera_client.py](/c:/Scripts/TicketGal/app/atera_client.py) is a good architectural boundary. It limits outbound traffic to a known-safe set of methods and paths rather than acting as a generic Atera proxy.
+
+Allowed upstream operations currently cover:
+
+- list tickets
+- create ticket
+- get/update ticket
+- list/add comments
+- list customers
+- list alerts
+- dismiss/resolve alerts
+
+This is a strong safety decision because it narrows accidental scope creep and prevents arbitrary upstream access from route code.
+
+### 5. Persistence Layer
+
+TicketGal uses three SQLite databases rather than one:
+
+#### Main DB
+
+Configured by `DB_PATH`, this stores:
+
+- `users`
+- `sessions`
+- `login_rate_limits`
+- `site_settings`
+- `audit_log`
+- `knowledgebase_articles`
+- `kb_article_user_whitelist`
+
+#### Ticket Cache DB
+
+Configured by `TICKET_CACHE_DB_PATH`, this stores:
+
+- `ticket_cache`
+- `ticket_status_history`
+- `ticket_comment_cache`
+
+This supports degraded reads and reporting even when Atera is unavailable.
+
+#### Transactions DB
+
+Configured by `TICKET_TRANSACTIONS_DB_PATH`, this stores:
+
+- `transaction_queue`
+
+This is the retryable write queue used during upstream outages.
+
+Splitting the data by responsibility is a sensible design choice here. It reduces contention between app state, read cache, and queued writes, while keeping each SQLite file conceptually focused.
+
+### 6. Knowledgebase Subsystem
+
+The knowledgebase is hybrid storage:
+
+- metadata in SQLite
+- markdown content on disk
+- uploaded image assets on disk
+
+Visibility modes:
+
+- `public`
+- `admin_only`
+- `company_assigned`
+- `user_allowlist`
+
+This design keeps article content easy to inspect and back up, but it means article integrity depends on both the DB record and the filesystem remaining aligned.
+
+## Core Request And Data Flows
+
+### Login Flow
+
+1. User authenticates via password or Microsoft 365.
+2. TicketGal resolves or creates a local user.
+3. Approval and active-state gates are enforced.
+4. A server-side session is created and a cookie is sent to the browser.
+5. A CSRF token cookie is also issued for later state-changing requests.
+
+### Ticket Read Flow
+
+1. Browser calls `/api/tickets` or `/api/tickets/{id}/history`.
+2. App fetches from Atera.
+3. Non-admin results are filtered by ownership.
+4. Successful reads refresh the local ticket and comment cache.
+5. If Atera is unavailable and cached fallback is enabled, the app serves cached data.
+
+### Ticket Write Flow
+
+1. Browser submits create, comment, status, or alert-dismiss action.
+2. App validates role-specific business rules.
+3. App attempts the Atera write.
+4. If Atera is down and queueing is enabled, the action is stored in `transaction_queue`.
+5. A background worker or manual admin action drains queued work later.
+
+### Reporting Flow
+
+1. Admin requests `/api/reports/summary`.
+2. Report data is computed from the local ticket cache and status history, not from live Atera queries.
+3. Optional AI narrative generation summarizes the cached stats.
+
+This is an important design choice: reports depend on the sync/cache layer being current.
+
+### Knowledgebase Flow
+
+1. Admin creates or edits an article.
+2. Markdown is written to disk.
+3. Metadata is written to SQLite.
+4. Users fetch article lists through access-filtered API routes.
+5. Article content is read from disk and returned to the frontend for markdown rendering.
+
+## Security Architecture
+
+### Positive Controls
+
+- Password hashing with PBKDF2 and salt
+- Optional encryption-at-rest for protected DB values via Fernet
+- Session tokens stored as hashes
+- HttpOnly session cookies
+- CSRF protection for authenticated state-changing routes
+- Security headers including CSP and HSTS when HTTPS is detected
+- Explicit Atera route allowlist
+- Role and ownership checks in route handlers
+- Login rate limiting with email and IP dimensions
+- Audit logging for auth and admin events
+- Optional ModSecurity templates for the reverse proxy edge
+
+### Notable Security Assumptions
+
+- Ticket ownership is derived from Atera `EndUserEmail`, so identity consistency between local accounts and upstream ticket records is important.
+- Secure cookie behavior depends on correct proxy headers or `PUBLIC_BASE_URL`.
+- Knowledgebase content is sanitized in the browser rather than fully normalized server-side.
+
+## Operational Architecture
+
+### Startup Behavior
 
 On startup, the app:
 
-1. Initializes SQLite schema if needed
-2. Seeds initial admin account if ADMIN_EMAIL and ADMIN_PASSWORD are defined and admin does not already exist
+- initializes all SQLite schemas
+- performs lightweight migrations and backfills
+- seeds the bootstrap admin when configured
+- computes static asset hashes
+- optionally starts the queue worker
 
-## 4. Identity, Role, and Access Model
+### Production Topology
 
-### 4.1 User Types
+Recommended production layout:
 
-- user
-  - Local password login after admin approval
-  - Microsoft 365 login after admin approval if linked or provisioned
-  - Restricted to own tickets
-- admin
-  - Email + password login
-  - Optional Microsoft 365 login when linked to the same local account
-  - Full ticket visibility and management
-  - Can approve pending users
+- Nginx on `80/443`
+- TicketGal Uvicorn workers bound to `127.0.0.1:8000`
+- systemd managing the app process
+- optional ModSecurity CRS at the Nginx edge
 
-### 4.2 Registration Policy
+This matches the assets already present in:
 
-- Self-registration allowed only for:
-  - @eternalhotels.com
-  - @redlionpasco.com
-- New registrations are created as role=user, approved=false
-- First-time Microsoft sign-in can also create a role=user local account when signups are enabled
-- Login blocked until approved by admin
+- [ticketgal.service](/c:/Scripts/TicketGal/ticketgal.service)
+- [start-prod.sh](/c:/Scripts/TicketGal/start-prod.sh)
+- [deploy/nginx/ticketgal-http.conf.template](/c:/Scripts/TicketGal/deploy/nginx/ticketgal-http.conf.template)
+- [deploy/nginx/ticketgal-https.conf.template](/c:/Scripts/TicketGal/deploy/nginx/ticketgal-https.conf.template)
 
-### 4.3 Microsoft Identity Linking
+## Architectural Strengths
 
-- Microsoft auth uses OAuth 2.0 / OpenID Connect via MSAL
-- TicketGal extracts the work-account email plus stable Entra object ID from the returned ID token claims
-- TicketGal can optionally enforce an explicit tenant allowlist using the returned `tid` claim before account linking or provisioning
-- If a local user with the same email exists and has no Microsoft link yet, the Microsoft identity is attached on first successful SSO
-- If the Microsoft identity is already linked, subsequent SSO logins must come from that same Entra object ID and tenant
-- If no local user exists, TicketGal can create a pending local user account and link it immediately
+- Very easy to deploy because everything is in one service and SQLite-backed
+- Good resilience story for a small app through cached reads and queued writes
+- Clear upstream safety boundary in the Atera client
+- Production concerns are already represented in repo scripts and templates
+- The knowledgebase visibility model is richer than a basic public/private split
 
-### 4.4 Session Security Model
+## Architectural Risks And Friction Points
 
-- Session token stored server-side in sessions table
-- Session token sent to browser via HttpOnly cookie
-- Session resolution performed on protected routes via dependency
+### Large Application Core
 
-## 5. Ticket Authorization Rules
+[app/main.py](/c:/Scripts/TicketGal/app/main.py) is doing too much. That increases the cost of change, makes route behavior harder to test in isolation, and raises regression risk as features expand.
 
-### 5.1 Ticket Listing
+### Mixed Storage Model For Knowledgebase
 
-- Admin: receives all tickets returned by Atera query
-- User: backend filters tickets by EndUserEmail == logged-in user email
+Knowledgebase content is split across DB metadata and filesystem markdown/assets. That is workable, but migrations, backups, and deletes have to account for both layers.
 
-### 5.2 Ticket Creation
+### Cache Freshness Dependency
 
-- Admin: may create ticket for any email
-- User: EndUserEmail is forced to account email server-side
+Reports and degraded-mode reads are only as good as the last successful sync or opportunistic cache refresh. If sync discipline slips, admins may see stale analytics while the app still appears healthy.
 
-### 5.3 Status Updates
+### Partial Test Drift
 
-Status vocabulary used by app:
+The test files under [app/tests](/c:/Scripts/TicketGal/app/tests) appear to reference older routes and role names in places, which suggests the documented architecture and the current test suite are not perfectly aligned. That is a maintainability risk more than a runtime risk.
 
-- Open
-- Pending
-- Closed
-- Resolved
+### SQLite Concurrency Ceiling
 
-Role-specific rules:
+For the current size and deployment model, SQLite is reasonable. If usage grows, queue traffic, caching, reporting, and UI-driven writes may eventually push against file-based concurrency and operational tooling limits.
 
-- Admin can set all four values
-- User can set only Open or Resolved
-- If current ticket status is Pending or Closed, user cannot change it
+## Suggested Next Refactors
 
-### 5.4 Ticket Updates/Comments
+1. Split `app/main.py` into route modules by domain: auth, admin, tickets, reports, knowledgebase.
+2. Move queue processing into a dedicated service module.
+3. Move AI/report prompt construction into isolated helper modules.
+4. Move DB access behind a thinner service boundary for easier testing.
+5. Refresh the automated tests so route coverage matches the current API surface.
 
-- Admin: can post updates on any ticket
-- User: can post updates only on owned tickets
+## Summary
 
-## 6. API Surface (Application)
-
-### 6.1 Public/Session Routes
-
-- GET /health
-- POST /auth/register
-- POST /auth/login
-- POST /auth/logout
-- GET /auth/me
-
-### 6.2 Admin Routes
-
-- GET /api/admin/users
-- POST /api/admin/users/{user_id}/approve
-- PATCH /api/admin/users/{user_id}/role
-
-### 6.3 Ticket Routes (Protected)
-
-- GET /api/tickets
-- POST /api/tickets
-- PATCH /api/tickets/{ticket_id}/status
-- POST /api/tickets/{ticket_id}/updates
-
-## 7. Request Flow Examples
-
-### 7.1 User Login and Ticket List
-
-1. Browser posts email to /auth/login
-2. Backend validates user exists + approved=true
-3. Backend creates session token and sets cookie
-4. Browser requests /api/tickets with cookie
-5. Backend fetches from Atera and filters by EndUserEmail
-6. Browser renders restricted list
-
-### 7.2 Admin Approval Flow
-
-1. New user registers via /auth/register
-2. Record created with approved=false
-3. Admin logs in and opens admin panel
-4. Admin calls approve endpoint
-5. User can now login
-
-### 7.3 User Status Change Guard
-
-1. User requests PATCH /api/tickets/{id}/status
-2. Backend loads ticket from Atera
-3. Backend verifies ownership
-4. Backend checks requested status in allowed set
-5. Backend blocks if current status is Pending/Closed
-6. If valid, backend forwards status update to Atera
-
-## 8. Data Model (SQLite)
-
-### 8.1 users
-
-- id (PK)
-- email (unique)
-- role (user|admin)
-- password_hash (nullable for user accounts)
-- approved (0/1)
-- is_active (0/1)
-- created_at (ISO timestamp)
-- approved_at (ISO timestamp, nullable)
-- microsoft_oid (nullable)
-- microsoft_tenant_id (nullable)
-
-### 8.2 sessions
-
-- token (PK)
-- user_id (FK users.id)
-- expires_at (ISO timestamp)
-- created_at (ISO timestamp)
-
-## 9. Error Handling Strategy
-
-- Atera API failures are captured and returned with mapped status/detail
-- Auth/permission failures return 401/403
-- Domain and validation violations return 400
-- Missing entities return 404 where applicable
-
-## 10. Security Notes and Tradeoffs
-
-- User accounts are passwordless by design request; this is weaker than password-based auth and relies on internal-domain email control and admin approval
-- Admin accounts are password-protected using PBKDF2-SHA256 hash storage
-- Session cookie is HttpOnly and server-side validated
-- secure=false is currently set for local HTTP testing; for production behind HTTPS, secure=true should be enabled
-
-## 11. Future Architecture Improvements
-
-- Add CSRF protection for cookie-authenticated state-changing routes
-- Add password reset/admin credential rotation workflow
-- Add structured audit log table for approvals and ticket actions
-- Add pagination/filter controls in admin UI and user UI
-- Add integration tests for role and status policy matrix
+TicketGal is a pragmatic monolith: simple to run, fast to deploy, and stronger operationally than many small internal tools because it already includes caching, queueing, audit logging, and reverse-proxy assets. Its main challenge is not lack of capability, but concentration of responsibility in a few large files that are starting to carry too much of the system at once.

@@ -1,332 +1,288 @@
 # TicketGal
 
-TicketGal is a FastAPI web application for managing Atera tickets with role-based access.
+TicketGal is a FastAPI-based self-service and admin portal that sits in front of the Atera API. It serves a browser UI, manages local users and sessions, mirrors ticket data into local SQLite caches for reporting and degraded reads, and can queue write operations when Atera is unavailable.
 
-## Access Model
+## What The App Does
 
-- Default page is a login/registration portal.
-- User accounts can sign in either with a local password or with Microsoft 365.
-- New accounts created by self-registration or first-time Microsoft sign-in require admin approval before access.
-- Registration only allows emails specified in .env
+- Serves a login-first portal for end users and admins.
+- Supports local password auth, Microsoft 365 sign-in, or both.
+- Restricts self-registration by allowed email domains and admin approval.
+- Lets users create tickets, view only their own tickets, and post updates.
+- Gives admins full ticket visibility, user management, reporting, alert handling, and knowledgebase management.
+- Stores knowledgebase article metadata in SQLite and article content/assets on disk.
+- Can fall back to local cached ticket data and queue writes during upstream outages.
 
-## Roles
+## Architecture Snapshot
 
-### User
-- Can register and log in after approval.
-- Can only view tickets where EndUserEmail matches their account email.
-- Can create tickets only under their own email (email field is locked in UI and enforced server-side).
-- Status options: Open, Resolved.
-- Cannot change status if ticket is currently Pending or Closed.
-- Can post updates only on their own tickets.
+- Backend: FastAPI app in [app/main.py](/c:/Scripts/TicketGal/app/main.py)
+- Atera integration: [app/atera_client.py](/c:/Scripts/TicketGal/app/atera_client.py)
+- Auth helpers: [app/auth.py](/c:/Scripts/TicketGal/app/auth.py)
+- Validation models: [app/schemas.py](/c:/Scripts/TicketGal/app/schemas.py)
+- Persistence and migrations: [app/database.py](/c:/Scripts/TicketGal/app/database.py)
+- Frontend: static HTML/CSS/JS in [app/static](/c:/Scripts/TicketGal/app/static)
+- Linux service bootstrap: [install.sh](/c:/Scripts/TicketGal/install.sh), [ticketgal.service](/c:/Scripts/TicketGal/ticketgal.service), [start-prod.sh](/c:/Scripts/TicketGal/start-prod.sh)
+- Nginx/ModSecurity assets: [deploy/nginx](/c:/Scripts/TicketGal/deploy/nginx), [deploy/modsecurity](/c:/Scripts/TicketGal/deploy/modsecurity)
 
-### Admin
-- Can view all tickets.
-- Can create tickets for any email.
-- Status options: Open, Pending, Closed, Resolved.
-- Can post updates on all tickets.
-- Has admin panel for user approval and role management tasks.
-- Can reset passwords for user accounts.
+See [architecture.md](/c:/Scripts/TicketGal/architecture.md) for the full architectural analysis and [ubuntu-nginx-proxy-guide.md](/c:/Scripts/TicketGal/ubuntu-nginx-proxy-guide.md) for Ubuntu deployment behind Nginx.
+
+## Main Features
+
+- Role-based portal with separate user and admin experiences
+- Admin approval workflow for new accounts
+- Microsoft Entra ID sign-in with tenant allowlisting and optional MFA enforcement
+- PBKDF2 password hashing and optional encryption-at-rest for stored password hashes
+- Server-side sessions with hashed session tokens
+- CSRF protection for authenticated state-changing requests
+- Security headers and proxy-aware secure cookie behavior
+- Atera alert viewing and dismissal for admins
+- Ticket cache, status history, and comment cache for degraded reads and reporting
+- Write queue for ticket create, status update, comment, and alert-dismiss actions
+- Markdown knowledgebase with property-scoped visibility and image uploads
+- Branding overrides via a dedicated branding env file
+- Ubuntu-ready service and reverse proxy assets, including ModSecurity support
+
+## Repo Layout
+
+```text
+app/
+  main.py                  FastAPI app, routes, middleware, background worker
+  atera_client.py          Allowed Atera operations and HTTP client wrapper
+  auth.py                  Password/session helpers and auth guards
+  config.py                Environment loading and settings
+  database.py              SQLite schema, migrations, cache and queue logic
+  schemas.py               Request validation models
+  static/                  Browser UI assets
+deploy/
+  nginx/                   Reverse proxy config templates
+  modsecurity/             TicketGal-specific ModSecurity + CRS tuning
+scripts/
+  install_nginx_modsecurity.sh
+  test_waf.sh
+install.sh                 Ubuntu install/bootstrap script
+start-prod.sh              Linux production-style launcher
+ticketgal.service          systemd service unit template
+```
 
 ## Prerequisites
 
-- Python 3.10+
-- Atera API key
+- Python 3.11+
+- An Atera API key
+- Optional: Microsoft Entra app registration for SSO
+- Optional: OpenAI-compatible endpoint for AI-assisted ticket rewriting
 
-## Setup
-
-1. Create and activate a virtual environment.
-2. Install dependencies:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Create .env from .env.example and fill values.
-4. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env for first admin seed.
-
-### Branding Environment File
-
-Branding strings are loaded from a separate env file so deployments can rebrand without touching code.
-
-1. Copy `.env.branding.example` to `.env.branding`.
-2. Update the `BRAND_*` values in `.env.branding`.
-3. Keep `BRANDING_ENV_FILE=.env.branding` in `.env` (or set a custom path).
-
-The UI reads branding from `/api/branding`, so sign-in and register pages are company agnostic by default.
-
-### Optional Pre-Commit Secret Scanning
-
-To block accidental secret commits, this repo includes `.pre-commit-config.yaml`.
-
-Install and enable hooks:
+## Quick Start
 
 ```bash
-pip install pre-commit
-pre-commit install
-pre-commit run --all-files
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+cp .env.branding.example .env.branding
+python -m uvicorn app.main:app --reload
 ```
 
-What it checks on commit:
+On Windows PowerShell:
 
-- Private keys
-- Common credential patterns
-- High-entropy secrets
-- Unexpectedly large files
-
-### Optional SQLite At-Rest Protection
-
-To protect sensitive SQLite-backed values at rest, set:
-
-- `DATA_ENCRYPTION_KEY` (Fernet key)
-
-Generate a key with Python:
-
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+Copy-Item .env.branding.example .env.branding
+py -m uvicorn app.main:app --reload
 ```
 
-Notes:
+Then open `http://127.0.0.1:8000`.
 
-- With a key configured, TicketGal encrypts stored password hashes at rest.
-- Session tokens are stored as SHA-256 hashes instead of plaintext.
-- Keep this key in a secure secret store. Rotating it requires data migration planning.
+## Required Configuration
 
-### Optional Login Brute-Force Protection
+At minimum, configure these in `.env`:
 
-To harden password login against credential stuffing and brute-force attempts, configure:
+- `ATERA_API_KEY`
+- `HOST`
+- `PORT`
+- `ALLOWED_EMAIL_DOMAINS`
 
-- `LOGIN_RATE_LIMIT_WINDOW_MINUTES` (default `15`)
-- `LOGIN_MAX_ATTEMPTS_PER_EMAIL` (default `5`)
-- `LOGIN_MAX_ATTEMPTS_PER_IP` (default `20`)
-- `LOGIN_LOCKOUT_MINUTES` (default `30`)
-- `LOGIN_LOCKOUT_EXEMPT_IPS` (optional, comma-separated IP allowlist, e.g. `127.0.0.1,10.0.0.25`)
+Recommended for first boot:
 
-Behavior:
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `PUBLIC_BASE_URL` when running behind a proxy
+- `BRANDING_ENV_FILE=.env.branding`
 
-- TicketGal tracks failed login attempts per email and per client IP.
-- If either threshold is exceeded within the configured window, password login is blocked with HTTP 429 until lockout expires.
-- A successful login clears the rate-limit counters for that email and client IP.
-- Requests from IPs listed in `LOGIN_LOCKOUT_EXEMPT_IPS` are exempt from lockout enforcement.
+Important storage settings:
 
-### Optional Microsoft 365 SSO Configuration
+- `DB_PATH`
+- `TICKET_CACHE_DB_PATH`
+- `TICKET_TRANSACTIONS_DB_PATH`
+- `DATA_ENCRYPTION_KEY`
 
-To enable Microsoft sign-in, register a web app in Microsoft Entra ID and add these env vars:
+## Authentication Modes
+
+### Local Password Auth
+
+- Controlled by `USER_PASSWORD_AUTH_ENABLED`
+- Registration uses `POST /auth/register`
+- Login uses `POST /auth/login`
+- New accounts require admin approval
+
+### Microsoft 365 Auth
+
+Configure:
 
 - `MICROSOFT_CLIENT_ID`
 - `MICROSOFT_CLIENT_SECRET`
 - `MICROSOFT_TENANT_ID`
-- `ALLOWED_MICROSOFT_TENANT_IDS` (optional, comma-separated explicit tenant allowlist)
+- `ALLOWED_MICROSOFT_TENANT_IDS`
 - `PUBLIC_BASE_URL`
-- `MICROSOFT_SCOPES` (optional, defaults to `User.Read,email`)
-- `MICROSOFT_PROMPT` (optional, default `select_account` to force account picker)
-- `USER_PASSWORD_AUTH_ENABLED` (optional, default `0`; when `0`, user password login/register is disabled)
-
-Recommended Entra app settings:
-
-- Platform: Web
-- Redirect URI: `https://your-public-host/auth/microsoft/callback`
-- Supported account type: multi-tenant if you plan to use `ALLOWED_MICROSOFT_TENANT_IDS`
-- Delegated permissions: `openid`, `profile`, `email`, `offline_access`, `User.Read`
-
-Multi-tenant allowlist pattern:
-
-- Set `MICROSOFT_TENANT_ID=organizations` to keep the Microsoft login endpoint multi-tenant.
-- Set `ALLOWED_MICROSOFT_TENANT_IDS=tid1,tid2,...` to restrict which returned tenant IDs are accepted after callback.
-- Set `MICROSOFT_SCOPES` to delegated API scopes only. Do not include reserved OIDC scopes such as `openid`, `profile`, or `offline_access`.
-- Any Microsoft sign-in whose `tid` claim is not in that allowlist is rejected before TicketGal links or creates a user.
+- `MICROSOFT_SCOPES`
+- `MICROSOFT_PROMPT`
+- `MICROSOFT_REQUIRE_MFA`
 
 Behavior:
 
-- Existing TicketGal users are matched by email and linked to their Microsoft identity on first successful sign-in.
-- If no local user exists yet, TicketGal creates a local `user` account tied to that Microsoft identity.
-- New Microsoft-created accounts still follow the existing admin approval workflow.
-- Once an account is linked, a different Microsoft object ID cannot sign in as that same TicketGal user.
-- The configured `ADMIN_EMAIL` is auto-elevated to admin on Microsoft sign-in if that account somehow exists as `user`.
-- When `USER_PASSWORD_AUTH_ENABLED=0`, non-admin local password login is rejected and users must sign in with Microsoft 365. Admin password login remains available.
+- Users start sign-in at `/auth/microsoft/login`
+- Callback defaults to `/auth/microsoft/callback`
+- Existing local users can be linked by email
+- New SSO-created users still require approval unless already elevated as the bootstrap admin
 
-### Optional AI Assist Configuration
+## Branding
 
-To enable AI rewrite + ticket field suggestions in the create-ticket form, set:
+Branding values are loaded from a separate file so deployments can be re-skinned without changing code.
 
-- `OPENAI_API_KEY` (optional for local OpenAI-compatible endpoints such as Ollama)
-- `OPENAI_MODEL` (optional, default: `gpt-4o-mini`)
-- `OPENAI_BASE_URL` (optional, default: `https://api.openai.com/v1`)
-- `OPENAI_TIMEOUT_SECONDS` (optional, default: `300`)
+1. Copy `.env.branding.example` to `.env.branding`
+2. Edit the `BRAND_*` values
+3. Keep `BRANDING_ENV_FILE=.env.branding` in `.env`
 
-Example `.env` values for local Ollama:
+The UI reads branding through `GET /api/branding`.
 
-```env
-OPENAI_BASE_URL=http://localhost:11434/v1
-OPENAI_MODEL=llama3.1
-OPENAI_TIMEOUT_SECONDS=300
-# OPENAI_API_KEY is optional for local Ollama
-```
+## AI Assist
 
-### Optional Graceful Degradation and Write Queue
+Admin ticket creation can call `POST /api/tickets/ai-assist` to rewrite messy intake text into cleaner helpdesk language and infer title, priority, and type.
 
-To enable resilience when Atera is unavailable, these flags are supported:
+Relevant settings:
 
-- `ENABLE_CACHE_READ_FALLBACK` (default `1`): serve ticket list/history from local cache when upstream is unavailable.
-- `HEALTH_CHECK_ATERA` (default `1`): include Atera dependency probe in `/health`.
-- `HEALTH_CHECK_TIMEOUT_SECONDS` (default `3`): timeout for health dependency probe.
-- `ENABLE_WRITE_QUEUE` (default `1`): enable queued writes when Atera is unavailable.
-- `ENABLE_QUEUE_FOR_CREATE_TICKET` (default `1`): allow queue fallback for ticket create.
-- `ENABLE_QUEUE_FOR_STATUS_UPDATE` (default `1`): allow queue fallback for status updates.
-- `ENABLE_QUEUE_FOR_COMMENT` (default `1`): allow queue fallback for ticket comments/updates.
-- `QUEUE_PROCESS_BATCH_LIMIT` (default `25`): max queued items processed per drain request.
-- `QUEUE_AUTO_PROCESS_ENABLED` (default `1`): automatically process queued writes in the background.
-- `QUEUE_AUTO_PROCESS_INTERVAL_SECONDS` (default `30`): seconds between automatic queue-drain cycles.
-- Ticket sync now also caches ticket comment history locally, and ticket history reads use that local comment cache during upstream outages.
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
+- `OPENAI_TIMEOUT_SECONDS`
+
+If the configured provider needs a key and no key is set, the app falls back to deterministic local rewriting instead of failing hard.
+
+## Resilience Features
+
+### Cached Reads
+
+When Atera is unavailable and cached reads are enabled, the app can serve:
+
+- ticket list data from the local ticket cache
+- ticket history from cached ticket records and cached comments
+- report summaries from the local reporting cache
+
+Relevant settings:
+
+- `ENABLE_CACHE_READ_FALLBACK`
+- `HEALTH_CHECK_ATERA`
+- `HEALTH_CHECK_TIMEOUT_SECONDS`
+
+### Write Queue
+
+When enabled, write operations can be queued if Atera returns an upstream outage-class failure.
+
+Queued operations include:
+
+- create ticket
+- update ticket status
+- add ticket comment
+- dismiss alert
+
+Relevant settings:
+
+- `ENABLE_WRITE_QUEUE`
+- `ENABLE_QUEUE_FOR_CREATE_TICKET`
+- `ENABLE_QUEUE_FOR_STATUS_UPDATE`
+- `ENABLE_QUEUE_FOR_COMMENT`
+- `QUEUE_PROCESS_BATCH_LIMIT`
+- `QUEUE_AUTO_PROCESS_ENABLED`
+- `QUEUE_AUTO_PROCESS_INTERVAL_SECONDS`
 
 Admin queue endpoints:
 
 - `GET /api/admin/queue/status`
-- `POST /api/admin/queue/process?limit=25`
+- `POST /api/admin/queue/process`
 
-Admin security monitoring endpoint:
+## Data Storage
 
-- `GET /api/admin/security/login-rate-limits?limit=100`
-- `POST /api/admin/security/login-rate-limits/clear` with JSON body: `{"key_type":"email|ip","key_value":"..."}`
+TicketGal currently uses three SQLite databases:
 
-## Run (Development)
+- main app DB: users, sessions, settings, audit log, knowledgebase metadata
+- ticket cache DB: cached tickets, status history, cached comments
+- transactions DB: queued writes and retry state
+
+Knowledgebase content is also written to disk under `app/knowledgebase/...`, with uploaded images under `app/knowledgebase/assets`.
+
+## Running The App
+
+Development:
 
 ```bash
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload
 ```
 
-## Run (Production-Style With Uvicorn)
+Production-style on Linux:
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers
+chmod +x start-prod.sh
+./start-prod.sh
 ```
 
-Or on PowerShell:
+Production-style on PowerShell:
 
 ```powershell
 .\start-prod.ps1
 ```
 
-If the configured port is already occupied, you can auto-stop the listener process:
+## Health And Operations
 
-```powershell
-.\start-prod.ps1 -AutoKillPort
-```
+- `GET /health` gives a basic service health response
+- authenticated admins get more detail, including Atera probe status and cache sync metadata
+- admin UI can manually sync tickets from Atera with `POST /api/admin/sync-tickets-from-atera`
+- audit events are stored locally and exposed through `GET /api/admin/audit-log`
+- login lockouts are visible and clearable through admin security endpoints
 
-Or set `AUTO_KILL_PORT=1` in `.env` to make this behavior the default.
+## Ubuntu + Nginx Deployment
 
-### Optional HTTPS for Local Testing
+The app already includes:
 
-`start-prod.ps1` supports optional direct HTTPS with a self-signed certificate.
+- a systemd service file
+- a Linux startup script
+- an Ubuntu install script
+- Nginx reverse proxy templates
+- ModSecurity + OWASP CRS templates
 
-- `HTTPS_ENABLED=1` enables uvicorn TLS mode.
-- `AUTO_GENERATE_DEV_CERT=1` generates a self-signed cert automatically if missing.
-- `TICKETGAL_SSL_CERT_FILE` and `TICKETGAL_SSL_KEY_FILE` set certificate file paths.
+For deployment instructions, use [ubuntu-nginx-proxy-guide.md](/c:/Scripts/TicketGal/ubuntu-nginx-proxy-guide.md).
 
-When running behind nginx (or another reverse proxy doing TLS termination), keep direct app TLS disabled:
-
-- `HTTPS_ENABLED=0`
-- Configure nginx to send `X-Forwarded-Proto: https`
-- Set `PUBLIC_BASE_URL` to your external HTTPS URL if you want fixed callback URLs, otherwise leave it blank to derive from request host.
-
-### Optional nginx + ModSecurity Edge
-
-This repo now includes a package-based Ubuntu bootstrap for running TicketGal behind nginx with ModSecurity v3 and OWASP CRS in front of the internal Uvicorn service.
-
-Recommended app settings for this mode:
-
-- `HOST=127.0.0.1`
-- `PORT=8000`
-- `HTTPS_ENABLED=0`
-- `PUBLIC_BASE_URL=https://your-public-hostname`
-
-Repo assets:
-
-- `deploy/nginx/ticketgal-http.conf.template`
-- `deploy/nginx/ticketgal-https.conf.template`
-- `deploy/modsecurity/modsecurity-ticketgal.conf`
-- `deploy/modsecurity/crs-setup-ticketgal.conf`
-- `deploy/modsecurity/ticketgal-exclusions.conf`
-- `scripts/install_nginx_modsecurity.sh`
-
-Ubuntu install example:
+If you want to use the included reverse proxy installer directly:
 
 ```bash
 sudo bash scripts/install_nginx_modsecurity.sh --server-name tickets.example.com
 ```
 
-With nginx-managed TLS:
+## Security Notes
 
-```bash
-sudo bash scripts/install_nginx_modsecurity.sh \
-   --server-name tickets.example.com \
-   --tls-cert /etc/letsencrypt/live/tickets.example.com/fullchain.pem \
-   --tls-key /etc/letsencrypt/live/tickets.example.com/privkey.pem
-```
+- Passwords use PBKDF2-SHA256 with per-password salt
+- Session cookies are `HttpOnly`, proxy-aware for `Secure`, and paired with a CSRF cookie/header check
+- The Atera client uses an explicit allowlist of upstream operations
+- The app emits CSP, frame, content-type, referrer, and permissions headers
+- Optional ModSecurity rules are provided for edge filtering
 
-What the installer does:
+## Current Architectural Notes
 
-- Installs `nginx`, `libnginx-mod-http-modsecurity`, and `modsecurity-crs`
-- Places TicketGal-specific ModSecurity policy under `/etc/nginx/modsec/ticketgal`
-- Writes an nginx site that proxies to `127.0.0.1:8000`
-- Starts ModSecurity in `DetectionOnly` mode with CRS paranoia level 1
-- Enables `X-Forwarded-*` headers expected by the app
+- The app is operationally simple because it is a single FastAPI service with no external database dependency.
+- A large amount of behavior currently lives in `app/main.py`, which makes the codebase easy to run but harder to reason about as features grow.
+- Some test files in `app/tests` appear to reflect older routes and role names, so test coverage should be reviewed before treating the suite as authoritative.
 
-Blocking mode is intentionally not the default. Review `/var/log/nginx/modsec_audit.log`, tune exclusions, then rerun with `--enable-blocking` or promote the generated config manually after normal traffic is clean.
+## Additional Docs
 
-### WAF Verification Script
-
-Use the included smoke-test script to validate nginx + ModSecurity behavior end-to-end.
-
-Run in blocking mode (expected malicious probes blocked with 403):
-
-```bash
-bash scripts/test_waf.sh --base-url https://ticketgal.localdomain.internal --mode blocking --insecure
-```
-
-Run in detection mode (expected no 500s; malicious probes may pass through):
-
-```bash
-bash scripts/test_waf.sh --base-url https://ticketgal.localdomain.internal --mode detection --insecure
-```
-
-The script checks:
-
-- `/health` availability through nginx
-- benign protected API request behavior (no internal WAF failure)
-- XSS and SQLi probe behavior according to selected mode
-- Microsoft callback path does not regress to CRS setup-related 500s
-
-PowerShell equivalent:
-
-```powershell
-pwsh ./scripts/test_waf.ps1 -BaseUrl https://ticketgal.localdomain.internal -Mode blocking -Insecure
-```
-
-For detection mode:
-
-```powershell
-pwsh ./scripts/test_waf.ps1 -BaseUrl https://ticketgal.localdomain.internal -Mode detection -Insecure
-```
-
-## Workflow Notes
-
-- On startup, the app initializes SQLite tables and seeds the admin account from ADMIN_EMAIL/ADMIN_PASSWORD if it does not already exist.
-- New user registrations remain pending until approved in the admin panel.
-- Registration requires a password (minimum 8 characters).
-- Microsoft 365 sign-in creates or links a local TicketGal account by email and then issues the same app session cookie used by password login.
-- Admins can reset any user's password in the admin panel.
-- In the create-ticket form, technicians can click **AI Rewrite & Auto-Fill** to rewrite description and suggest title/priority/type.
-- AI assist intentionally does not set initial status or end user email; those remain technician-controlled.
-
-## Atera Integration
-
-- Authentication header: X-API-KEY
-- Ticket list: /api/v3/tickets
-- Ticket create: /api/v3/tickets
-- Ticket update/status: /api/v3/tickets/{ticketId}
-- Ticket comments: /api/v3/tickets/{ticketId}/comments
-
-## Current Limitations
-
-- Outlook drag-and-drop support depends on what payload Outlook/browser exposes; .eml works best, .msg and text/html/text/plain drops use best-effort parsing.
-- Password reset flow is not implemented.
+- [architecture.md](/c:/Scripts/TicketGal/architecture.md)
+- [ubuntu-nginx-proxy-guide.md](/c:/Scripts/TicketGal/ubuntu-nginx-proxy-guide.md)

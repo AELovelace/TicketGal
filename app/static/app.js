@@ -3736,7 +3736,13 @@ async function displayKBArticle(slug, target = null) {
 function openKBEditor(article = null) {
   const slug = safeText(article?.slug).trim();
   const url = slug ? `/kb-editor?slug=${encodeURIComponent(slug)}` : "/kb-editor";
-  const features = "popup=yes,width=1100,height=860,resizable=yes,scrollbars=yes";
+  const availableWidth = Number(window.screen?.availWidth) || Number(window.innerWidth) || 1400;
+  const availableHeight = Number(window.screen?.availHeight) || Number(window.innerHeight) || 900;
+  const width = Math.max(900, Math.floor(availableWidth * 0.96));
+  const height = Math.max(700, Math.floor(availableHeight * 0.96));
+  const left = Math.max(0, Math.floor((availableWidth - width) / 2));
+  const top = Math.max(0, Math.floor((availableHeight - height) / 2));
+  const features = `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
   const popup = window.open(url, "ticketgal-kb-editor", features);
   if (popup && typeof popup.focus === "function") {
     popup.focus();
