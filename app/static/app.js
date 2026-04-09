@@ -1591,6 +1591,7 @@ function buildUpdateControls(ticket, isAdminTable) {
   }
 
   const internalLabel = document.createElement("label");
+  internalLabel.className = "checkbox-inline-label";
   const internal = document.createElement("input");
   internal.type = "checkbox";
   internal.dataset.role = "internal";
@@ -1599,6 +1600,7 @@ function buildUpdateControls(ticket, isAdminTable) {
   internalLabel.appendChild(document.createTextNode(" Internal"));
 
   const resolveLabel = document.createElement("label");
+  resolveLabel.className = "checkbox-inline-label";
   const resolve = document.createElement("input");
   resolve.type = "checkbox";
   resolve.dataset.role = "resolve-with-update";
@@ -2945,6 +2947,9 @@ logoutBtn.addEventListener("click", async () => {
   applyTheme(false);
   updateKBButtonVisibility();
   showAuth();
+  loginStatus.textContent = "";
+  await loadAuthProviders();
+  await checkSignupsEnabled();
 });
 
 userCreateForm.addEventListener("submit", async (event) => {
@@ -3503,8 +3508,8 @@ async function refreshMe() {
     if (authRedirectState.error) {
       loginStatus.textContent = authRedirectState.error;
     }
-    checkSignupsEnabled();
-    loadAuthProviders();
+    await loadAuthProviders();
+    await checkSignupsEnabled();
   }
 }
 

@@ -620,6 +620,17 @@ td select {
   gap: 0.5rem;
 }
 
+.checkbox-inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: fit-content;
+}
+
+.checkbox-inline-label input[type="checkbox"] {
+  margin: 0;
+}
+
 .ticket-viewer-history {
   display: grid;
   gap: 0.55rem;
