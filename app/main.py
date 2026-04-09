@@ -427,6 +427,12 @@ async def register_page() -> FileResponse:
     return FileResponse(static_dir / "register.html")
 
 
+@app.get("/kb-editor")
+async def kb_editor_page(user: Dict[str, Any] = Depends(get_current_user)) -> FileResponse:
+    require_admin(user)
+    return FileResponse(static_dir / "kb-editor.html")
+
+
 @app.get("/health")
 async def health(request: Request) -> Dict[str, Any]:
     # Only expose detailed dependency status to authenticated admins.

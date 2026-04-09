@@ -1678,3 +1678,56 @@ body.theme-premium #kb-editor-codemirror.dragover {
   background: #fff2f5;
   box-shadow: 0 0 0 3px rgba(196, 154, 158, 0.18);
 }
+
+.kb-editor-standalone-body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.kb-editor-standalone-shell {
+  width: min(1100px, 96vw);
+  margin: 1rem auto;
+}
+
+.kb-editor-standalone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+#kb-window-editor-host {
+  border: 1px solid #ccbfa3;
+  border-radius: 6px;
+  min-height: 320px;
+  background: #fff;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+#kb-window-editor-host.dragover {
+  border-color: var(--gold-500);
+  background: #fff9ea;
+  box-shadow: 0 0 0 3px rgba(198, 167, 93, 0.18);
+}
+
+#kb-window-editor-host .CodeMirror {
+  font-family: "Courier New", Monaco, monospace;
+  font-size: 0.9rem;
+  min-height: 320px;
+  height: auto;
+}
+
+#kb-window-editor-host .CodeMirror-scroll {
+  min-height: 320px;
+}
+
+body.theme-premium #kb-window-editor-host {
+  border-color: #d4a0a8;
+  background: #fffbfc;
+}
+
+body.theme-premium #kb-window-editor-host.dragover {
+  border-color: #c49a9e;
+  background: #fff2f5;
+  box-shadow: 0 0 0 3px rgba(196, 154, 158, 0.18);
+}

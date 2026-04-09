@@ -3678,46 +3678,18 @@ async function displayKBArticle(slug, target = null) {
   }
 }
 
-async function openKBEditor(article = null) {
-  if (!kbEditorModal) return;
-
-  kbCurrentArticle = article;
-
-  if (kbEditorTitleHeading) {
-    kbEditorTitleHeading.textContent = article ? "Edit Article" : "New Article";
+function openKBEditor(article = null) {
+  const slug = safeText(article?.slug).trim();
+  const url = slug ? `/kb-editor?slug=${encodeURIComponent(slug)}` : "/kb-editor";
+  const features = "popup=yes,width=1100,height=860,resizable=yes,scrollbars=yes";
+  const popup = window.open(url, "ticketgal-kb-editor", features);
+  if (popup && typeof popup.focus === "function") {
+    popup.focus();
+    return;
   }
-  
-  // Show/hide delete button based on edit vs create
-  if (kbEditorDelete) {
-    kbEditorDelete.style.display = article ? "block" : "none";
+  if (kbEditorStatus) {
+    kbEditorStatus.textContent = "Pop-up blocked. Allow pop-ups for this site and try again.";
   }
-  
-  // Populate form
-  if (kbEditorTitleInput) {
-    kbEditorTitleInput.value = article ? article.title : "";
-  }
-  if (kbEditorVisibility) {
-    kbEditorVisibility.value = article ? article.visibility_type : "public";
-  }
-  if (kbEditorCustomerId) {
-    kbEditorCustomerId.value = article ? (article.restricted_to_customer_id || "") : "";
-  }
-  
-  // Load properties if needed
-  if (!kbProperties.length && currentUser && currentUser.role === "admin") {
-    await loadKBProperties();
-  }
-  
-  // Update visibility label
-  updateKBVisibilityLabel();
-  
-  // Initialize CodeMirror container
-  initializeCodeMirrorContainer();
-
-  // Set editor content
-  setKBEditorContent(article ? (article.content || "") : "");
-  
-  kbEditorModal.classList.remove("hidden");
 }
 
 function closeKBEditor() {
@@ -4111,6 +4083,25 @@ if (kbEditorCancel) {
 if (kbEditorDelete) {
   kbEditorDelete.addEventListener("click", deleteKBArticle);
 }
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) return;
+  const eventType = safeText(event.data?.type).trim();
+  if (eventType !== "kb-editor-saved" && eventType !== "kb-editor-deleted") {
+    return;
+  }
+  loadKBArticles("admin");
+  const slug = safeText(event.data?.slug).trim();
+  if (slug && eventType === "kb-editor-saved") {
+    displayKBArticle(slug, "admin").catch(() => {
+      // Ignore display refresh errors after popup save.
+    });
+  }
+  if (eventType === "kb-editor-deleted" && kbArticleViewer) {
+    kbArticleViewer.classList.add("hidden");
+    kbArticleViewer.innerHTML = "";
+  }
+});
 
 // Show/hide KB button based on user role
 function updateKBButtonVisibility() {
