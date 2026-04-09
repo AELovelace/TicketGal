@@ -98,6 +98,8 @@ from .schemas import (
     CreateKBArticleRequest,
     CreateTicketRequest,
     GrantKBAccessRequest,
+    KBSelectionRewriteRequest,
+    KBSelectionRewriteResponse,
     LoginRequest,
     RegisterRequest,
     TicketAiAssistRequest,
@@ -3120,6 +3122,125 @@ async def upload_kb_image_endpoint(
     }
 
 
+@app.post("/api/knowledgebase/rewrite-selection", response_model=KBSelectionRewriteResponse)
+async def rewrite_kb_selection_endpoint(
+    request: KBSelectionRewriteRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> KBSelectionRewriteResponse:
+    """Rewrite a selected markdown section for KB editing (admin only)."""
+    require_admin(user)
+
+    selected_text = _coerce_ai_text(request.selected_text, max_length=12000)
+    if not selected_text:
+        raise HTTPException(status_code=400, detail="Selected text is required")
+
+    instruction = _coerce_ai_text(request.rewrite_instruction or "", max_length=500)
+    instruction_line = f"Additional instruction: {instruction}\n\n" if instruction else ""
+
+    if _provider_requires_api_key(settings.openai_base_url) and not settings.openai_api_key:
+        return KBSelectionRewriteResponse(
+            rewritten_text=selected_text,
+            fallback_used=True,
+            fallback_reason="AI provider API key is not configured; returning original selection.",
+        )
+
+    user_prompt = (
+        "Rewrite the following markdown section while preserving factual meaning and markdown structure. "
+        "Keep links, lists, tables, headings, and code blocks valid markdown. "
+        "Do not wrap output in code fences and do not add commentary.\n\n"
+        f"{instruction_line}"
+        "Selected markdown:\n"
+        f"{selected_text}"
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a technical writing assistant for markdown documents. "
+                "Return only rewritten markdown content with no explanation."
+            ),
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+
+    payload: Dict[str, Any] = {
+        "model": settings.openai_model,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": False,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    if settings.openai_api_key:
+        headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+
+    response: Optional[httpx.Response] = None
+    body: Dict[str, Any] = {}
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
+            if _looks_like_ollama_base_url(settings.openai_base_url):
+                native_payload: Dict[str, Any] = {
+                    "model": settings.openai_model,
+                    "messages": messages,
+                    "stream": False,
+                    "think": False,
+                    "options": {
+                        "temperature": 0.2,
+                        "num_ctx": 131072,
+                    },
+                }
+                response = await http_client.post(
+                    _get_ollama_native_endpoint(settings.openai_base_url),
+                    headers=headers,
+                    json=native_payload,
+                )
+                if response.status_code < 400:
+                    body = response.json() if response.content else {}
+                else:
+                    response = await http_client.post(
+                        f"{settings.openai_base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    body = response.json() if response.content else {}
+            else:
+                response = await http_client.post(
+                    f"{settings.openai_base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                body = response.json() if response.content else {}
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
+
+    if response is None:
+        raise HTTPException(status_code=502, detail="AI provider did not return a response")
+
+    if response.status_code >= 400:
+        if response.status_code in {401, 403}:
+            raise HTTPException(
+                status_code=502,
+                detail="AI provider authentication failed. Check OPENAI_API_KEY and OPENAI_BASE_URL.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed. Review AI provider configuration and server logs.",
+        )
+
+    content = _extract_ai_message_content(body)
+    rewritten = _coerce_ai_text(content, max_length=12000)
+    if not rewritten:
+        return KBSelectionRewriteResponse(
+            rewritten_text=selected_text,
+            fallback_used=True,
+            fallback_reason="AI response did not include usable rewritten text.",
+        )
+
+    return KBSelectionRewriteResponse(rewritten_text=rewritten)
+
+
 @app.get("/api/knowledgebase/assets/{asset_name}")
 async def get_kb_image_endpoint(
     asset_name: str,
@@ -3167,6 +3288,23 @@ async def list_kb_articles_endpoint(
     # Paginate
     offset = (page - 1) * items_per_page
     paginated = accessible[offset : offset + items_per_page]
+
+    property_name_by_id: Dict[int, str] = {}
+    needs_property_names = any(
+        a.get("visibility_type") == "company_assigned" and a.get("restricted_to_customer_id")
+        for a in paginated
+    )
+    if needs_property_names:
+        try:
+            properties = await client.list_properties(page=1, items_in_page=500)
+            items = properties.get("items", []) if isinstance(properties, dict) else []
+            property_name_by_id = {
+                int(item.get("CustomerID")): str(item.get("CustomerName") or "").strip()
+                for item in items
+                if item.get("CustomerID") is not None
+            }
+        except AteraApiError:
+            property_name_by_id = {}
     
     return {
         "total": len(accessible),
@@ -3178,6 +3316,10 @@ async def list_kb_articles_endpoint(
                 "slug": a["slug"],
                 "title": a["title"],
                 "visibility_type": a["visibility_type"],
+                "restricted_to_customer_id": a.get("restricted_to_customer_id"),
+                "restricted_to_customer_name": property_name_by_id.get(int(a["restricted_to_customer_id"]))
+                if a.get("restricted_to_customer_id")
+                else None,
                 "created_at": a["created_at"],
                 "updated_at": a["updated_at"],
             }

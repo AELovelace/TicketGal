@@ -1,6 +1,6 @@
 # TicketGal
 
-TicketGal is a FastAPI-based self-service and admin portal that sits in front of the Atera API. It serves a browser UI, manages local users and sessions, mirrors ticket data into local SQLite caches for reporting and degraded reads, and can queue write operations when Atera is unavailable.
+TicketGal is a FastAPI/Uvicorn-based self-service and admin portal that sits in front of the Atera API. It serves a browser UI, manages local users and sessions, mirrors ticket data into local SQLite caches for reporting and degraded reads, and can queue write operations when Atera is unavailable.
 
 ## What The App Does
 

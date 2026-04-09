@@ -3,6 +3,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -90,8 +91,14 @@ def _apply_common_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode = WAL")
 
 
+def _ensure_database_parent(db_path: str) -> None:
+    path = Path(db_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
+    _ensure_database_parent(settings.db_path)
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
     _apply_common_pragmas(conn)
@@ -103,6 +110,7 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
 
 @contextmanager
 def get_ticket_cache_conn() -> Generator[sqlite3.Connection, None, None]:
+    _ensure_database_parent(settings.ticket_cache_db_path)
     conn = sqlite3.connect(settings.ticket_cache_db_path)
     conn.row_factory = sqlite3.Row
     _apply_common_pragmas(conn)
@@ -114,6 +122,7 @@ def get_ticket_cache_conn() -> Generator[sqlite3.Connection, None, None]:
 
 @contextmanager
 def get_transactions_conn() -> Generator[sqlite3.Connection, None, None]:
+    _ensure_database_parent(settings.transactions_db_path)
     conn = sqlite3.connect(settings.transactions_db_path)
     conn.row_factory = sqlite3.Row
     _apply_common_pragmas(conn)
@@ -512,6 +521,9 @@ def _create_knowledgebase_schema() -> None:
 
 
 def init_db() -> None:
+    _ensure_database_parent(settings.db_path)
+    _ensure_database_parent(settings.ticket_cache_db_path)
+    _ensure_database_parent(settings.transactions_db_path)
     _create_ticket_cache_schema()
     _backfill_ticket_cache_dates()
     _backfill_status_history()

@@ -77,9 +77,9 @@ auto_generate_cert="${AUTO_GENERATE_DEV_CERT:-1}"
 ssl_cert_file="${TICKETGAL_SSL_CERT_FILE:-certs/dev-cert.pem}"
 ssl_key_file="${TICKETGAL_SSL_KEY_FILE:-certs/dev-key.pem}"
 ssl_hosts="${TICKETGAL_SSL_HOSTS:-$host_addr,localhost,127.0.0.1}"
-db_path="${DB_PATH:-ticketgal.db}"
-ticket_cache_db_path="${TICKET_CACHE_DB_PATH:-ticketgal_tickets.db}"
-transactions_db_path="${TICKET_TRANSACTIONS_DB_PATH:-ticketgal_transactions.db}"
+db_path="${DB_PATH:-app/db/ticketgal.db}"
+ticket_cache_db_path="${TICKET_CACHE_DB_PATH:-app/db/ticketgal_tickets.db}"
+transactions_db_path="${TICKET_TRANSACTIONS_DB_PATH:-app/db/ticketgal_transactions.db}"
 
 https_enabled=0
 if [[ "$https_flag" == "1" || "$https_flag" == "true" || "$https_flag" == "yes" ]]; then

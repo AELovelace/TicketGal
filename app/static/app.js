@@ -3660,9 +3660,14 @@ async function loadKBArticles(target = null, search = "") {
       const item = document.createElement("div");
       item.className = "kb-article-item";
       item.dataset.articleSlug = safeText(article.slug);
+      const isPropertyAssigned = safeText(article.visibility_type) === "company_assigned";
+      const propertyName = safeText(article.restricted_to_customer_name || "").trim();
+      const badgeLabel = isPropertyAssigned
+        ? `Property assigned: ${propertyName || "Unknown property"}`
+        : safeText(article.visibility_type).replace(/_/g, " ");
       item.innerHTML = `
         <div class="kb-article-title">${safeText(article.title)}</div>
-        <span class="kb-article-badge kb-badge-${article.visibility_type}">${safeText(article.visibility_type).replace(/_/g, " ")}</span>
+        <span class="kb-article-badge kb-badge-${article.visibility_type}">${badgeLabel}</span>
       `;
       item.addEventListener("click", () => displayKBArticle(article.slug, context.target));
       context.articlesList.appendChild(item);

@@ -114,9 +114,9 @@ ATERA_API_KEY=
 ATERA_BASE_URL=https://app.atera.com
 
 # ── Database ──────────────────────────────────────────────────
-# DB_PATH=ticketgal.db
-# TICKET_CACHE_DB_PATH=ticketgal_tickets.db
-# TICKET_TRANSACTIONS_DB_PATH=ticketgal_transactions.db
+# DB_PATH=app/db/ticketgal.db
+# TICKET_CACHE_DB_PATH=app/db/ticketgal_tickets.db
+# TICKET_TRANSACTIONS_DB_PATH=app/db/ticketgal_transactions.db
 
 # ── Encryption (generate with: openssl rand -hex 32) ─────────
 DATA_ENCRYPTION_KEY=

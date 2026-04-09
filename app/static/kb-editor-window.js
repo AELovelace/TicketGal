@@ -59,6 +59,7 @@ const customerSelect = document.getElementById("kb-window-customer-id");
 const editorHost = document.getElementById("kb-window-editor-host");
 const previewEl = document.getElementById("kb-window-preview");
 const uploadHint = document.getElementById("kb-window-upload-hint");
+const rewriteSelectionBtn = document.getElementById("kb-window-rewrite-selection");
 const saveBtn = document.getElementById("kb-window-save");
 const deleteBtn = document.getElementById("kb-window-delete");
 const closeBtn = document.getElementById("kb-window-close");
@@ -68,6 +69,8 @@ const query = new URLSearchParams(window.location.search);
 const articleSlug = safeText(query.get("slug")).trim();
 let currentArticle = null;
 let kbEditor = null;
+let rewritePopupWindow = null;
+let pendingRewriteText = "";
 
 function setStatus(message) {
   if (statusEl) {
@@ -277,6 +280,78 @@ function insertEditorText(value) {
   }
 }
 
+function getSelectedEditorText() {
+  if (kbEditor && typeof kbEditor.getSelection === "function") {
+    return safeText(kbEditor.getSelection());
+  }
+  const textarea = document.getElementById("kb-window-editor-textarea");
+  if (textarea instanceof HTMLTextAreaElement) {
+    const start = textarea.selectionStart || 0;
+    const end = textarea.selectionEnd || 0;
+    return textarea.value.slice(start, end);
+  }
+  return "";
+}
+
+function replaceEditorSelection(value) {
+  const next = safeText(value);
+  if (!next) return;
+  if (kbEditor && typeof kbEditor.replaceSelection === "function") {
+    kbEditor.focus();
+    kbEditor.replaceSelection(next, "end");
+    renderPreview();
+    return;
+  }
+  const textarea = document.getElementById("kb-window-editor-textarea");
+  if (textarea instanceof HTMLTextAreaElement) {
+    const start = textarea.selectionStart || 0;
+    const end = textarea.selectionEnd || 0;
+    textarea.value = `${textarea.value.slice(0, start)}${next}${textarea.value.slice(end)}`;
+    textarea.selectionStart = start + next.length;
+    textarea.selectionEnd = start + next.length;
+    textarea.focus();
+    renderPreview();
+  }
+}
+
+async function rewriteSelectionWithAI() {
+  const selectedText = safeText(getSelectedEditorText()).trim();
+  if (!selectedText) {
+    setStatus("Select markdown text in the editor, then click Rewrite Selection with AI.");
+    return;
+  }
+
+  setStatus("Sending selected text to AI for rewrite...");
+  try {
+    const result = await api("/api/knowledgebase/rewrite-selection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selected_text: selectedText }),
+    });
+
+    pendingRewriteText = safeText(result?.rewritten_text);
+    if (!pendingRewriteText.trim()) {
+      setStatus("AI did not return rewritten content.");
+      return;
+    }
+
+    rewritePopupWindow = window.open(
+      "/static/kb-rewrite-popup.html",
+      "kb-rewrite-result-window",
+      "popup=yes,width=860,height=760,resizable=yes,scrollbars=yes",
+    );
+
+    if (!rewritePopupWindow) {
+      setStatus("Pop-up blocked. Allow pop-ups for this site to review AI rewrites.");
+      return;
+    }
+
+    setStatus("Rewrite ready. Review the result in the popup window.");
+  } catch (error) {
+    setStatus(`Rewrite failed: ${safeText(error.message)}`);
+  }
+}
+
 async function uploadKBImage(file) {
   const formData = new FormData();
   formData.append("file", file);
@@ -455,6 +530,9 @@ function bindEvents() {
   if (visibilitySelect) {
     visibilitySelect.addEventListener("change", normalizeVisibilityControls);
   }
+  if (rewriteSelectionBtn) {
+    rewriteSelectionBtn.addEventListener("click", rewriteSelectionWithAI);
+  }
   if (saveBtn) {
     saveBtn.addEventListener("click", saveArticle);
   }
@@ -464,6 +542,34 @@ function bindEvents() {
   if (closeBtn) {
     closeBtn.addEventListener("click", () => window.close());
   }
+
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const eventType = safeText(event.data?.type).trim();
+
+    if (eventType === "kb-rewrite-ready") {
+      if (rewritePopupWindow && !rewritePopupWindow.closed && pendingRewriteText.trim()) {
+        rewritePopupWindow.postMessage(
+          { type: "kb-rewrite-popup-data", rewritten_text: pendingRewriteText },
+          window.location.origin,
+        );
+      }
+      return;
+    }
+
+    if (eventType === "kb-rewrite-apply") {
+      const mode = safeText(event.data?.mode).trim();
+      const rewrittenText = safeText(event.data?.rewritten_text).trim();
+      if (!rewrittenText) return;
+      if (mode === "replace") {
+        replaceEditorSelection(rewrittenText);
+        setStatus("AI rewrite replaced the current selection.");
+      } else {
+        insertEditorText(rewrittenText);
+        setStatus("AI rewrite inserted at cursor.");
+      }
+    }
+  });
 }
 
 async function init() {

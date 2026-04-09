@@ -308,3 +308,30 @@ class UpdateKBArticleRequest(BaseModel):
 
 class GrantKBAccessRequest(BaseModel):
     user_id: int = Field(..., gt=0)
+
+
+class KBSelectionRewriteRequest(BaseModel):
+    selected_text: str = Field(..., min_length=1, max_length=12000)
+    rewrite_instruction: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("selected_text")
+    @classmethod
+    def sanitize_selected_text(cls, value: str) -> str:
+        cleaned = _sanitize_multiline(value, max_length=12000)
+        if not cleaned:
+            raise ValueError("Selected text is required")
+        return cleaned
+
+    @field_validator("rewrite_instruction")
+    @classmethod
+    def sanitize_rewrite_instruction(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = _sanitize_multiline(value, max_length=500)
+        return cleaned or None
+
+
+class KBSelectionRewriteResponse(BaseModel):
+    rewritten_text: str
+    fallback_used: bool = False
+    fallback_reason: Optional[str] = None

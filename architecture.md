@@ -12,6 +12,79 @@ TicketGal is a single-service FastAPI application that combines:
 
 The system is intentionally lightweight to deploy. It avoids external infrastructure beyond Atera and optional AI and Microsoft identity providers, but it trades that simplicity for a fairly large application core concentrated in a few Python modules, especially [app/main.py](/c:/Scripts/TicketGal/app/main.py).
 
+## Block Diagrams
+
+### System Context
+
+```text
+                         +----------------------+
+                         |  Browser / End User  |
+                         +----------+-----------+
+                                    |
+                                    | HTTPS
+                                    v
+                         +----------+-----------+
+                         |   Nginx / Reverse    |
+                         |   Proxy (+ optional  |
+                         |    ModSecurity)      |
+                         +----------+-----------+
+                                    |
+                                    | HTTP on localhost
+                                    v
+                   +----------------+----------------+
+                   |        TicketGal FastAPI        |
+                   |                                 |
+                   |  - API routes                   |
+                   |  - auth/session handling        |
+                   |  - static UI serving            |
+                   |  - queue worker                 |
+                   |  - reporting + KB endpoints     |
+                   +--------+-------------+----------+
+                            |             |
+                 live API   |             | local state
+                 traffic    |             |
+                            v             v
+                 +----------+--+   +------+----------------------+
+                 |   Atera API  |   |      Local Storage         |
+                 |              |   |                             |
+                 | tickets      |   |  main DB                   |
+                 | comments     |   |  ticket cache DB           |
+                 | customers    |   |  transactions DB           |
+                 | alerts       |   |  KB markdown + assets      |
+                 +--------------+   +-----------------------------+
+```
+
+### Internal Application Shape
+
+```text
+ +--------------------------------------------------------------+
+ |                         TicketGal App                        |
+ +--------------------------------------------------------------+
+ |                      app/main.py                             |
+ |  routes | middleware | orchestration | startup | queue loop  |
+ +-------------------+------------------+-----------------------+
+                     |                  |
+                     |                  |
+         +-----------v-----+    +-------v------------------+
+         |   app/auth.py   |    |    app/atera_client.py   |
+         |  passwords      |    |  upstream allowlist      |
+         |  sessions       |    |  httpx wrapper           |
+         |  role guards    |    |  Atera error mapping     |
+         +-----------+-----+    +---------------+----------+
+                     |                          |
+                     |                          |
+         +-----------v--------------------------------------+
+         |                 app/database.py                  |
+         |  users | sessions | cache | queue | KB metadata  |
+         +-----------+----------------------+---------------+
+                     |                      |
+                     |                      |
+         +-----------v-----+      +---------v----------------+
+         |   SQLite DBs    |      |  KB files on disk        |
+         |  main/cache/tx  |      |  markdown + image assets |
+         +-----------------+      +--------------------------+
+```
+
 ## High-Level Shape
 
 ### Runtime Components
@@ -167,6 +240,30 @@ This design keeps article content easy to inspect and back up, but it means arti
 4. Successful reads refresh the local ticket and comment cache.
 5. If Atera is unavailable and cached fallback is enabled, the app serves cached data.
 
+```text
+ +---------+      +--------------+      +-----------+
+ | Browser | ---> | TicketGal    | ---> | Atera API |
+ +----+----+      +------+-------+      +-----+-----+
+      |                  |                    |
+      |                  |<-------------------+
+      |                  |   live ticket data
+      |                  |
+      |                  +--> update local cache
+      |                  |
+      |<-----------------+
+      | filtered response
+
+ Degraded path:
+
+ +---------+      +--------------+      +-----------------+
+ | Browser | ---> | TicketGal    | ---> | Atera failure   |
+ +----+----+      +------+-------+      +-----------------+
+      |                  |
+      |                  +--> read local ticket/comment cache
+      |<-----------------+
+      | degraded response
+```
+
 ### Ticket Write Flow
 
 1. Browser submits create, comment, status, or alert-dismiss action.
@@ -174,6 +271,40 @@ This design keeps article content easy to inspect and back up, but it means arti
 3. App attempts the Atera write.
 4. If Atera is down and queueing is enabled, the action is stored in `transaction_queue`.
 5. A background worker or manual admin action drains queued work later.
+
+```text
+ normal write
+
+ +---------+      +--------------+      +-----------+
+ | Browser | ---> | TicketGal    | ---> | Atera API |
+ +---------+      +------+-------+      +-----+-----+
+                         |                    |
+                         |<-------------------+
+                         | success/failure
+                         v
+                    return response
+
+
+ outage write with queue fallback
+
+ +---------+      +--------------+      +-------------------+
+ | Browser | ---> | TicketGal    | ---> | Atera unavailable |
+ +---------+      +------+-------+      +-------------------+
+                         |
+                         +--> transaction_queue
+                         |
+                         +--> 202 queued response
+
+
+ replay path
+
+ +------------------+      +--------------+      +-----------+
+ | Queue worker /   | ---> | TicketGal    | ---> | Atera API |
+ | admin drain call |      +------+-------+      +-----+-----+
+ +------------------+             |                    |
+                                  |<-------------------+
+                                  | mark complete/retry
+```
 
 ### Reporting Flow
 
@@ -183,6 +314,20 @@ This design keeps article content easy to inspect and back up, but it means arti
 
 This is an important design choice: reports depend on the sync/cache layer being current.
 
+```text
+ +-------------+      +--------------+      +----------------------+
+ | Admin UI    | ---> | TicketGal    | ---> | ticket cache DB      |
+ +-------------+      +------+-------+      | status history DB    |
+                              |              +----------+-----------+
+                              |                         |
+                              |<------------------------+
+                              | aggregate stats
+                              |
+                              +--> optional AI provider
+                              |
+                              +--> report JSON back to UI
+```
+
 ### Knowledgebase Flow
 
 1. Admin creates or edits an article.
@@ -190,6 +335,26 @@ This is an important design choice: reports depend on the sync/cache layer being
 3. Metadata is written to SQLite.
 4. Users fetch article lists through access-filtered API routes.
 5. Article content is read from disk and returned to the frontend for markdown rendering.
+
+```text
+ write path
+
+ +----------+      +--------------+      +------------------+
+ | Admin UI  | ---> | TicketGal    | ---> | KB markdown file |
+ +----------+      +------+-------+      +------------------+
+                          |
+                          +--> knowledgebase_articles table
+
+ read path
+
+ +----------+      +--------------+      +--------------------------+
+ | User UI   | ---> | TicketGal    | ---> | KB metadata + whitelist  |
+ +----------+      +------+-------+      +--------------------------+
+                          |
+                          +--> read markdown from disk
+                          |
+                          +--> return article content
+```
 
 ## Security Architecture
 
@@ -241,6 +406,30 @@ This matches the assets already present in:
 - [deploy/nginx/ticketgal-http.conf.template](/c:/Scripts/TicketGal/deploy/nginx/ticketgal-http.conf.template)
 - [deploy/nginx/ticketgal-https.conf.template](/c:/Scripts/TicketGal/deploy/nginx/ticketgal-https.conf.template)
 
+```text
+                 public internet
+                        |
+                        v
+             +------------------------+
+             |  Nginx :80 / :443      |
+             |  optional ModSecurity  |
+             +-----------+------------+
+                         |
+                         | proxy_pass
+                         v
+             +-----------+------------+
+             | TicketGal Uvicorn      |
+             | 127.0.0.1:8000         |
+             +-----------+------------+
+                         |
+          +--------------+---------------+
+          |                              |
+          v                              v
+ +--------+---------+          +---------+---------+
+ | local SQLite DBs |          | KB files on disk  |
+ +------------------+          +-------------------+
+```
+
 ## Architectural Strengths
 
 - Very easy to deploy because everything is in one service and SQLite-backed
@@ -269,7 +458,16 @@ The test files under [app/tests](/c:/Scripts/TicketGal/app/tests) appear to refe
 
 ### SQLite Concurrency Ceiling
 
-For the current size and deployment model, SQLite is reasonable. If usage grows, queue traffic, caching, reporting, and UI-driven writes may eventually push against file-based concurrency and operational tooling limits.
+For the current size and deployment model, SQLite is reasonable. For an organization with roughly 100 total users and around 50 users with portal access, SQLite would not be an expected bottleneck by itself.
+
+The more important scaling factor here is concurrent write pressure, not raw user count. TicketGal is more likely to feel SQLite limits when several things overlap:
+
+- many users creating tickets or posting updates at the same time
+- queue replay processing a burst of deferred writes
+- sync or cache-refresh activity running during busy periods
+- multiple app workers contending on the same database files
+
+A rough rule of thumb for this app is that SQLite should remain comfortable at small internal-tool scale, and concern would start to shift from theoretical to practical when active usage climbs well beyond the current footprint or when write-heavy bursts become common. In other words, the likely trigger is not "50 users exist," but "enough simultaneous writes are happening that lock contention becomes visible."
 
 ## Suggested Next Refactors
 

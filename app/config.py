@@ -31,6 +31,12 @@ class Settings:
         def _flag(name: str, default: str = "0") -> bool:
             return os.getenv(name, default).strip().lower() in {"1", "true", "yes"}
 
+        def _resolve_path(raw_path: str) -> Path:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = project_root / path
+            return path.resolve()
+
         user_password_flag = os.getenv("USER_PASSWORD_AUTH_ENABLED", "0").strip().lower()
         self.user_password_auth_enabled = user_password_flag in {"1", "true", "yes"}
         self.atera_api_key = os.getenv("ATERA_API_KEY", "")
@@ -48,9 +54,15 @@ class Settings:
         self.host = os.getenv("HOST", "127.0.0.1")
         self.port = int(os.getenv("PORT", "8000"))
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-        self.db_path = os.getenv("DB_PATH", str(project_root / "ticketgal.db"))
-        self.ticket_cache_db_path = os.getenv("TICKET_CACHE_DB_PATH", str(project_root / "ticketgal_tickets.db"))
-        self.transactions_db_path = os.getenv("TICKET_TRANSACTIONS_DB_PATH", str(project_root / "ticketgal_transactions.db"))
+        db_dir_default = project_root / "app" / "db"
+        self.db_dir = str(_resolve_path(os.getenv("DB_DIR", str(db_dir_default))))
+        self.db_path = str(_resolve_path(os.getenv("DB_PATH", str(Path(self.db_dir) / "ticketgal.db"))))
+        self.ticket_cache_db_path = str(
+            _resolve_path(os.getenv("TICKET_CACHE_DB_PATH", str(Path(self.db_dir) / "ticketgal_tickets.db")))
+        )
+        self.transactions_db_path = str(
+            _resolve_path(os.getenv("TICKET_TRANSACTIONS_DB_PATH", str(Path(self.db_dir) / "ticketgal_transactions.db")))
+        )
         self.data_encryption_key = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
         self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "ticketgal_session")
         self.session_hours = int(os.getenv("SESSION_HOURS", "12"))
