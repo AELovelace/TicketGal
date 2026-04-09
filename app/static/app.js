@@ -17,6 +17,13 @@ const localLoginBtn = document.getElementById("local-login-btn");
 const registerLink = document.getElementById("register-link");
 
 const loginStatus = document.getElementById("login-status");
+const brandTopLeft = document.getElementById("brand-top-left");
+const brandTopRight = document.getElementById("brand-top-right");
+const brandAuthEyebrow = document.getElementById("brand-auth-eyebrow");
+const brandAuthTitle = document.getElementById("brand-auth-title");
+const brandAuthDescription = document.getElementById("brand-auth-description");
+const brandHeroEyebrow = document.getElementById("brand-hero-eyebrow");
+const brandHeroTitle = document.getElementById("brand-hero-title");
 
 const userCreateForm = document.getElementById("create-ticket-form");
 const userTicketsBody = document.getElementById("tickets-body");
@@ -212,6 +219,48 @@ function readAndClearAuthRedirectState() {
   window.history.replaceState({}, document.title, nextUrl);
 
   return { error, success };
+}
+
+function applyBranding(branding) {
+  if (!branding || typeof branding !== "object") return;
+
+  if (brandTopLeft && branding.top_banner_left) {
+    brandTopLeft.textContent = safeText(branding.top_banner_left);
+  }
+  if (brandTopRight && branding.top_banner_right) {
+    brandTopRight.textContent = safeText(branding.top_banner_right);
+  }
+  if (brandAuthEyebrow && branding.auth_eyebrow) {
+    brandAuthEyebrow.textContent = safeText(branding.auth_eyebrow);
+  }
+  if (brandAuthTitle && branding.portal_title) {
+    brandAuthTitle.textContent = safeText(branding.portal_title);
+  }
+  if (brandAuthDescription && branding.auth_description) {
+    brandAuthDescription.textContent = safeText(branding.auth_description);
+  }
+  if (brandHeroEyebrow && branding.hero_eyebrow) {
+    brandHeroEyebrow.textContent = safeText(branding.hero_eyebrow);
+  }
+  if (brandHeroTitle && branding.operations_title) {
+    brandHeroTitle.textContent = safeText(branding.operations_title);
+  }
+
+  const productName = safeText(branding.product_name).trim();
+  if (productName) {
+    document.title = productName;
+  }
+}
+
+async function loadBranding() {
+  try {
+    const response = await fetch("/api/branding", { credentials: "include" });
+    if (!response.ok) return;
+    const data = await response.json();
+    applyBranding(data);
+  } catch {
+    // Keep static defaults if branding endpoint is unavailable.
+  }
 }
 
 function htmlToReadableText(value) {
@@ -3513,6 +3562,7 @@ async function refreshMe() {
   }
 }
 
+loadBranding();
 refreshMe();
 
 // ========================

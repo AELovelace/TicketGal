@@ -44,6 +44,16 @@ TicketGal is a FastAPI web application for managing Atera tickets with role-base
 3. Create .env from .env.example and fill values.
 4. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env for first admin seed.
 
+### Branding Environment File
+
+Branding strings are loaded from a separate env file so deployments can rebrand without touching code.
+
+1. Copy `.env.branding.example` to `.env.branding`.
+2. Update the `BRAND_*` values in `.env.branding`.
+3. Keep `BRANDING_ENV_FILE=.env.branding` in `.env` (or set a custom path).
+
+The UI reads branding from `/api/branding`, so sign-in and register pages are company agnostic by default.
+
 ### Optional Pre-Commit Secret Scanning
 
 To block accidental secret commits, this repo includes `.pre-commit-config.yaml`.

@@ -7,6 +7,24 @@ from dotenv import load_dotenv
 project_root = Path(__file__).resolve().parent.parent
 load_dotenv(project_root / ".env", override=True)
 
+# Load optional branding-only env overrides from a separate file.
+branding_env_file = os.getenv("BRANDING_ENV_FILE", ".env.branding").strip()
+branding_env_path = Path(branding_env_file)
+if not branding_env_path.is_absolute():
+    branding_env_path = project_root / branding_env_path
+if branding_env_path.exists():
+    load_dotenv(branding_env_path, override=True)
+
+
+def _join_domains(domains: list[str]) -> str:
+    if not domains:
+        return ""
+    if len(domains) == 1:
+        return domains[0]
+    if len(domains) == 2:
+        return f"{domains[0]} or {domains[1]}"
+    return ", ".join(domains[:-1]) + f", or {domains[-1]}"
+
 
 class Settings:
     def __init__(self) -> None:
@@ -53,6 +71,24 @@ class Settings:
             ).split(",")
             if domain.strip()
         ]
+        self.allowed_domains_display = _join_domains(self.allowed_domains)
+        self.branding_env_file = str(branding_env_path)
+        self.brand_product_name = os.getenv("BRAND_PRODUCT_NAME", "TicketGal")
+        self.brand_portal_title = os.getenv("BRAND_PORTAL_TITLE", f"{self.brand_product_name} Service Portal")
+        self.brand_operations_title = os.getenv("BRAND_OPERATIONS_TITLE", f"{self.brand_product_name} Operations Desk")
+        self.brand_top_banner_left = os.getenv("BRAND_TOP_BANNER_LEFT", "YOUR REGION")
+        self.brand_top_banner_right = os.getenv("BRAND_TOP_BANNER_RIGHT", "YOUR ORGANIZATION")
+        self.brand_auth_eyebrow = os.getenv("BRAND_AUTH_EYEBROW", "SERVICE OPERATIONS")
+        self.brand_hero_eyebrow = os.getenv("BRAND_HERO_EYEBROW", "IT TEAM")
+        self.brand_auth_description = os.getenv(
+            "BRAND_AUTH_DESCRIPTION",
+            "Log in to continue. All accounts are password-protected. New user registrations require admin approval.",
+        )
+        self.brand_register_description = os.getenv(
+            "BRAND_REGISTER_DESCRIPTION",
+            "Create a new account. Admin approval is required before first login.",
+        )
+        self.brand_allowed_domains_label = os.getenv("BRAND_ALLOWED_DOMAINS_LABEL", "Allowed domains")
         self.admin_email = os.getenv("ADMIN_EMAIL", "")
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")

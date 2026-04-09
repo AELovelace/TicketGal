@@ -954,6 +954,27 @@ def auth_providers() -> Dict[str, Any]:
     }
 
 
+@app.get("/api/branding")
+def get_branding() -> Dict[str, Any]:
+    allowed_domains_note = (
+        f"{settings.brand_allowed_domains_label}: {settings.allowed_domains_display}"
+        if settings.allowed_domains_display
+        else f"{settings.brand_allowed_domains_label}: configured by administrator"
+    )
+    return {
+        "product_name": settings.brand_product_name,
+        "portal_title": settings.brand_portal_title,
+        "operations_title": settings.brand_operations_title,
+        "top_banner_left": settings.brand_top_banner_left,
+        "top_banner_right": settings.brand_top_banner_right,
+        "auth_eyebrow": settings.brand_auth_eyebrow,
+        "hero_eyebrow": settings.brand_hero_eyebrow,
+        "auth_description": settings.brand_auth_description,
+        "register_description": settings.brand_register_description,
+        "allowed_domains_note": allowed_domains_note,
+    }
+
+
 @app.post("/auth/register")
 def register(request: RegisterRequest) -> Dict[str, Any]:
     if not settings.user_password_auth_enabled:
@@ -968,9 +989,10 @@ def register(request: RegisterRequest) -> Dict[str, Any]:
     email = normalize_email(request.email)
 
     if not allowed_email_domain(email):
+        allowed_domains_hint = settings.allowed_domains_display or "configured email domains"
         raise HTTPException(
             status_code=400,
-            detail="Registration email must use @eternalhotels.com or @redlionpasco.com",
+            detail=f"Registration email must use {allowed_domains_hint}",
         )
 
     existing = get_user_by_email(email)

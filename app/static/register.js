@@ -1,5 +1,11 @@
 const registerForm = document.getElementById("register-form");
 const registerStatus = document.getElementById("register-status");
+const brandTopLeft = document.getElementById("brand-top-left");
+const brandTopRight = document.getElementById("brand-top-right");
+const brandAuthEyebrow = document.getElementById("brand-auth-eyebrow");
+const brandAuthTitle = document.getElementById("brand-auth-title");
+const brandRegisterDescription = document.getElementById("brand-register-description");
+const registerAllowedDomainsNote = document.getElementById("register-allowed-domains-note");
 let userPasswordAuthEnabled = true;
 
 async function api(path, options = {}) {
@@ -19,9 +25,49 @@ async function api(path, options = {}) {
   return contentType.includes("application/json") ? response.json() : null;
 }
 
+function applyBranding(branding) {
+  if (!branding || typeof branding !== "object") return;
+
+  if (brandTopLeft && branding.top_banner_left) {
+    brandTopLeft.textContent = String(branding.top_banner_left);
+  }
+  if (brandTopRight && branding.top_banner_right) {
+    brandTopRight.textContent = String(branding.top_banner_right);
+  }
+  if (brandAuthEyebrow && branding.auth_eyebrow) {
+    brandAuthEyebrow.textContent = String(branding.auth_eyebrow);
+  }
+  if (brandAuthTitle && branding.portal_title) {
+    brandAuthTitle.textContent = String(branding.portal_title);
+  }
+  if (brandRegisterDescription && branding.register_description) {
+    brandRegisterDescription.textContent = String(branding.register_description);
+  }
+  if (registerAllowedDomainsNote && branding.allowed_domains_note) {
+    registerAllowedDomainsNote.textContent = String(branding.allowed_domains_note);
+  }
+
+  if (branding.product_name) {
+    document.title = `${String(branding.product_name)} - Register`;
+  }
+}
+
+async function loadBranding() {
+  try {
+    const response = await fetch("/api/branding", { credentials: "include" });
+    if (!response.ok) return;
+    const data = await response.json();
+    applyBranding(data);
+  } catch {
+    // Keep static defaults if branding endpoint is unavailable.
+  }
+}
+
 // If already logged in, send straight to the app.
 // Also check if signups are disabled.
 (async () => {
+  await loadBranding();
+
   try {
     await api("/auth/me");
     window.location.href = "/";
