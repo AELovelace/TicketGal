@@ -3713,12 +3713,9 @@ async function openKBEditor(article = null) {
   
   // Initialize CodeMirror container
   initializeCodeMirrorContainer();
-  
-  // Set editor content (use fallback if CodeMirror not available)
-  const contentFallback = document.getElementById("kb-content-fallback");
-  if (contentFallback) {
-    contentFallback.value = article ? (article.content || "") : "";
-  }
+
+  // Set editor content
+  setKBEditorContent(article ? (article.content || "") : "");
   
   kbEditorModal.classList.remove("hidden");
 }
@@ -3737,6 +3734,28 @@ function getKBEditorTextarea() {
   return textarea instanceof HTMLTextAreaElement ? textarea : null;
 }
 
+function getKBEditorContent() {
+  if (kbEditor && typeof kbEditor.getValue === "function") {
+    return kbEditor.getValue();
+  }
+  const textarea = getKBEditorTextarea();
+  return textarea ? textarea.value : "";
+}
+
+function setKBEditorContent(content) {
+  const nextContent = safeText(content || "");
+  if (kbEditor && typeof kbEditor.setValue === "function") {
+    kbEditor.setValue(nextContent);
+    kbEditor.focus();
+    return;
+  }
+  const textarea = getKBEditorTextarea();
+  if (textarea) {
+    textarea.value = nextContent;
+    textarea.focus();
+  }
+}
+
 function insertTextAtCursor(textarea, text) {
   if (!(textarea instanceof HTMLTextAreaElement)) return;
   const start = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : textarea.value.length;
@@ -3748,6 +3767,18 @@ function insertTextAtCursor(textarea, text) {
   textarea.selectionStart = nextCursor;
   textarea.selectionEnd = nextCursor;
   textarea.focus();
+}
+
+function insertKBEditorText(text) {
+  if (kbEditor && typeof kbEditor.replaceSelection === "function") {
+    kbEditor.focus();
+    kbEditor.replaceSelection(text, "end");
+    return;
+  }
+  const textarea = getKBEditorTextarea();
+  if (textarea) {
+    insertTextAtCursor(textarea, text);
+  }
 }
 
 async function copyTextToClipboard(text) {
@@ -3787,8 +3818,7 @@ function isKBImageFile(file) {
 }
 
 async function handleKBEditorImageDrop(fileList) {
-  const textarea = getKBEditorTextarea();
-  if (!textarea || !kbEditorStatus) return;
+  if (!kbEditorStatus) return;
 
   const files = Array.from(fileList || []).filter((file) => isKBImageFile(file));
   if (!files.length) {
@@ -3811,8 +3841,9 @@ async function handleKBEditorImageDrop(fileList) {
       .join("\n");
 
     if (markdownBlock) {
-      const prefix = textarea.value && !textarea.value.endsWith("\n") ? "\n" : "";
-      insertTextAtCursor(textarea, `${prefix}${markdownBlock}`);
+      const current = getKBEditorContent();
+      const prefix = current && !current.endsWith("\n") ? "\n" : "";
+      insertKBEditorText(`${prefix}${markdownBlock}`);
     }
 
     const lastUrl = uploaded[uploaded.length - 1]?.url || "";
@@ -3832,14 +3863,17 @@ function bindKBEditorImageDrop(container, textarea) {
 
   const onDragEnter = (event) => {
     event.preventDefault();
+    event.stopPropagation();
     container.classList.add("dragover");
   };
   const onDragLeave = (event) => {
     event.preventDefault();
+    event.stopPropagation();
     container.classList.remove("dragover");
   };
   const onDrop = async (event) => {
     event.preventDefault();
+    event.stopPropagation();
     container.classList.remove("dragover");
     const files = event.dataTransfer?.files;
     if (files && files.length) {
@@ -3847,12 +3881,10 @@ function bindKBEditorImageDrop(container, textarea) {
     }
   };
 
-  [container, textarea].forEach((element) => {
-    element.addEventListener("dragenter", onDragEnter);
-    element.addEventListener("dragover", onDragEnter);
-    element.addEventListener("dragleave", onDragLeave);
-    element.addEventListener("drop", onDrop);
-  });
+  container.addEventListener("dragenter", onDragEnter);
+  container.addEventListener("dragover", onDragEnter);
+  container.addEventListener("dragleave", onDragLeave);
+  container.addEventListener("drop", onDrop);
 
   container.dataset.uploadBound = "true";
 }
@@ -3875,10 +3907,21 @@ function initializeCodeMirrorContainer() {
     container.appendChild(textarea);
   }
 
+  if (!kbEditor && typeof window.CodeMirror !== "undefined") {
+    kbEditor = window.CodeMirror.fromTextArea(textarea, {
+      mode: "markdown",
+      lineNumbers: true,
+      lineWrapping: true,
+      viewportMargin: Infinity,
+    });
+  }
+
   bindKBEditorImageDrop(container, textarea);
 
   if (kbEditorUploadHint) {
-    kbEditorUploadHint.textContent = "Drag a PNG, JPG, GIF, or WebP image into the editor to upload it and insert markdown automatically.";
+    kbEditorUploadHint.textContent = typeof window.CodeMirror !== "undefined"
+      ? "Markdown syntax highlighting is enabled. Drag a PNG, JPG, GIF, or WebP image into the editor to upload and insert markdown."
+      : "CodeMirror did not load, using plain textarea. Drag a PNG, JPG, GIF, or WebP image into the editor to upload and insert markdown.";
   }
 }
 
@@ -3914,8 +3957,7 @@ async function saveKBArticle() {
   const title = kbEditorTitleInput.value.trim();
   const visibility = kbEditorVisibility.value;
   const customerId = kbEditorCustomerId && kbEditorCustomerId.value ? parseInt(kbEditorCustomerId.value) : null;
-  const contentFallback = document.getElementById("kb-content-fallback");
-  const content = contentFallback ? contentFallback.value : "";
+  const content = getKBEditorContent();
   
   if (!title || !content) {
     kbEditorStatus.textContent = "Title and content are required.";

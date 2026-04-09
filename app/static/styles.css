@@ -1548,6 +1548,18 @@ body.theme-premium .report-ai-error {
   height: 100%;
 }
 
+#kb-editor-codemirror .CodeMirror {
+  font-family: "Courier New", Monaco, monospace;
+  font-size: 0.9rem;
+  min-height: 320px;
+  height: auto;
+  background: transparent;
+}
+
+#kb-editor-codemirror .CodeMirror-scroll {
+  min-height: 320px;
+}
+
 .kb-editor-actions {
   display: flex;
   align-items: center;
