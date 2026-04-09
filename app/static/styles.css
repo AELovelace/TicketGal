@@ -1696,6 +1696,59 @@ body.theme-premium #kb-editor-codemirror.dragover {
   gap: 1rem;
 }
 
+.kb-window-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.kb-window-pane {
+  min-width: 0;
+}
+
+.kb-window-preview-pane {
+  border: 1px solid #e8e0cf;
+  border-radius: 8px;
+  background: #fffefb;
+  padding: 0.75rem;
+}
+
+.kb-window-preview {
+  min-height: 320px;
+  max-height: 60vh;
+  overflow: auto;
+  border-top: 1px solid #e8e0cf;
+  padding-top: 0.65rem;
+}
+
+.kb-window-preview h1,
+.kb-window-preview h2,
+.kb-window-preview h3,
+.kb-window-preview h4,
+.kb-window-preview h5,
+.kb-window-preview h6 {
+  margin: 0.45rem 0;
+  color: #0e1c2f;
+}
+
+.kb-window-preview p,
+.kb-window-preview ul,
+.kb-window-preview ol,
+.kb-window-preview pre,
+.kb-window-preview blockquote {
+  margin: 0.55rem 0;
+}
+
+.kb-window-preview img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.kb-window-preview a {
+  color: #1f3f66;
+}
+
 #kb-window-editor-host {
   border: 1px solid #ccbfa3;
   border-radius: 6px;
@@ -1730,4 +1783,23 @@ body.theme-premium #kb-window-editor-host.dragover {
   border-color: #c49a9e;
   background: #fff2f5;
   box-shadow: 0 0 0 3px rgba(196, 154, 158, 0.18);
+}
+
+body.theme-premium .kb-window-preview-pane {
+  border-color: #e0c0c4;
+  background: #fffbfc;
+}
+
+body.theme-premium .kb-window-preview {
+  border-top-color: #e0c0c4;
+}
+
+@media (max-width: 1100px) {
+  .kb-window-split {
+    grid-template-columns: 1fr;
+  }
+
+  .kb-window-preview {
+    max-height: none;
+  }
 }

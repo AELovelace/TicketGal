@@ -42,12 +42,19 @@
         </select>
       </label>
 
-      <label>
-        Content (Markdown)
-        <div id="kb-window-editor-host"></div>
-      </label>
-
-      <p id="kb-window-upload-hint" class="muted kb-editor-upload-hint">Markdown syntax highlighting is enabled. Drag a PNG, JPG, GIF, or WebP image into the editor to upload and insert markdown.</p>
+      <div class="kb-window-split">
+        <section class="kb-window-pane">
+          <label>
+            Content (Markdown)
+            <div id="kb-window-editor-host"></div>
+          </label>
+          <p id="kb-window-upload-hint" class="muted kb-editor-upload-hint">Markdown syntax highlighting is enabled. Drag a PNG, JPG, GIF, or WebP image into the editor to upload and insert markdown.</p>
+        </section>
+        <section class="kb-window-pane kb-window-preview-pane">
+          <p class="card-kicker">LIVE PREVIEW</p>
+          <div id="kb-window-preview" class="kb-window-preview"></div>
+        </section>
+      </div>
 
       <div class="kb-editor-actions">
         <button id="kb-window-save" type="button">Save</button>
@@ -59,6 +66,7 @@
 
   <script src="/static/codemirror.min.js"></script>
   <script src="/static/codemirror-markdown.min.js"></script>
+  <script src="/static/marked.min.js"></script>
   <script src="/static/kb-editor-window.js" defer></script>
 </body>
 </html>

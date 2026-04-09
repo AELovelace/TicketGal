@@ -57,6 +57,7 @@ const visibilitySelect = document.getElementById("kb-window-visibility");
 const customerLabel = document.getElementById("kb-window-customer-label");
 const customerSelect = document.getElementById("kb-window-customer-id");
 const editorHost = document.getElementById("kb-window-editor-host");
+const previewEl = document.getElementById("kb-window-preview");
 const uploadHint = document.getElementById("kb-window-upload-hint");
 const saveBtn = document.getElementById("kb-window-save");
 const deleteBtn = document.getElementById("kb-window-delete");
@@ -71,6 +72,105 @@ let kbEditor = null;
 function setStatus(message) {
   if (statusEl) {
     statusEl.textContent = safeText(message);
+  }
+}
+
+function isSafeHref(href) {
+  const value = safeText(href).trim();
+  if (!value) return false;
+  if (value.startsWith("/") || value.startsWith("#")) return true;
+  return /^(https?:|mailto:|tel:)/i.test(value);
+}
+
+function isSafeImageSrc(src) {
+  const value = safeText(src).trim();
+  if (!value) return false;
+  return value.startsWith("/") || /^https?:/i.test(value) || /^data:image\//i.test(value);
+}
+
+function sanitizePreviewElement(root) {
+  if (!root) return;
+  const allowedTags = new Set([
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "p", "br", "strong", "b", "em", "i", "u",
+    "ul", "ol", "li", "blockquote", "code", "pre",
+    "a", "img", "hr", "span", "div", "table", "thead", "tbody", "tr", "th", "td",
+  ]);
+  const allowedAttrs = new Set(["href", "src", "alt", "class"]);
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null, false);
+  const toUnwrap = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const tagName = safeText(node.tagName).toLowerCase();
+    if (!allowedTags.has(tagName)) {
+      toUnwrap.push(node);
+      continue;
+    }
+
+    Array.from(node.attributes).forEach((attr) => {
+      if (!allowedAttrs.has(attr.name)) {
+        node.removeAttribute(attr.name);
+      }
+    });
+
+    if (tagName === "a") {
+      const href = safeText(node.getAttribute("href")).trim();
+      if (!isSafeHref(href)) {
+        node.removeAttribute("href");
+      } else {
+        node.setAttribute("rel", "noopener noreferrer nofollow");
+        if (!href.startsWith("/") && !href.startsWith("#") && !/^mailto:|^tel:/i.test(href)) {
+          node.setAttribute("target", "_blank");
+        }
+      }
+    }
+
+    if (tagName === "img") {
+      const src = safeText(node.getAttribute("src")).trim();
+      if (!isSafeImageSrc(src)) {
+        node.removeAttribute("src");
+      }
+      node.setAttribute("loading", "lazy");
+    }
+  }
+
+  toUnwrap.forEach((node) => {
+    while (node.firstChild) {
+      node.parentNode.insertBefore(node.firstChild, node);
+    }
+    node.parentNode.removeChild(node);
+  });
+}
+
+function renderPreview() {
+  if (!previewEl) return;
+  const content = getEditorContent();
+  if (!content.trim()) {
+    previewEl.innerHTML = '<p class="muted">Preview will appear here as you type.</p>';
+    return;
+  }
+
+  const parseMarkdown =
+    typeof marked !== "undefined"
+      ? typeof marked.parse === "function"
+        ? (src) => marked.parse(src)
+        : typeof marked === "function"
+        ? (src) => marked(src)
+        : null
+      : null;
+
+  if (!parseMarkdown) {
+    previewEl.textContent = content;
+    return;
+  }
+
+  try {
+    const rendered = parseMarkdown(content);
+    previewEl.innerHTML = typeof rendered === "string" ? rendered : content;
+    sanitizePreviewElement(previewEl);
+  } catch {
+    previewEl.textContent = content;
   }
 }
 
@@ -128,6 +228,9 @@ function createEditor() {
       lineWrapping: true,
       viewportMargin: Infinity,
     });
+    kbEditor.on("change", () => {
+      renderPreview();
+    });
     if (uploadHint) {
       uploadHint.textContent = "Markdown syntax highlighting is enabled. Drag a PNG, JPG, GIF, or WebP image into the editor to upload and insert markdown.";
     }
@@ -148,6 +251,9 @@ function createEditor() {
     if (uploadHint) {
       uploadHint.textContent = "CodeMirror did not load, using plain textarea. Drag a PNG, JPG, GIF, or WebP image into the editor to upload and insert markdown.";
     }
+    textarea.addEventListener("input", () => {
+      renderPreview();
+    });
   }
 }
 
@@ -159,6 +265,7 @@ function setEditorContent(value) {
   if (kbEditor && typeof kbEditor.setValue === "function") {
     kbEditor.setValue(safeText(value));
     kbEditor.focus();
+    renderPreview();
   }
 }
 
@@ -166,6 +273,7 @@ function insertEditorText(value) {
   if (kbEditor && typeof kbEditor.replaceSelection === "function") {
     kbEditor.focus();
     kbEditor.replaceSelection(value, "end");
+    renderPreview();
   }
 }
 
@@ -362,6 +470,7 @@ async function init() {
   try {
     createEditor();
     bindEditorDrop();
+    renderPreview();
     await loadProperties();
     normalizeVisibilityControls();
     await loadArticleIfEditing();
