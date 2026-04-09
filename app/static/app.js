@@ -3645,9 +3645,22 @@ async function displayKBArticle(slug, target = null) {
     
     const markdownEl = context.articleViewer.querySelector("#kb-article-markdown");
     if (markdownEl) {
-      if (typeof marked !== "undefined") {
-        markdownEl.innerHTML = marked(article.content || "");
-        sanitizeElement(markdownEl);
+      const markedParse =
+        typeof marked !== "undefined"
+          ? typeof marked.parse === "function"
+            ? (src) => marked.parse(src)
+            : typeof marked === "function"
+            ? (src) => marked(src)
+            : null
+          : null;
+      if (markedParse) {
+        try {
+          const rendered = markedParse(article.content || "");
+          markdownEl.innerHTML = typeof rendered === "string" ? rendered : (article.content || "");
+          sanitizeElement(markdownEl);
+        } catch {
+          markdownEl.textContent = article.content || "";
+        }
       } else {
         markdownEl.textContent = article.content || "";
       }

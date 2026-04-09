@@ -3108,7 +3108,11 @@ async def get_kb_image_endpoint(
         raise HTTPException(status_code=404, detail="Image not found")
 
     media_type = KB_ASSET_MEDIA_TYPES.get(asset_path.suffix.lower(), "application/octet-stream")
-    return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
+    return FileResponse(
+        asset_path,
+        media_type=media_type,
+        headers={"Content-Disposition": "inline"},
+    )
 
 
 @app.get("/api/knowledgebase/articles")
