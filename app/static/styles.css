@@ -1,19 +1,5 @@
 @import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Montserrat:wght@400;500;600&display=swap");
 
-:root {
-  --navy-900: #0e1c2f;
-  --navy-800: #142a45;
-  --navy-700: #1f3f66;
-  --gold-500: #c6a75d;
-  --gold-400: #d8bb79;
-  --paper: #f8f5ed;
-  --card: #fffdf8;
-  --ink: #192432;
-  --muted: #617086;
-  --line: #ddd4c1;
-  --shadow: 0 14px 26px rgba(8, 18, 30, 0.12);
-}
-
 * {
   box-sizing: border-box;
 }

@@ -15,6 +15,14 @@ if not branding_env_path.is_absolute():
 if branding_env_path.exists():
     load_dotenv(branding_env_path, override=True)
 
+# Load optional color theme overrides from a separate file.
+coloring_env_file = os.getenv("COLORING_ENV_FILE", ".env.coloring").strip()
+coloring_env_path = Path(coloring_env_file)
+if not coloring_env_path.is_absolute():
+    coloring_env_path = project_root / coloring_env_path
+if coloring_env_path.exists():
+    load_dotenv(coloring_env_path, override=True)
+
 
 def _join_domains(domains: list[str]) -> str:
     if not domains:
@@ -128,6 +136,19 @@ class Settings:
         require_mfa_flag = os.getenv("MICROSOFT_REQUIRE_MFA", "0").strip().lower()
         self.microsoft_require_mfa = require_mfa_flag in {"1", "true", "yes"}
         self.microsoft_enabled = bool(self.microsoft_client_id and self.microsoft_client_secret)
+
+        # Color theme — loaded from .env.coloring
+        self.color_navy_900 = os.getenv("COLOR_NAVY_900", "#0e1c2f")
+        self.color_navy_800 = os.getenv("COLOR_NAVY_800", "#142a45")
+        self.color_navy_700 = os.getenv("COLOR_NAVY_700", "#1f3f66")
+        self.color_gold_500 = os.getenv("COLOR_GOLD_500", "#c6a75d")
+        self.color_gold_400 = os.getenv("COLOR_GOLD_400", "#d8bb79")
+        self.color_paper = os.getenv("COLOR_PAPER", "#f8f5ed")
+        self.color_card = os.getenv("COLOR_CARD", "#fffdf8")
+        self.color_ink = os.getenv("COLOR_INK", "#192432")
+        self.color_muted = os.getenv("COLOR_MUTED", "#617086")
+        self.color_line = os.getenv("COLOR_LINE", "#ddd4c1")
+        self.color_shadow = os.getenv("COLOR_SHADOW", "0 14px 26px rgba(8, 18, 30, 0.12)")
 
 
 settings = Settings()

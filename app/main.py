@@ -413,6 +413,41 @@ async def shutdown_queue_worker() -> None:
         _QUEUE_WORKER_TASK = None
 
 
+_CSS_VALUE_SAFE = re.compile(r'^[a-zA-Z0-9\s#.,()%\-+/]+$')
+
+
+def _sanitize_css_value(value: str) -> str:
+    """Return the value if it contains only safe CSS characters, else return an empty string."""
+    return value if _CSS_VALUE_SAFE.match(value.strip()) else ""
+
+
+@app.get("/theme.css")
+async def theme_css() -> Response:
+    def s(v: str) -> str:
+        return _sanitize_css_value(v)
+
+    css = (
+        ":root {\n"
+        f"  --navy-900: {s(settings.color_navy_900)};\n"
+        f"  --navy-800: {s(settings.color_navy_800)};\n"
+        f"  --navy-700: {s(settings.color_navy_700)};\n"
+        f"  --gold-500: {s(settings.color_gold_500)};\n"
+        f"  --gold-400: {s(settings.color_gold_400)};\n"
+        f"  --paper: {s(settings.color_paper)};\n"
+        f"  --card: {s(settings.color_card)};\n"
+        f"  --ink: {s(settings.color_ink)};\n"
+        f"  --muted: {s(settings.color_muted)};\n"
+        f"  --line: {s(settings.color_line)};\n"
+        f"  --shadow: {s(settings.color_shadow)};\n"
+        "}\n"
+    )
+    return Response(
+        content=css,
+        media_type="text/css",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/")
 async def index() -> Response:
     html = (static_dir / "index.html").read_text(encoding="utf-8")
