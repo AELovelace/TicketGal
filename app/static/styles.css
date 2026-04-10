@@ -438,6 +438,24 @@ button:hover {
   font-size: 0.9rem;
 }
 
+.ticket-search-field {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(360px, 100%);
+}
+
+.ticket-search-field span {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--navy-700);
+}
+
+.ticket-search-field input {
+  min-width: min(360px, 100%);
+}
+
 .report-custom-controls {
   display: flex;
   flex-wrap: wrap;
@@ -709,6 +727,11 @@ td select {
 }
 
 @media (max-width: 860px) {
+  .ticket-search-field,
+  .ticket-search-field input {
+    min-width: 100%;
+  }
+
   .page-header-actions {
     align-items: stretch;
     flex-direction: column;

@@ -50,6 +50,7 @@ const adminCreateStatus = document.getElementById("admin-create-status");
 const adminModalCreateStatus = document.getElementById("admin-modal-create-status");
 const adminStatusRefreshBtn = document.getElementById("admin-status-refresh-btn");
 const adminStatusCreateBtn = document.getElementById("admin-status-create-btn");
+const adminTicketSearchInput = document.getElementById("admin-ticket-search");
 const adminStatusFilter = document.getElementById("admin-status-filter");
 
 const adminDropZone = document.getElementById("admin-drop-zone");
@@ -154,6 +155,11 @@ let currentUser = null;
 let currentAdminPage = "admin-page-create";
 let currentUserPage = "user-page-in-progress";
 let cachedTickets = [];
+let lastTicketLoadMeta = {
+  pagesFetched: 0,
+  usingCacheFallback: false,
+  fallbackDetail: "",
+};
 let cachedProperties = [];
 let alertsPollTimer = null;
 let userPasswordAuthEnabled = true;
@@ -1039,6 +1045,120 @@ function isUserInProgressTicket(ticket) {
   }
   const normalizedStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
   return normalizedStatus === "open" || normalizedStatus === "pending" || normalizedStatus === "pending closed";
+}
+
+function getSelectedTicketStatuses(filterContainer) {
+  return new Set(
+    Array.from(filterContainer?.querySelectorAll("input[type='checkbox']:checked") || [])
+      .map((input) => String(input.value || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function normalizeTicketSearchQuery(value) {
+  return safeText(value).trim().toLowerCase();
+}
+
+function ticketMatchesAdminSearch(ticket, query) {
+  if (!query) return true;
+
+  const searchableParts = [
+    safeText(ticket?._queued ? ticket?._queuedTransactionId : ticket?.TicketID),
+    safeText(ticket?.TicketTitle),
+    safeText(ticket?.EndUserEmail || ticket?.end_user_email),
+    safeText(ticket?.CustomerName),
+    safeText(ticket?.TicketStatus),
+    safeText(ticket?.TicketPriority),
+    safeText(ticket?.TicketType),
+    htmlToReadableText(ticket?.FirstComment || ""),
+  ];
+
+  return searchableParts.some((value) => normalizeTicketSearchQuery(value).includes(query));
+}
+
+function renderTicketsFromCache() {
+  const statusFilterContainer = currentUser?.role === "admin"
+    ? adminStatusFilter
+    : userStatusFilter;
+  const selectedStatuses = getSelectedTicketStatuses(statusFilterContainer);
+  const adminSearchQuery = normalizeTicketSearchQuery(adminTicketSearchInput?.value || "");
+
+  const userFilteredTickets = currentUser?.role === "admin"
+    ? []
+    : cachedTickets.filter((ticket) => {
+        const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
+        return Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
+      });
+  const userInProgressTickets = currentUser?.role === "admin"
+    ? []
+    : cachedTickets.filter((ticket) => isUserInProgressTicket(ticket));
+  const adminVisibleTickets = currentUser?.role === "admin"
+    ? cachedTickets.filter((ticket) => {
+        const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
+        const matchesStatus = Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
+        return matchesStatus && ticketMatchesAdminSearch(ticket, adminSearchQuery);
+      })
+    : [];
+
+  userTicketsBody.innerHTML = "";
+  if (userInProgressBody) {
+    userInProgressBody.innerHTML = "";
+  }
+  adminStatusBody.innerHTML = "";
+
+  if (currentUser?.role === "admin") {
+    adminVisibleTickets.forEach((ticket) => {
+      adminStatusBody.appendChild(statusManagementRow(ticket));
+    });
+  } else {
+    userFilteredTickets.forEach((ticket) => {
+      userTicketsBody.appendChild(ticketListRow(ticket, false));
+    });
+    if (userInProgressBody) {
+      userInProgressTickets.forEach((ticket) => {
+        userInProgressBody.appendChild(ticketListRow(ticket, false));
+      });
+    }
+  }
+
+  const pagesFetched = Number(lastTicketLoadMeta?.pagesFetched || 0);
+  const pagesText = pagesFetched > 1 ? `${pagesFetched} pages` : "1 page";
+  const usingCacheFallback = Boolean(lastTicketLoadMeta?.usingCacheFallback);
+  const fallbackDetail = safeText(lastTicketLoadMeta?.fallbackDetail);
+
+  if (currentUser?.role === "admin") {
+    const queuedCount = adminVisibleTickets.filter((ticket) => Boolean(ticket?._queued)).length;
+    if (adminVisibleTickets.length) {
+      adminStatusMessage.textContent = `Loaded ${adminVisibleTickets.length} tickets from ${pagesText}.`;
+    } else if (adminSearchQuery) {
+      adminStatusMessage.textContent = "No tickets match the current filters.";
+    } else {
+      adminStatusMessage.textContent = "No tickets found.";
+    }
+    if (queuedCount > 0) {
+      adminStatusMessage.textContent += ` ${queuedCount} queued ticket${queuedCount === 1 ? " is" : "s are"} awaiting replay.`;
+    }
+    if (usingCacheFallback) {
+      const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
+      adminStatusMessage.textContent += ` Running in degraded mode using cached data.${detail}`;
+    }
+  } else {
+    userListStatus.textContent = userFilteredTickets.length
+      ? `Loaded ${userFilteredTickets.length} tickets from ${pagesText}.`
+      : "No tickets match the selected statuses.";
+    if (userInProgressStatus) {
+      userInProgressStatus.textContent = userInProgressTickets.length
+        ? `Showing ${userInProgressTickets.length} ticket${userInProgressTickets.length === 1 ? "" : "s"} still in progress.`
+        : "No in-progress tickets right now.";
+    }
+    if (usingCacheFallback) {
+      const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
+      userListStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
+      if (userInProgressStatus) {
+        userInProgressStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
+      }
+    }
+  }
 }
 
 function formatUiDateTime(value) {
@@ -2515,15 +2635,6 @@ function bindDropZone(zone, hint, prefix) {
 
 async function loadTickets() {
   try {
-    const statusFilterContainer = currentUser?.role === "admin"
-      ? adminStatusFilter
-      : userStatusFilter;
-    const selectedStatuses = new Set(
-      Array.from(statusFilterContainer?.querySelectorAll("input[type='checkbox']:checked") || [])
-        .map((input) => String(input.value || "").trim().toLowerCase())
-        .filter(Boolean)
-    );
-
     const pageSize = 50;
     const maxPages = 200;
     const allTickets = [];
@@ -2624,75 +2735,12 @@ async function loadTickets() {
     }
 
     cachedTickets = allTickets;
-
-    const userFilteredTickets = currentUser?.role === "admin"
-      ? []
-      : cachedTickets.filter((ticket) => {
-          const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
-          return Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
-        });
-    const userInProgressTickets = currentUser?.role === "admin"
-      ? []
-      : cachedTickets.filter((ticket) => isUserInProgressTicket(ticket));
-    const adminVisibleTickets = currentUser?.role === "admin"
-      ? cachedTickets.filter((ticket) => {
-          const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
-          return Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
-        })
-      : [];
-
-    userTicketsBody.innerHTML = "";
-    if (userInProgressBody) {
-      userInProgressBody.innerHTML = "";
-    }
-    adminStatusBody.innerHTML = "";
-
-    if (currentUser?.role === "admin") {
-      adminVisibleTickets.forEach((ticket) => {
-        adminStatusBody.appendChild(statusManagementRow(ticket));
-      });
-    } else {
-      userFilteredTickets.forEach((ticket) => {
-        userTicketsBody.appendChild(ticketListRow(ticket, false));
-      });
-      if (userInProgressBody) {
-        userInProgressTickets.forEach((ticket) => {
-          userInProgressBody.appendChild(ticketListRow(ticket, false));
-        });
-      }
-    }
-
-    const pagesText = pagesFetched === 1 ? "1 page" : `${pagesFetched} pages`;
-
-    if (currentUser?.role === "admin") {
-      const queuedCount = adminVisibleTickets.filter((ticket) => Boolean(ticket?._queued)).length;
-      adminStatusMessage.textContent = adminVisibleTickets.length
-        ? `Loaded ${adminVisibleTickets.length} tickets from ${pagesText}.`
-        : "No tickets found.";
-      if (queuedCount > 0) {
-        adminStatusMessage.textContent += ` ${queuedCount} queued ticket${queuedCount === 1 ? " is" : "s are"} awaiting replay.`;
-      }
-      if (usingCacheFallback) {
-        const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
-        adminStatusMessage.textContent += ` Running in degraded mode using cached data.${detail}`;
-      }
-    } else {
-      userListStatus.textContent = userFilteredTickets.length
-        ? `Loaded ${userFilteredTickets.length} tickets from ${pagesText}.`
-        : "No tickets match the selected statuses.";
-      if (userInProgressStatus) {
-        userInProgressStatus.textContent = userInProgressTickets.length
-          ? `Showing ${userInProgressTickets.length} ticket${userInProgressTickets.length === 1 ? "" : "s"} still in progress.`
-          : "No in-progress tickets right now.";
-      }
-      if (usingCacheFallback) {
-        const detail = fallbackDetail ? ` ${fallbackDetail}` : "";
-        userListStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
-        if (userInProgressStatus) {
-          userInProgressStatus.textContent += ` Running in degraded mode using cached data.${detail}`;
-        }
-      }
-    }
+    lastTicketLoadMeta = {
+      pagesFetched,
+      usingCacheFallback,
+      fallbackDetail,
+    };
+    renderTicketsFromCache();
   } catch (error) {
     if (currentUser?.role === "admin") {
       adminStatusMessage.textContent = `Failed to load statuses: ${error.message}`;
@@ -3417,10 +3465,13 @@ if (adminSyncTicketsBtn) {
 }
 
 if (userStatusFilter) {
-  userStatusFilter.addEventListener("change", loadTickets);
+  userStatusFilter.addEventListener("change", renderTicketsFromCache);
 }
 if (adminStatusFilter) {
-  adminStatusFilter.addEventListener("change", loadTickets);
+  adminStatusFilter.addEventListener("change", renderTicketsFromCache);
+}
+if (adminTicketSearchInput) {
+  adminTicketSearchInput.addEventListener("input", renderTicketsFromCache);
 }
 
 navButtons.forEach((button) => {
