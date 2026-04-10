@@ -43,16 +43,23 @@ const userAiAssistBtn = document.getElementById("ticket-ai-assist");
 const userAiAssistStatus = document.getElementById("ticket-ai-status");
 
 const adminCreateForm = document.getElementById("admin-create-ticket-form");
+const adminModalCreateForm = document.getElementById("admin-modal-create-ticket-form");
 const adminStatusBody = document.getElementById("admin-status-body");
 const adminStatusMessage = document.getElementById("admin-status-message");
 const adminCreateStatus = document.getElementById("admin-create-status");
+const adminModalCreateStatus = document.getElementById("admin-modal-create-status");
 const adminStatusRefreshBtn = document.getElementById("admin-status-refresh-btn");
+const adminStatusCreateBtn = document.getElementById("admin-status-create-btn");
 const adminStatusFilter = document.getElementById("admin-status-filter");
 
 const adminDropZone = document.getElementById("admin-drop-zone");
 const adminDropHint = document.getElementById("admin-drop-hint");
+const adminModalDropZone = document.getElementById("admin-modal-drop-zone");
+const adminModalDropHint = document.getElementById("admin-modal-drop-hint");
 const adminAiAssistBtn = document.getElementById("admin-ticket-ai-assist");
 const adminAiAssistStatus = document.getElementById("admin-ticket-ai-status");
+const adminModalAiAssistBtn = document.getElementById("admin-modal-ticket-ai-assist");
+const adminModalAiAssistStatus = document.getElementById("admin-modal-ticket-ai-status");
 
 const refreshUsersBtn = document.getElementById("refresh-users-btn");
 const pendingUsersEl = document.getElementById("pending-users");
@@ -111,8 +118,11 @@ if (userSearchInput) {
 const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
 const adminPages = Array.from(document.querySelectorAll(".admin-page"));
 const adminPropertySelect = document.getElementById("admin-ticket-property");
+const adminModalPropertySelect = document.getElementById("admin-modal-ticket-property");
 const ticketViewer = document.getElementById("ticket-viewer");
 const ticketViewerClose = document.getElementById("ticket-viewer-close");
+const adminCreateTicketModal = document.getElementById("admin-create-ticket-modal");
+const adminCreateTicketModalClose = document.getElementById("admin-create-ticket-modal-close");
 const adminSyncTicketsBtn = document.getElementById("admin-sync-tickets-btn");
 const adminSyncTicketsStatus = document.getElementById("admin-sync-tickets-status");
 
@@ -1516,22 +1526,93 @@ function setCreateFormStatusOptions(prefix, statuses) {
   });
 }
 
-function populatePropertySelects() {
-  if (!adminPropertySelect) return;
+function populatePropertySelect(select) {
+  if (!(select instanceof HTMLSelectElement)) return;
 
-  adminPropertySelect.innerHTML = "";
+  select.innerHTML = "";
 
   const noneOption = document.createElement("option");
   noneOption.value = "";
   noneOption.textContent = "No Property";
-  adminPropertySelect.appendChild(noneOption);
+  select.appendChild(noneOption);
 
   cachedProperties.forEach((property) => {
     const option = document.createElement("option");
     option.value = String(property.customer_id);
     option.textContent = safeText(property.customer_name || `Property ${property.customer_id}`);
-    adminPropertySelect.appendChild(option);
+    select.appendChild(option);
   });
+}
+
+function populatePropertySelects() {
+  populatePropertySelect(adminPropertySelect);
+  populatePropertySelect(adminModalPropertySelect);
+}
+
+function getCreateStatusElement(prefix, isAdmin) {
+  if (!isAdmin) return userCreateStatus;
+  if (prefix === "admin-modal-") return adminModalCreateStatus || adminCreateStatus;
+  return adminCreateStatus;
+}
+
+function getAiAssistStatusElement(prefix, isAdmin) {
+  if (!isAdmin) return userAiAssistStatus;
+  if (prefix === "admin-modal-") return adminModalAiAssistStatus || adminAiAssistStatus;
+  return adminAiAssistStatus;
+}
+
+function resetCreateForm(prefix, isAdmin) {
+  const form = document.getElementById(`${prefix}create-ticket-form`);
+  if (form instanceof HTMLFormElement) {
+    form.reset();
+  }
+
+  const statusEl = getCreateStatusElement(prefix, isAdmin);
+  if (statusEl) {
+    statusEl.textContent = "";
+  }
+
+  const aiStatusEl = getAiAssistStatusElement(prefix, isAdmin);
+  if (aiStatusEl) {
+    aiStatusEl.textContent = "";
+  }
+
+  const technicianInput = document.getElementById(`${prefix}technician-id`);
+  if (technicianInput instanceof HTMLInputElement) {
+    technicianInput.value = "1";
+  }
+
+  if (isAdmin) {
+    setCreateFormStatusOptions(prefix, ADMIN_STATUSES);
+    const propertySelect = document.getElementById(`${prefix}ticket-property`);
+    if (propertySelect instanceof HTMLSelectElement) {
+      propertySelect.value = "";
+    }
+  } else {
+    const emailInput = document.getElementById("end-user-email");
+    if (emailInput instanceof HTMLInputElement) {
+      emailInput.value = currentUser.email;
+    }
+    setCreateFormStatusOptions(prefix, USER_STATUSES);
+  }
+
+  const dropHint = document.getElementById(`${prefix}drop-hint`);
+  if (dropHint) {
+    dropHint.textContent = "Tip: drag directly from Outlook, or drop a saved .eml/.msg file.";
+  }
+}
+
+function openAdminCreateTicketModal({ reset = false } = {}) {
+  if (!adminCreateTicketModal) return;
+  if (reset) {
+    resetCreateForm("admin-modal-", true);
+  }
+  adminCreateTicketModal.classList.remove("hidden");
+}
+
+function closeAdminCreateTicketModal() {
+  if (!adminCreateTicketModal) return;
+  adminCreateTicketModal.classList.add("hidden");
 }
 
 function applyRoleView() {
@@ -1580,6 +1661,7 @@ function applyRoleView() {
 
   setCreateFormStatusOptions("", USER_STATUSES);
   setCreateFormStatusOptions("admin-", ADMIN_STATUSES);
+  setCreateFormStatusOptions("admin-modal-", ADMIN_STATUSES);
 
   if (isAdmin) {
     setAdminPage(currentAdminPage);
@@ -1796,6 +1878,10 @@ function statusManagementRow(ticket) {
   }
   tr.appendChild(titleTd);
 
+  const emailTd = document.createElement("td");
+  emailTd.textContent = safeText(ticket.EndUserEmail || ticket.end_user_email || "");
+  tr.appendChild(emailTd);
+
   const currentTd = document.createElement("td");
   if (isQueued) {
     currentTd.className = "status-queued";
@@ -1951,7 +2037,7 @@ function applyAiAssistToForm(prefix, aiResult, appendDescription = false) {
 }
 
 async function runAiAssist(prefix, isAdmin) {
-  const statusEl = isAdmin ? adminAiAssistStatus : userAiAssistStatus;
+  const statusEl = getAiAssistStatusElement(prefix, isAdmin);
   if (!statusEl) return;
 
   const descriptionEl = document.getElementById(`${prefix}ticket-description`);
@@ -2582,7 +2668,8 @@ async function loadUsers() {
 }
 
 async function submitCreateForm(prefix, isAdmin) {
-  const statusEl = isAdmin ? adminCreateStatus : userCreateStatus;
+  const statusEl = getCreateStatusElement(prefix, isAdmin);
+  if (!statusEl) return;
   statusEl.textContent = "Creating ticket...";
 
   const formData = readCreateForm(prefix);
@@ -2598,8 +2685,11 @@ async function submitCreateForm(prefix, isAdmin) {
   if (isAdmin && formData.technician_contact_id) {
     payload.technician_contact_id = Number(formData.technician_contact_id);
   }
-  if (isAdmin && adminPropertySelect?.value) {
-    payload.customer_id = Number(adminPropertySelect.value);
+  const propertySelect = isAdmin
+    ? document.getElementById(`${prefix}ticket-property`)
+    : null;
+  if (isAdmin && propertySelect instanceof HTMLSelectElement && propertySelect.value) {
+    payload.customer_id = Number(propertySelect.value);
   }
 
   const result = await api("/api/tickets", {
@@ -2611,17 +2701,15 @@ async function submitCreateForm(prefix, isAdmin) {
   statusEl.textContent = Boolean(result?.queued)
     ? "Atera is unavailable. Ticket create request was queued for retry."
     : "Ticket created successfully.";
-  if (isAdmin) {
-    adminCreateForm.reset();
-    const adminTechInput = document.getElementById("admin-technician-id");
-    if (adminTechInput instanceof HTMLInputElement) {
-      adminTechInput.value = "1";
+  resetCreateForm(prefix, isAdmin);
+  statusEl.textContent = Boolean(result?.queued)
+    ? "Atera is unavailable. Ticket create request was queued for retry."
+    : "Ticket created successfully.";
+  if (prefix === "admin-modal-") {
+    closeAdminCreateTicketModal();
+    if (adminStatusMessage) {
+      adminStatusMessage.textContent = statusEl.textContent;
     }
-    setCreateFormStatusOptions("admin-", ADMIN_STATUSES);
-  } else {
-    userCreateForm.reset();
-    document.getElementById("end-user-email").value = currentUser.email;
-    setCreateFormStatusOptions("", USER_STATUSES);
   }
   await loadTickets();
 }
@@ -3019,6 +3107,19 @@ adminCreateForm.addEventListener("submit", async (event) => {
   }
 });
 
+if (adminModalCreateForm) {
+  adminModalCreateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await submitCreateForm("admin-modal-", true);
+    } catch (error) {
+      if (adminModalCreateStatus) {
+        adminModalCreateStatus.textContent = `Failed to create ticket: ${error.message}`;
+      }
+    }
+  });
+}
+
 if (userAiAssistBtn) {
   userAiAssistBtn.addEventListener("click", async () => {
     if (currentUser?.role !== "admin") {
@@ -3034,6 +3135,12 @@ if (adminAiAssistBtn) {
   });
 }
 
+if (adminModalAiAssistBtn) {
+  adminModalAiAssistBtn.addEventListener("click", async () => {
+    await runAiAssist("admin-modal-", true);
+  });
+}
+
 userRefreshBtn.addEventListener("click", loadTickets);
 if (userInProgressRefreshBtn) {
   userInProgressRefreshBtn.addEventListener("click", loadTickets);
@@ -3041,6 +3148,11 @@ if (userInProgressRefreshBtn) {
 if (adminStatusRefreshBtn) {
   adminStatusRefreshBtn.addEventListener("click", async () => {
     await Promise.all([loadTickets(), loadAlerts()]);
+  });
+}
+if (adminStatusCreateBtn) {
+  adminStatusCreateBtn.addEventListener("click", () => {
+    openAdminCreateTicketModal({ reset: true });
   });
 }
 refreshUsersBtn.addEventListener("click", loadUsers);
@@ -3293,6 +3405,7 @@ if (ticketViewer) {
 
 bindDropZone(userDropZone, userDropHint, "");
 bindDropZone(adminDropZone, adminDropHint, "admin-");
+bindDropZone(adminModalDropZone, adminModalDropHint, "admin-modal-");
 
 if (ticketViewerClose) {
   ticketViewerClose.addEventListener("click", closeTicketViewer);
@@ -3301,6 +3414,17 @@ if (ticketViewer) {
   ticketViewer.addEventListener("click", (event) => {
     if (event.target === ticketViewer) {
       closeTicketViewer();
+    }
+  });
+}
+
+if (adminCreateTicketModalClose) {
+  adminCreateTicketModalClose.addEventListener("click", closeAdminCreateTicketModal);
+}
+if (adminCreateTicketModal) {
+  adminCreateTicketModal.addEventListener("click", (event) => {
+    if (event.target === adminCreateTicketModal) {
+      closeAdminCreateTicketModal();
     }
   });
 }
@@ -3376,6 +3500,7 @@ if (auditLogNext) {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeTicketViewer();
+    closeAdminCreateTicketModal();
     closePasswordResetModal();
     closeAuditLogModal();
   }

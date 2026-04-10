@@ -71,6 +71,7 @@ let currentArticle = null;
 let kbEditor = null;
 let rewritePopupWindow = null;
 let pendingRewriteText = "";
+let lastRewriteInstruction = "";
 
 function setStatus(message) {
   if (statusEl) {
@@ -321,18 +322,48 @@ async function rewriteSelectionWithAI() {
     return;
   }
 
+  const defaultInstruction =
+    lastRewriteInstruction ||
+    "Make this clearer and more concise while preserving meaning and markdown formatting.";
+  const promptedInstruction = window.prompt(
+    "How should AI rewrite this selection? Leave blank for a general rewrite.",
+    defaultInstruction,
+  );
+  if (promptedInstruction === null) {
+    setStatus("Rewrite canceled.");
+    return;
+  }
+
+  const rewriteInstruction = safeText(promptedInstruction).trim().slice(0, 500);
+  if (rewriteInstruction) {
+    lastRewriteInstruction = rewriteInstruction;
+  }
+
   setStatus("Sending selected text to AI for rewrite...");
   try {
     const result = await api("/api/knowledgebase/rewrite-selection", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selected_text: selectedText }),
+      body: JSON.stringify({
+        selected_text: selectedText,
+        rewrite_instruction: rewriteInstruction || null,
+      }),
     });
 
     pendingRewriteText = safeText(result?.rewritten_text);
     if (!pendingRewriteText.trim()) {
       setStatus("AI did not return rewritten content.");
       return;
+    }
+
+    const fallbackReason = safeText(result?.fallback_reason).trim();
+    const isFallback = Boolean(result?.fallback_used);
+    const unchanged = pendingRewriteText.trim() === selectedText;
+
+    if (isFallback && fallbackReason) {
+      setStatus(`AI rewrite fallback: ${fallbackReason}`);
+    } else if (unchanged) {
+      setStatus("AI returned unchanged text. Try selecting a larger section or provide a rewrite instruction.");
     }
 
     rewritePopupWindow = window.open(
@@ -346,7 +377,9 @@ async function rewriteSelectionWithAI() {
       return;
     }
 
-    setStatus("Rewrite ready. Review the result in the popup window.");
+    if (!isFallback && !unchanged) {
+      setStatus("Rewrite ready. Review the result in the popup window.");
+    }
   } catch (error) {
     setStatus(`Rewrite failed: ${safeText(error.message)}`);
   }

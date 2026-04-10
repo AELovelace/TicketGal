@@ -3137,6 +3137,78 @@ async def rewrite_kb_selection_endpoint(
     instruction = _coerce_ai_text(request.rewrite_instruction or "", max_length=500)
     instruction_line = f"Additional instruction: {instruction}\n\n" if instruction else ""
 
+    def _normalize_for_compare(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+    async def _request_rewrite(messages: List[Dict[str, str]], temperature: float = 0.2) -> str:
+        payload: Dict[str, Any] = {
+            "model": settings.openai_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": False,
+        }
+
+        headers = {"Content-Type": "application/json"}
+        if settings.openai_api_key:
+            headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+
+        response: Optional[httpx.Response] = None
+        body: Dict[str, Any] = {}
+
+        try:
+            async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
+                if _looks_like_ollama_base_url(settings.openai_base_url):
+                    native_payload: Dict[str, Any] = {
+                        "model": settings.openai_model,
+                        "messages": messages,
+                        "stream": False,
+                        "think": False,
+                        "options": {
+                            "temperature": temperature,
+                            "num_ctx": 131072,
+                        },
+                    }
+                    response = await http_client.post(
+                        _get_ollama_native_endpoint(settings.openai_base_url),
+                        headers=headers,
+                        json=native_payload,
+                    )
+                    if response.status_code < 400:
+                        body = response.json() if response.content else {}
+                    else:
+                        response = await http_client.post(
+                            f"{settings.openai_base_url}/chat/completions",
+                            headers=headers,
+                            json=payload,
+                        )
+                        body = response.json() if response.content else {}
+                else:
+                    response = await http_client.post(
+                        f"{settings.openai_base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    body = response.json() if response.content else {}
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="AI provider request failed") from exc
+
+        if response is None:
+            raise HTTPException(status_code=502, detail="AI provider did not return a response")
+
+        if response.status_code >= 400:
+            if response.status_code in {401, 403}:
+                raise HTTPException(
+                    status_code=502,
+                    detail="AI provider authentication failed. Check OPENAI_API_KEY and OPENAI_BASE_URL.",
+                )
+            raise HTTPException(
+                status_code=502,
+                detail="AI provider request failed. Review AI provider configuration and server logs.",
+            )
+
+        content = _extract_ai_message_content(body)
+        return _coerce_ai_text(content, max_length=12000)
+
     if _provider_requires_api_key(settings.openai_base_url) and not settings.openai_api_key:
         return KBSelectionRewriteResponse(
             rewritten_text=selected_text,
@@ -3164,78 +3236,46 @@ async def rewrite_kb_selection_endpoint(
         {"role": "user", "content": user_prompt},
     ]
 
-    payload: Dict[str, Any] = {
-        "model": settings.openai_model,
-        "messages": messages,
-        "temperature": 0.2,
-        "stream": False,
-    }
+    rewritten = await _request_rewrite(messages, temperature=0.2)
 
-    headers = {"Content-Type": "application/json"}
-    if settings.openai_api_key:
-        headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+    if rewritten and _normalize_for_compare(rewritten) == _normalize_for_compare(selected_text):
+        retry_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a technical writing assistant for markdown documents. "
+                    "Return only rewritten markdown content with no explanation. "
+                    "Do not copy the original wording verbatim."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Rewrite this markdown section with clearly different wording and sentence structure. "
+                    "Preserve meaning and markdown validity. Keep links, code blocks, and tables valid. "
+                    "Do not return the original text unchanged.\n\n"
+                    f"{instruction_line}"
+                    "Selected markdown:\n"
+                    f"{selected_text}"
+                ),
+            },
+        ]
+        retry_rewritten = await _request_rewrite(retry_messages, temperature=0.45)
+        if retry_rewritten:
+            rewritten = retry_rewritten
 
-    response: Optional[httpx.Response] = None
-    body: Dict[str, Any] = {}
-
-    try:
-        async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
-            if _looks_like_ollama_base_url(settings.openai_base_url):
-                native_payload: Dict[str, Any] = {
-                    "model": settings.openai_model,
-                    "messages": messages,
-                    "stream": False,
-                    "think": False,
-                    "options": {
-                        "temperature": 0.2,
-                        "num_ctx": 131072,
-                    },
-                }
-                response = await http_client.post(
-                    _get_ollama_native_endpoint(settings.openai_base_url),
-                    headers=headers,
-                    json=native_payload,
-                )
-                if response.status_code < 400:
-                    body = response.json() if response.content else {}
-                else:
-                    response = await http_client.post(
-                        f"{settings.openai_base_url}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    body = response.json() if response.content else {}
-            else:
-                response = await http_client.post(
-                    f"{settings.openai_base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
-                body = response.json() if response.content else {}
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="AI provider request failed") from exc
-
-    if response is None:
-        raise HTTPException(status_code=502, detail="AI provider did not return a response")
-
-    if response.status_code >= 400:
-        if response.status_code in {401, 403}:
-            raise HTTPException(
-                status_code=502,
-                detail="AI provider authentication failed. Check OPENAI_API_KEY and OPENAI_BASE_URL.",
-            )
-        raise HTTPException(
-            status_code=502,
-            detail="AI provider request failed. Review AI provider configuration and server logs.",
-        )
-
-    content = _extract_ai_message_content(body)
-    rewritten = _coerce_ai_text(content, max_length=12000)
     if not rewritten:
         return KBSelectionRewriteResponse(
             rewritten_text=selected_text,
             fallback_used=True,
             fallback_reason="AI response did not include usable rewritten text.",
+        )
+
+    if _normalize_for_compare(rewritten) == _normalize_for_compare(selected_text):
+        return KBSelectionRewriteResponse(
+            rewritten_text=selected_text,
+            fallback_used=True,
+            fallback_reason="AI returned effectively unchanged text after retry.",
         )
 
     return KBSelectionRewriteResponse(rewritten_text=rewritten)

@@ -51,7 +51,7 @@ body {
 }
 
 .shell.admin-mode {
-  width: min(1700px, 98vw);
+  width: 98vw;
 }
 
 .admin-shell {
@@ -476,6 +476,18 @@ button:hover {
   margin: 0;
 }
 
+.page-header-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.page-header-actions h2 {
+  margin: 0;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -587,6 +599,10 @@ td select {
   border-radius: 14px;
   box-shadow: 0 18px 34px rgba(6, 15, 28, 0.35);
   padding: 1rem;
+}
+
+.create-ticket-modal-panel {
+  width: min(980px, 96vw);
 }
 
 .ticket-viewer-header {
@@ -707,6 +723,11 @@ td select {
 }
 
 @media (max-width: 860px) {
+  .page-header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   #app-view:not(.hidden) {
     grid-template-columns: 1fr;
   }

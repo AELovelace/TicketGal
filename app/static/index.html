@@ -311,7 +311,10 @@
 
           <section id="admin-page-status" class="admin-page card hidden">
             <p class="card-kicker">STATUS GOVERNANCE</p>
-            <h2>Ticket Statuses</h2>
+            <div class="page-header-actions">
+              <h2>Ticket Statuses</h2>
+              <button id="admin-status-create-btn" type="button">Create Ticket</button>
+            </div>
             <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
               <button id="admin-status-refresh-btn" type="button">Refresh</button>
               <div id="admin-status-filter" class="status-filter-checks">
@@ -327,6 +330,7 @@
                 <tr>
                   <th>ID</th>
                   <th>Title</th>
+                  <th>Email</th>
                   <th>Current Status</th>
                   <th>Details</th>
                   <th>New Status</th>
@@ -525,6 +529,82 @@
       <div id="ticket-viewer-update" class="ticket-viewer-update"></div>
       <p id="ticket-viewer-update-status" class="muted"></p>
       <div id="ticket-viewer-history" class="ticket-viewer-history"></div>
+    </div>
+  </div>
+
+  <div id="admin-create-ticket-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="admin-create-ticket-modal-title">
+    <div class="ticket-viewer-panel create-ticket-modal-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="admin-create-ticket-modal-title">Create Ticket</h2>
+        <button id="admin-create-ticket-modal-close" type="button">Close</button>
+      </div>
+      <p class="muted">Create a new ticket without leaving the status board.</p>
+      <div id="admin-modal-drop-zone" class="drop-zone" aria-label="Drop email file here">
+        Drop a .eml email file here to auto-fill fields
+      </div>
+      <p id="admin-modal-drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+      <form id="admin-modal-create-ticket-form" class="grid">
+        <label>
+          Title
+          <input id="admin-modal-ticket-title" type="text" required>
+        </label>
+
+        <label>
+          End User Email
+          <input id="admin-modal-end-user-email" type="email" placeholder="user@company.com">
+        </label>
+
+        <label class="span-2">
+          Description
+          <textarea id="admin-modal-ticket-description" rows="6" required></textarea>
+        </label>
+
+        <div class="span-2 actions">
+          <button id="admin-modal-ticket-ai-assist" type="button">Recompose</button>
+          <span id="admin-modal-ticket-ai-status" class="muted"></span>
+        </div>
+
+        <label>
+          Priority
+          <select id="admin-modal-ticket-priority">
+            <option>Low</option>
+            <option>Medium</option>
+            <option>High</option>
+            <option>Critical</option>
+          </select>
+        </label>
+
+        <label>
+          Type
+          <select id="admin-modal-ticket-type">
+            <option>Incident</option>
+            <option>Problem</option>
+            <option>Request</option>
+            <option>Change</option>
+          </select>
+        </label>
+
+        <label>
+          Technician ID
+          <input id="admin-modal-technician-id" type="number" min="1" value="1">
+        </label>
+
+        <label>
+          Property
+          <select id="admin-modal-ticket-property"></select>
+        </label>
+
+        <label>
+          Initial Status
+          <select id="admin-modal-ticket-status"></select>
+        </label>
+
+        <div class="span-2 actions">
+          <button type="submit">Create Ticket</button>
+          <span id="admin-modal-create-status" class="muted"></span>
+        </div>
+      </form>
     </div>
   </div>
 
