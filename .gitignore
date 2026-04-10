@@ -5,6 +5,7 @@ __pycache__/
 .env.*
 !.env.example
 !.env.branding.example
+!.env.coloring.example
 *.db
 *.db-shm
 *.db-wal
