@@ -229,6 +229,10 @@ class TicketStatusUpdateRequest(BaseModel):
     ticket_status: str = Field(..., pattern="^(Open|Pending|Closed|Resolved)$")
 
 
+class TicketCompanyUpdateRequest(BaseModel):
+    customer_id: Optional[int] = Field(None, gt=0)
+
+
 class AddTicketCommentRequest(BaseModel):
     comment_text: str = Field(..., min_length=1, max_length=4000)
     technician_id: Optional[int] = Field(None, gt=0)

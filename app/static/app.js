@@ -1567,6 +1567,7 @@ async function openQueuedTicketViewer(queueId) {
     ticketViewerMeta.innerHTML = `
       <strong>Queued Ticket - ${safeText(ticket.TicketTitle)}</strong><br>
       Status: Queued&nbsp;&nbsp;|&nbsp;&nbsp;
+      Company: ${safeText(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
       End User: ${safeText(ticket.EndUserEmail || "")}
     `;
 
@@ -1868,6 +1869,57 @@ function buildUpdateControls(ticket, isAdminTable) {
   } else {
     saveBtn.dataset.ticketId = String(ticket.TicketID);
     saveBtn.textContent = "Post Update";
+  }
+
+  if (isAdminTable) {
+    const companyLabel = document.createElement("label");
+    companyLabel.textContent = "Set company: ";
+
+    const companySelect = document.createElement("select");
+    companySelect.dataset.role = "ticket-company-select";
+
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No Property";
+    companySelect.appendChild(emptyOption);
+
+    const selectedCompanyId = safeText(ticket.CustomerID || "").trim();
+    let matchedCurrentCompany = false;
+    cachedProperties.forEach((property) => {
+      const option = document.createElement("option");
+      option.value = String(property.customer_id);
+      option.textContent = safeText(property.customer_name || `Property ${property.customer_id}`);
+      option.selected = option.value === selectedCompanyId;
+      if (option.selected) {
+        matchedCurrentCompany = true;
+      }
+      companySelect.appendChild(option);
+    });
+
+    if (!matchedCurrentCompany && selectedCompanyId) {
+      const currentOption = document.createElement("option");
+      currentOption.value = selectedCompanyId;
+      currentOption.textContent = safeText(ticket.CustomerName || `Property ${selectedCompanyId}`);
+      currentOption.selected = true;
+      companySelect.appendChild(currentOption);
+    } else if (!selectedCompanyId) {
+      companySelect.value = "";
+    }
+
+    const companySaveBtn = document.createElement("button");
+    companySaveBtn.type = "button";
+    companySaveBtn.dataset.role = "ticket-company-save";
+    if (isQueued) {
+      companySaveBtn.dataset.queuedTransactionId = String(ticket._queuedTransactionId || "");
+      companySaveBtn.textContent = "Queue Company";
+    } else {
+      companySaveBtn.dataset.ticketId = String(ticket.TicketID);
+      companySaveBtn.textContent = "Save Company";
+    }
+
+    companyLabel.appendChild(companySelect);
+    wrap.appendChild(companyLabel);
+    wrap.appendChild(companySaveBtn);
   }
 
   wrap.appendChild(comment);
@@ -3157,6 +3209,47 @@ async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   await loadTickets();
 }
 
+async function saveTicketCompanyFromRow(row, ticketId, statusTarget = null) {
+  const companySelect = row.querySelector("[data-role='ticket-company-select']");
+  const saveBtn = row.querySelector("[data-role='ticket-company-save']");
+  if (!(companySelect instanceof HTMLSelectElement) || !(saveBtn instanceof HTMLElement)) {
+    return;
+  }
+
+  const queuedTransactionId = safeText(saveBtn.dataset.queuedTransactionId || "");
+  const endpoint = queuedTransactionId
+    ? `/api/queued-tickets/${queuedTransactionId}/company`
+    : `/api/tickets/${ticketId}/company`;
+
+  const result = await api(endpoint, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      customer_id: companySelect.value ? Number(companySelect.value) : null,
+    }),
+  });
+
+  const message = queuedTransactionId
+    ? `Company change for queued ticket ${queuedTransactionId} was stored for replay.`
+    : `Updated company for ticket ${ticketId}.`;
+
+  if (statusTarget) {
+    statusTarget.textContent = message;
+  } else if (adminStatusMessage) {
+    adminStatusMessage.textContent = message;
+  }
+
+  await loadTickets();
+
+  if (queuedTransactionId) {
+    await openQueuedTicketViewer(queuedTransactionId);
+  } else {
+    await openTicketViewer(ticketId);
+  }
+
+  return result;
+}
+
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -3500,6 +3593,24 @@ if (ticketViewer) {
   ticketViewer.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+
+    const companySaveBtn = target.closest("[data-role='ticket-company-save']");
+    if (companySaveBtn instanceof HTMLElement) {
+      const row = companySaveBtn.closest(".viewer-update-form");
+      const ticketId = companySaveBtn.dataset.ticketId;
+      const queuedTransactionId = companySaveBtn.dataset.queuedTransactionId;
+      if (!row || (!ticketId && !queuedTransactionId)) return;
+
+      try {
+        await saveTicketCompanyFromRow(row, ticketId || "", ticketViewerUpdateStatus);
+      } catch (error) {
+        if (ticketViewerUpdateStatus) {
+          ticketViewerUpdateStatus.textContent = `Company update failed: ${error.message}`;
+        }
+      }
+      return;
+    }
+
     const saveBtn = target.closest("[data-role='comment-save']");
     if (!(saveBtn instanceof HTMLElement)) return;
 

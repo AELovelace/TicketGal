@@ -106,6 +106,7 @@ from .schemas import (
     RegisterRequest,
     TicketAiAssistRequest,
     TicketAiAssistResponse,
+    TicketCompanyUpdateRequest,
     TicketStatusUpdateRequest,
     UpdateKBArticleRequest,
 )
@@ -2185,6 +2186,65 @@ async def set_ticket_status(
     return result
 
 
+@app.patch("/api/tickets/{ticket_id}/company")
+async def set_ticket_company(
+    ticket_id: int,
+    request: TicketCompanyUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+
+    try:
+        ticket = await client.get_ticket(ticket_id)
+    except AteraApiError as exc:
+        ticket = _resolve_ticket_for_write_from_cache_or_raise(ticket_id, user, exc)
+
+    ensure_ticket_owner_or_admin(user, ticket)
+
+    selected_customer_id = request.customer_id
+    selected_customer_name = ""
+    if selected_customer_id is not None:
+        try:
+            properties_result = await client.list_properties(page=1, items_in_page=500)
+        except AteraApiError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+        property_items = properties_result.get("items", []) if isinstance(properties_result, dict) else []
+        matched = next((item for item in property_items if item.get("CustomerID") == selected_customer_id), None)
+        if not matched:
+            raise HTTPException(status_code=400, detail="Selected company not found in Atera")
+        selected_customer_name = str(matched.get("CustomerName") or "").strip()
+
+    payload = {"CustomerID": selected_customer_id}
+    try:
+        await client.update_ticket(ticket_id=ticket_id, payload=payload)
+    except AteraApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    try:
+        await _refresh_cached_ticket_from_atera(ticket_id, changed_by_user_id=int(user["id"]))
+    except AteraApiError:
+        pass
+
+    log_audit_event(
+        int(user["id"]),
+        "admin.ticket.company_changed",
+        None,
+        json.dumps({
+            "ticket_id": ticket_id,
+            "customer_id": selected_customer_id,
+            "customer_name": selected_customer_name,
+        }),
+    )
+
+    return {
+        "message": f"Updated company for ticket {ticket_id}.",
+        "ticket_id": ticket_id,
+        "customer_id": selected_customer_id,
+        "customer_name": selected_customer_name,
+    }
+
+
 @app.get("/api/queued-tickets/{queue_id}/history")
 async def get_queued_ticket_history(
     queue_id: int,
@@ -2239,6 +2299,66 @@ async def set_queued_ticket_status(
         "queued": True,
         "message": f"Status change for queued ticket {queue_id} was stored for replay.",
         "queue_id": queue_id,
+        "pending_ops": _build_pending_ops_for_queued_create(payload),
+    }
+
+
+@app.patch("/api/queued-tickets/{queue_id}/company")
+async def set_queued_ticket_company(
+    queue_id: int,
+    request: TicketCompanyUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+
+    tx = get_pending_queue_create(queue_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Queued ticket was not found")
+    payload = _parse_transaction_payload(tx)
+    _ensure_queued_create_access(user, tx, payload)
+
+    selected_customer_id = request.customer_id
+    selected_customer_name = ""
+    if selected_customer_id is not None:
+        try:
+            properties_result = await client.list_properties(page=1, items_in_page=500)
+        except AteraApiError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+        property_items = properties_result.get("items", []) if isinstance(properties_result, dict) else []
+        matched = next((item for item in property_items if item.get("CustomerID") == selected_customer_id), None)
+        if not matched:
+            raise HTTPException(status_code=400, detail="Selected company not found in Atera")
+        selected_customer_name = str(matched.get("CustomerName") or "").strip()
+
+    if selected_customer_id is None:
+        payload.pop("CustomerID", None)
+        payload.pop("CustomerName", None)
+    else:
+        payload["CustomerID"] = selected_customer_id
+        payload["CustomerName"] = selected_customer_name
+
+    if not update_pending_queue_create_payload(queue_id, payload):
+        raise HTTPException(status_code=409, detail="Unable to update queued ticket")
+
+    log_audit_event(
+        int(user["id"]),
+        "admin.ticket.company_changed",
+        None,
+        json.dumps({
+            "queue_id": queue_id,
+            "customer_id": selected_customer_id,
+            "customer_name": selected_customer_name,
+            "queued": True,
+        }),
+    )
+
+    return {
+        "queued": True,
+        "message": f"Company change for queued ticket {queue_id} was stored for replay.",
+        "queue_id": queue_id,
+        "customer_id": selected_customer_id,
+        "customer_name": selected_customer_name,
         "pending_ops": _build_pending_ops_for_queued_create(payload),
     }
 
