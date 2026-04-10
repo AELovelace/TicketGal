@@ -1871,8 +1871,10 @@ function buildUpdateControls(ticket, isAdminTable) {
     saveBtn.textContent = "Post Update";
   }
 
+  let companyLabel = null;
+  let companySaveBtn = null;
   if (isAdminTable) {
-    const companyLabel = document.createElement("label");
+    companyLabel = document.createElement("label");
     companyLabel.textContent = "Set company: ";
 
     const companySelect = document.createElement("select");
@@ -1906,7 +1908,7 @@ function buildUpdateControls(ticket, isAdminTable) {
       companySelect.value = "";
     }
 
-    const companySaveBtn = document.createElement("button");
+    companySaveBtn = document.createElement("button");
     companySaveBtn.type = "button";
     companySaveBtn.dataset.role = "ticket-company-save";
     if (isQueued) {
@@ -1918,8 +1920,6 @@ function buildUpdateControls(ticket, isAdminTable) {
     }
 
     companyLabel.appendChild(companySelect);
-    wrap.appendChild(companyLabel);
-    wrap.appendChild(companySaveBtn);
   }
 
   wrap.appendChild(comment);
@@ -1947,6 +1947,10 @@ function buildUpdateControls(ticket, isAdminTable) {
     wrap.appendChild(resolveLabel);
   }
   wrap.appendChild(saveBtn);
+  if (companyLabel && companySaveBtn) {
+    wrap.appendChild(companyLabel);
+    wrap.appendChild(companySaveBtn);
+  }
 
   return wrap;
 }
