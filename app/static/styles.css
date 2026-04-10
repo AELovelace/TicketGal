@@ -591,7 +591,7 @@ td select {
 }
 
 .ticket-viewer-panel {
-  width: min(880px, 95vw);
+  width: min(1320px, 97vw);
   max-height: 85vh;
   overflow: auto;
   background: #fffefb;
@@ -602,7 +602,7 @@ td select {
 }
 
 .create-ticket-modal-panel {
-  width: min(980px, 96vw);
+  width: min(1470px, 97vw);
 }
 
 .ticket-viewer-header {
@@ -1160,7 +1160,7 @@ body.theme-premium .report-ai-error {
 /* ─── Audit-log modal ─── */
 
 .audit-log-panel {
-  width: min(1060px, 96vw);
+  width: min(1590px, 97vw);
 }
 
 .audit-log-filters {
@@ -1272,7 +1272,7 @@ body.theme-premium .report-ai-error {
 /* ─── Knowledgebase modal ─── */
 
 .kb-modal-panel {
-  width: min(900px, 96vw);
+  width: min(1350px, 97vw);
   display: flex;
   flex-direction: column;
   max-height: 80vh;
