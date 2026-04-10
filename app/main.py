@@ -84,6 +84,7 @@ from .database import (
     mark_transaction_retry,
     get_audit_log_page,
     get_kb_access_audit_page,
+    get_login_audit_page,
     get_login_lockout_until,
     record_login_failure,
     update_kb_article,
@@ -965,6 +966,23 @@ def admin_kb_access_log(
         search_filter=search,
         actor_user_id=actor_user_id,
         access_result=result,
+    )
+
+
+@app.get("/api/admin/login-audit")
+def admin_login_audit(
+    outcome: str = Query(..., pattern="^(success|failed)$"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None, max_length=120),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return get_login_audit_page(
+        outcome=outcome,
+        limit=limit,
+        offset=offset,
+        search_filter=search,
     )
 
 

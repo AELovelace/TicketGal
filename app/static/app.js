@@ -108,11 +108,37 @@ const kbAccessLogResetBtn = document.getElementById("kb-access-log-reset-btn");
 const kbAccessLogPrev = document.getElementById("kb-access-log-prev");
 const kbAccessLogNext = document.getElementById("kb-access-log-next");
 const kbAccessLogPageInfo = document.getElementById("kb-access-log-page-info");
+const loginAccessLogModal = document.getElementById("login-access-log-modal");
+const loginAccessLogClose = document.getElementById("login-access-log-close");
+const loginAccessLogBody = document.getElementById("login-access-log-body");
+const loginAccessLogStatus = document.getElementById("login-access-log-status");
+const loginAccessLogSearchFilter = document.getElementById("login-access-log-search-filter");
+const loginAccessLogFilterBtn = document.getElementById("login-access-log-filter-btn");
+const loginAccessLogResetBtn = document.getElementById("login-access-log-reset-btn");
+const loginAccessLogExportBtn = document.getElementById("login-access-log-export-btn");
+const loginAccessLogPrev = document.getElementById("login-access-log-prev");
+const loginAccessLogNext = document.getElementById("login-access-log-next");
+const loginAccessLogPageInfo = document.getElementById("login-access-log-page-info");
+const failedLoginLogModal = document.getElementById("failed-login-log-modal");
+const failedLoginLogClose = document.getElementById("failed-login-log-close");
+const failedLoginLogBody = document.getElementById("failed-login-log-body");
+const failedLoginLogStatus = document.getElementById("failed-login-log-status");
+const failedLoginLogSearchFilter = document.getElementById("failed-login-log-search-filter");
+const failedLoginLogFilterBtn = document.getElementById("failed-login-log-filter-btn");
+const failedLoginLogResetBtn = document.getElementById("failed-login-log-reset-btn");
+const failedLoginLogExportBtn = document.getElementById("failed-login-log-export-btn");
+const failedLoginLogPrev = document.getElementById("failed-login-log-prev");
+const failedLoginLogNext = document.getElementById("failed-login-log-next");
+const failedLoginLogPageInfo = document.getElementById("failed-login-log-page-info");
 
 let auditLogOffset = 0;
 const AUDIT_LOG_PAGE_SIZE = 50;
 let kbAccessLogOffset = 0;
 const KB_ACCESS_LOG_PAGE_SIZE = 50;
+let loginAccessLogOffset = 0;
+const LOGIN_ACCESS_LOG_PAGE_SIZE = 50;
+let failedLoginLogOffset = 0;
+const FAILED_LOGIN_LOG_PAGE_SIZE = 50;
 
 let currentResetUserId = null;
 
@@ -1236,6 +1262,34 @@ function closeKBAccessLogModal() {
   if (kbAccessLogModal) kbAccessLogModal.classList.add("hidden");
 }
 
+function openLoginAccessLogModal(options = {}) {
+  if (!loginAccessLogModal) return;
+  const search = safeText(options?.search || "").trim();
+  loginAccessLogOffset = 0;
+  if (loginAccessLogSearchFilter) loginAccessLogSearchFilter.value = search;
+  loginAccessLogModal.classList.remove("hidden");
+  loginAccessLogModal.focus();
+  loadLoginAccessLog();
+}
+
+function closeLoginAccessLogModal() {
+  if (loginAccessLogModal) loginAccessLogModal.classList.add("hidden");
+}
+
+function openFailedLoginLogModal(options = {}) {
+  if (!failedLoginLogModal) return;
+  const search = safeText(options?.search || "").trim();
+  failedLoginLogOffset = 0;
+  if (failedLoginLogSearchFilter) failedLoginLogSearchFilter.value = search;
+  failedLoginLogModal.classList.remove("hidden");
+  failedLoginLogModal.focus();
+  loadFailedLoginLog();
+}
+
+function closeFailedLoginLogModal() {
+  if (failedLoginLogModal) failedLoginLogModal.classList.add("hidden");
+}
+
 function formatAuditMetadata(metadata) {
   if (!metadata) return "-";
   try {
@@ -1247,6 +1301,263 @@ function formatAuditMetadata(metadata) {
   } catch {
     return safeText(metadata) || "-";
   }
+}
+
+function buildAuditDetailStack(primaryText, secondaryText = "") {
+  const wrap = document.createElement("div");
+  wrap.className = "audit-detail-stack";
+
+  const primary = document.createElement("div");
+  primary.className = "audit-detail-primary";
+  primary.textContent = primaryText || "-";
+  wrap.appendChild(primary);
+
+  if (secondaryText) {
+    const secondary = document.createElement("div");
+    secondary.className = "audit-detail-secondary";
+    secondary.textContent = secondaryText;
+    wrap.appendChild(secondary);
+  }
+
+  return wrap;
+}
+
+function loginAuditBadgeClass(action) {
+  const normalized = safeText(action).trim().toLowerCase();
+  if (normalized.includes("success")) return "audit-action-allowed";
+  if (normalized.includes("locked_out")) return "audit-action-denied";
+  return "audit-action-admin";
+}
+
+function escapeCsvField(value) {
+  const text = safeText(value);
+  if (/[,"\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function buildLoginAuditCsv(entries, outcome) {
+  const header = ["time", "outcome", "method", "email", "ip_address", "reason", "details"];
+  const rows = entries.map((entry) => [
+    safeText(entry?.created_at),
+    outcome,
+    safeText(entry?.method),
+    safeText(entry?.email),
+    safeText(entry?.ip),
+    safeText(entry?.reason),
+    formatAuditMetadata(entry?.metadata),
+  ]);
+
+  return [header, ...rows]
+    .map((row) => row.map((value) => escapeCsvField(value)).join(","))
+    .join("\r\n");
+}
+
+function triggerCsvDownload(filename, csvText) {
+  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function fetchAllLoginAuditEntries(outcome, searchText = "") {
+  const pageSize = 500;
+  const entries = [];
+  let offset = 0;
+
+  while (true) {
+    const params = new URLSearchParams({
+      outcome,
+      limit: String(pageSize),
+      offset: String(offset),
+    });
+    if (searchText) params.set("search", searchText);
+
+    const data = await api(`/api/admin/login-audit?${params.toString()}`);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    entries.push(...items);
+
+    if (items.length < pageSize || entries.length >= Number(data?.total || 0)) {
+      break;
+    }
+    offset += pageSize;
+  }
+
+  return entries;
+}
+
+async function exportLoginAuditCsv({ outcome, searchFilter, statusEl, buttonEl }) {
+  if (currentUser?.role !== "admin") return;
+
+  const searchText = safeText(searchFilter?.value || "").trim();
+  const filenamePrefix = outcome === "success" ? "login-access-log" : "failed-login-log";
+  const exportLabel = buttonEl ? buttonEl.textContent : "Export CSV";
+
+  try {
+    if (buttonEl) {
+      buttonEl.disabled = true;
+      buttonEl.textContent = "Exporting...";
+    }
+    if (statusEl) {
+      statusEl.textContent = "Preparing CSV export...";
+    }
+
+    const entries = await fetchAllLoginAuditEntries(outcome, searchText);
+    if (!entries.length) {
+      if (statusEl) {
+        statusEl.textContent = "No matching login records to export.";
+      }
+      return;
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const csvText = buildLoginAuditCsv(entries, outcome);
+    triggerCsvDownload(`${filenamePrefix}-${stamp}.csv`, csvText);
+    if (statusEl) {
+      statusEl.textContent = `Exported ${entries.length} login record${entries.length === 1 ? "" : "s"}.`;
+    }
+  } catch (error) {
+    if (statusEl) {
+      statusEl.textContent = `Failed to export login audit log: ${error.message}`;
+    }
+  } finally {
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = exportLabel;
+    }
+  }
+}
+
+async function loadLoginAuditPage({
+  outcome,
+  offset,
+  pageSize,
+  searchFilter,
+  body,
+  status,
+  prev,
+  next,
+  pageInfo,
+}) {
+  if (!body || currentUser?.role !== "admin") return;
+
+  const searchText = safeText(searchFilter?.value || "").trim();
+  const params = new URLSearchParams({
+    outcome,
+    limit: String(pageSize),
+    offset: String(offset),
+  });
+  if (searchText) params.set("search", searchText);
+
+  if (status) status.textContent = "Loading...";
+  if (prev) prev.disabled = true;
+  if (next) next.disabled = true;
+
+  try {
+    const data = await api(`/api/admin/login-audit?${params.toString()}`);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const total = Number(data?.total || 0);
+
+    body.innerHTML = "";
+    if (!items.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.className = "muted";
+      cell.textContent = outcome === "success"
+        ? "No successful login events found."
+        : "No failed login events found.";
+      row.appendChild(cell);
+      body.appendChild(row);
+    } else {
+      items.forEach((entry) => {
+        const tr = document.createElement("tr");
+
+        const tdTime = document.createElement("td");
+        tdTime.className = "audit-col-time";
+        tdTime.textContent = formatUiDateTime(entry?.created_at);
+        tr.appendChild(tdTime);
+
+        const tdOutcome = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = `audit-action-badge ${loginAuditBadgeClass(entry?.action)}`;
+        badge.textContent = outcome === "success"
+          ? safeText(entry?.method) || "Successful Login"
+          : safeText(entry?.action).includes("locked_out")
+            ? "Locked Out"
+            : "Failed Login";
+        tdOutcome.appendChild(badge);
+        tr.appendChild(tdOutcome);
+
+        const tdUser = document.createElement("td");
+        const userLabel = safeText(entry?.email) || "unknown";
+        const userSecondary = outcome === "success"
+          ? safeText(entry?.actor_email) && safeText(entry?.actor_email) !== userLabel
+            ? `Actor: ${safeText(entry?.actor_email)}`
+            : ""
+          : safeText(entry?.method) ? `Method: ${safeText(entry?.method)}` : "";
+        tdUser.appendChild(buildAuditDetailStack(userLabel, userSecondary));
+        tr.appendChild(tdUser);
+
+        const tdIp = document.createElement("td");
+        tdIp.appendChild(buildAuditDetailStack(safeText(entry?.ip) || "unknown"));
+        tr.appendChild(tdIp);
+
+        const tdDetails = document.createElement("td");
+        const primary = outcome === "success"
+          ? (safeText(entry?.method) ? `${safeText(entry?.method)} sign-in` : "Successful sign-in")
+          : (safeText(entry?.reason) || "No failure reason recorded");
+        const secondary = formatAuditMetadata(entry?.metadata);
+        tdDetails.appendChild(buildAuditDetailStack(primary, secondary && secondary !== "-" ? secondary : ""));
+        tr.appendChild(tdDetails);
+
+        body.appendChild(tr);
+      });
+    }
+
+    const pageNum = Math.floor(offset / pageSize) + 1;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (pageInfo) pageInfo.textContent = `Page ${pageNum} of ${totalPages}  (${total} total)`;
+    if (prev) prev.disabled = offset <= 0;
+    if (next) next.disabled = offset + pageSize >= total;
+    if (status) status.textContent = "";
+  } catch (error) {
+    if (status) status.textContent = `Failed to load login audit log: ${error.message}`;
+  }
+}
+
+async function loadLoginAccessLog() {
+  await loadLoginAuditPage({
+    outcome: "success",
+    offset: loginAccessLogOffset,
+    pageSize: LOGIN_ACCESS_LOG_PAGE_SIZE,
+    searchFilter: loginAccessLogSearchFilter,
+    body: loginAccessLogBody,
+    status: loginAccessLogStatus,
+    prev: loginAccessLogPrev,
+    next: loginAccessLogNext,
+    pageInfo: loginAccessLogPageInfo,
+  });
+}
+
+async function loadFailedLoginLog() {
+  await loadLoginAuditPage({
+    outcome: "failed",
+    offset: failedLoginLogOffset,
+    pageSize: FAILED_LOGIN_LOG_PAGE_SIZE,
+    searchFilter: failedLoginLogSearchFilter,
+    body: failedLoginLogBody,
+    status: failedLoginLogStatus,
+    prev: failedLoginLogPrev,
+    next: failedLoginLogNext,
+    pageInfo: failedLoginLogPageInfo,
+  });
 }
 
 async function loadAuditLog() {
@@ -2797,8 +3108,44 @@ async function loadUsers() {
     items.forEach((user) => {
       const mgmtRow = document.createElement("div");
       mgmtRow.className = "pending-row";
-      const info = document.createElement("span");
-      info.textContent = `${safeText(user.email)} (${safeText(user.role)})`;
+      const info = document.createElement("div");
+      info.className = "user-account-summary";
+      const infoTitle = document.createElement("div");
+      infoTitle.className = "user-account-title";
+      infoTitle.textContent = `${safeText(user.email)} (${safeText(user.role)})`;
+      const infoMeta = document.createElement("div");
+      infoMeta.className = "user-account-meta";
+      const propertyLabel = safeText(user.property_name).trim() || "No property assigned";
+      const lastLoginAt = safeText(user.last_login_at).trim();
+      const lastLoginIp = safeText(user.last_login_ip).trim() || "none recorded";
+      const loginMethod = safeText(user.last_login_method).trim();
+      const loginLabel = lastLoginAt
+        ? `Last successful login: ${formatUiDateTime(lastLoginAt)}${loginMethod ? ` via ${loginMethod}` : ""}`
+        : "Last successful login: none recorded";
+      infoMeta.textContent = `Property: ${propertyLabel} | Last IP: ${lastLoginIp} | ${loginLabel}`;
+      info.appendChild(infoTitle);
+      info.appendChild(infoMeta);
+
+      const auditActions = document.createElement("div");
+      auditActions.className = "user-account-audit-actions";
+
+      const openAccessLogBtn = document.createElement("button");
+      openAccessLogBtn.type = "button";
+      openAccessLogBtn.textContent = "Access Log";
+      openAccessLogBtn.addEventListener("click", () => {
+        openLoginAccessLogModal({ search: safeText(user.email) });
+      });
+
+      const openFailedLogBtn = document.createElement("button");
+      openFailedLogBtn.type = "button";
+      openFailedLogBtn.textContent = "Failed Logins";
+      openFailedLogBtn.addEventListener("click", () => {
+        openFailedLoginLogModal({ search: safeText(user.email) });
+      });
+
+      auditActions.appendChild(openAccessLogBtn);
+      auditActions.appendChild(openFailedLogBtn);
+      info.appendChild(auditActions);
 
       const propertySelect = document.createElement("select");
       const clearOption = document.createElement("option");
@@ -3738,9 +4085,17 @@ if (passwordResetInput) {
 }
 
 const openAuditLogBtn = document.getElementById("open-audit-log-btn");
+const openLoginAccessLogBtn = document.getElementById("open-login-access-log-btn");
+const openFailedLoginLogBtn = document.getElementById("open-failed-login-log-btn");
 const openKBAccessLogBtn = document.getElementById("open-kb-access-log-btn");
 if (openAuditLogBtn) {
   openAuditLogBtn.addEventListener("click", openAuditLogModal);
+}
+if (openLoginAccessLogBtn) {
+  openLoginAccessLogBtn.addEventListener("click", () => openLoginAccessLogModal());
+}
+if (openFailedLoginLogBtn) {
+  openFailedLoginLogBtn.addEventListener("click", () => openFailedLoginLogModal());
 }
 if (openKBAccessLogBtn) {
   openKBAccessLogBtn.addEventListener("click", openKBAccessLogModal);
@@ -3834,6 +4189,108 @@ if (kbAccessLogNext) {
     loadKBAccessLog();
   });
 }
+if (loginAccessLogClose) {
+  loginAccessLogClose.addEventListener("click", closeLoginAccessLogModal);
+}
+if (loginAccessLogModal) {
+  loginAccessLogModal.addEventListener("click", (event) => {
+    if (event.target === loginAccessLogModal) closeLoginAccessLogModal();
+  });
+}
+if (loginAccessLogFilterBtn) {
+  loginAccessLogFilterBtn.addEventListener("click", () => {
+    loginAccessLogOffset = 0;
+    loadLoginAccessLog();
+  });
+}
+if (loginAccessLogResetBtn) {
+  loginAccessLogResetBtn.addEventListener("click", () => {
+    if (loginAccessLogSearchFilter) loginAccessLogSearchFilter.value = "";
+    loginAccessLogOffset = 0;
+    loadLoginAccessLog();
+  });
+}
+if (loginAccessLogExportBtn) {
+  loginAccessLogExportBtn.addEventListener("click", async () => {
+    await exportLoginAuditCsv({
+      outcome: "success",
+      searchFilter: loginAccessLogSearchFilter,
+      statusEl: loginAccessLogStatus,
+      buttonEl: loginAccessLogExportBtn,
+    });
+  });
+}
+if (loginAccessLogSearchFilter) {
+  loginAccessLogSearchFilter.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") {
+      loginAccessLogOffset = 0;
+      loadLoginAccessLog();
+    }
+  });
+}
+if (loginAccessLogPrev) {
+  loginAccessLogPrev.addEventListener("click", () => {
+    loginAccessLogOffset = Math.max(0, loginAccessLogOffset - LOGIN_ACCESS_LOG_PAGE_SIZE);
+    loadLoginAccessLog();
+  });
+}
+if (loginAccessLogNext) {
+  loginAccessLogNext.addEventListener("click", () => {
+    loginAccessLogOffset += LOGIN_ACCESS_LOG_PAGE_SIZE;
+    loadLoginAccessLog();
+  });
+}
+if (failedLoginLogClose) {
+  failedLoginLogClose.addEventListener("click", closeFailedLoginLogModal);
+}
+if (failedLoginLogModal) {
+  failedLoginLogModal.addEventListener("click", (event) => {
+    if (event.target === failedLoginLogModal) closeFailedLoginLogModal();
+  });
+}
+if (failedLoginLogFilterBtn) {
+  failedLoginLogFilterBtn.addEventListener("click", () => {
+    failedLoginLogOffset = 0;
+    loadFailedLoginLog();
+  });
+}
+if (failedLoginLogResetBtn) {
+  failedLoginLogResetBtn.addEventListener("click", () => {
+    if (failedLoginLogSearchFilter) failedLoginLogSearchFilter.value = "";
+    failedLoginLogOffset = 0;
+    loadFailedLoginLog();
+  });
+}
+if (failedLoginLogExportBtn) {
+  failedLoginLogExportBtn.addEventListener("click", async () => {
+    await exportLoginAuditCsv({
+      outcome: "failed",
+      searchFilter: failedLoginLogSearchFilter,
+      statusEl: failedLoginLogStatus,
+      buttonEl: failedLoginLogExportBtn,
+    });
+  });
+}
+if (failedLoginLogSearchFilter) {
+  failedLoginLogSearchFilter.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") {
+      failedLoginLogOffset = 0;
+      loadFailedLoginLog();
+    }
+  });
+}
+if (failedLoginLogPrev) {
+  failedLoginLogPrev.addEventListener("click", () => {
+    failedLoginLogOffset = Math.max(0, failedLoginLogOffset - FAILED_LOGIN_LOG_PAGE_SIZE);
+    loadFailedLoginLog();
+  });
+}
+if (failedLoginLogNext) {
+  failedLoginLogNext.addEventListener("click", () => {
+    failedLoginLogOffset += FAILED_LOGIN_LOG_PAGE_SIZE;
+    loadFailedLoginLog();
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -3842,6 +4299,8 @@ document.addEventListener("keydown", (event) => {
     closePasswordResetModal();
     closeAuditLogModal();
     closeKBAccessLogModal();
+    closeLoginAccessLogModal();
+    closeFailedLoginLogModal();
   }
 });
 

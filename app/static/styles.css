@@ -576,6 +576,50 @@ td select {
   background: #fffdf9;
 }
 
+.user-account-summary {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 240px;
+  flex: 1 1 260px;
+}
+
+.user-account-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.user-account-meta {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.user-account-audit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.2rem;
+}
+
+.user-account-audit-actions button {
+  padding: 0.38rem 0.62rem;
+  font-size: 0.8rem;
+}
+
+.audit-detail-stack {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.audit-detail-primary {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.audit-detail-secondary {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -959,6 +1003,16 @@ body.theme-premium .eyebrow {
 body.theme-premium .pending-row {
   border-color: #e0c0c4;
   background: #fff8f9;
+}
+
+body.theme-premium .user-account-title,
+body.theme-premium .audit-detail-primary {
+  color: #3d1f2a;
+}
+
+body.theme-premium .user-account-meta,
+body.theme-premium .audit-detail-secondary {
+  color: #7b5760;
 }
 
 body.theme-premium .ticket-viewer {

@@ -412,6 +412,8 @@
               <p class="muted">Browse security and admin events recorded by the system.</p>
               <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
                 <button id="open-audit-log-btn" type="button">View Audit Log</button>
+                <button id="open-login-access-log-btn" type="button">Login Access Log</button>
+                <button id="open-failed-login-log-btn" type="button">Failed Login Log</button>
                 <button id="open-kb-access-log-btn" type="button">KB Access Log</button>
               </div>
             </div>
@@ -685,6 +687,76 @@
         <button id="kb-access-log-prev" type="button" disabled>&#8592; Prev</button>
         <span id="kb-access-log-page-info"></span>
         <button id="kb-access-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="login-access-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="login-access-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="login-access-log-modal-title">Successful Login Access Log</h2>
+        <button id="login-access-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="login-access-log-search-filter" type="search" placeholder="Filter by user, IP, or method" autocomplete="off">
+        <button id="login-access-log-filter-btn" type="button">Apply</button>
+        <button id="login-access-log-reset-btn" type="button">Reset</button>
+        <button id="login-access-log-export-btn" type="button">Export CSV</button>
+      </div>
+      <p id="login-access-log-status" class="muted"></p>
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Method</th>
+              <th>User</th>
+              <th>IP Address</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="login-access-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="login-access-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="login-access-log-page-info"></span>
+        <button id="login-access-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="failed-login-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="failed-login-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="failed-login-log-modal-title">Failed Login Audit Log</h2>
+        <button id="failed-login-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="failed-login-log-search-filter" type="search" placeholder="Filter by email, IP, or reason" autocomplete="off">
+        <button id="failed-login-log-filter-btn" type="button">Apply</button>
+        <button id="failed-login-log-reset-btn" type="button">Reset</button>
+        <button id="failed-login-log-export-btn" type="button">Export CSV</button>
+      </div>
+      <p id="failed-login-log-status" class="muted"></p>
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Outcome</th>
+              <th>User / Email</th>
+              <th>IP Address</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="failed-login-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="failed-login-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="failed-login-log-page-info"></span>
+        <button id="failed-login-log-next" type="button" disabled>Next &#8594;</button>
       </div>
     </div>
   </div>

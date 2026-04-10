@@ -698,6 +698,18 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_log_action_id
+            ON audit_log(action, id DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_log_actor_action_id
+            ON audit_log(actor_user_id, action, id DESC)
+            """
+        )
         # Default: signups enabled
         conn.execute(
             "INSERT OR IGNORE INTO site_settings(key, value) VALUES('signups_enabled', '1')"
@@ -1414,15 +1426,54 @@ def link_user_microsoft_account(user_id: int, microsoft_oid: str, microsoft_tena
 
 
 def list_users(pending_only: bool) -> List[Dict[str, Any]]:
-    query = "SELECT * FROM users"
+    query = """
+        SELECT
+            u.*,
+            (
+                SELECT a.metadata_json
+                FROM audit_log a
+                WHERE a.actor_user_id = u.id
+                  AND a.action IN ('auth.login.success', 'auth.login.microsoft.success')
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_login_metadata,
+            (
+                SELECT a.created_at
+                FROM audit_log a
+                WHERE a.actor_user_id = u.id
+                  AND a.action IN ('auth.login.success', 'auth.login.microsoft.success')
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_login_at,
+            (
+                SELECT a.action
+                FROM audit_log a
+                WHERE a.actor_user_id = u.id
+                  AND a.action IN ('auth.login.success', 'auth.login.microsoft.success')
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_login_action
+        FROM users u
+    """
     params: tuple = ()
     if pending_only:
-        query += " WHERE approved = 0"
-    query += " ORDER BY created_at DESC"
+        query += " WHERE u.approved = 0"
+    query += " ORDER BY u.created_at DESC"
 
     with get_conn() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [_decode_user_row(row) for row in rows]
+
+    users: List[Dict[str, Any]] = []
+    for row in rows:
+        user = _decode_user_row(row)
+        metadata = _parse_metadata_json(user.get("last_login_metadata"))
+        user["last_login_ip"] = str(metadata.get("ip") or "").strip() or None
+        user["last_login_at"] = str(user.get("last_login_at") or "").strip() or None
+        user["last_login_method"] = _login_method_from_action(user.get("last_login_action"))
+        user.pop("last_login_metadata", None)
+        user.pop("last_login_action", None)
+        users.append(user)
+    return users
 
 
 def approve_user(user_id: int) -> bool:
@@ -1823,6 +1874,24 @@ def log_audit_event(
         conn.commit()
 
 
+def _parse_metadata_json(metadata_json: Optional[str]) -> Dict[str, Any]:
+    raw = str(metadata_json or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _login_method_from_action(action: Optional[str]) -> Optional[str]:
+    value = str(action or "").strip().lower()
+    if not value:
+        return None
+    return "Microsoft 365" if "microsoft" in value else "Password"
+
+
 def get_audit_log_page(
     limit: int = 100,
     offset: int = 0,
@@ -1886,6 +1955,113 @@ def get_audit_log_page(
         })
 
     return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+
+def get_login_audit_page(
+    *,
+    outcome: str,
+    limit: int = 100,
+    offset: int = 0,
+    search_filter: Optional[str] = None,
+) -> Dict[str, Any]:
+    normalized_outcome = str(outcome or "").strip().lower()
+    if normalized_outcome == "success":
+        actions = ("auth.login.success", "auth.login.microsoft.success")
+    elif normalized_outcome == "failed":
+        actions = ("auth.login.failed", "auth.login.microsoft.failed", "auth.login.locked_out")
+    else:
+        raise ValueError(f"Unsupported login audit outcome: {outcome}")
+
+    action_placeholders = ",".join(["?"] * len(actions))
+    where_parts = [f"a.action IN ({action_placeholders})"]
+    params: List[Any] = list(actions)
+
+    search_text = str(search_filter or "").strip()
+    if search_text:
+        where_parts.append(
+            """
+            (
+                COALESCE(actor.email, '') LIKE ?
+                OR COALESCE(target.email, '') LIKE ?
+                OR COALESCE(a.metadata_json, '') LIKE ?
+                OR a.action LIKE ?
+            )
+            """
+        )
+        like_value = f"%{search_text}%"
+        params.extend([like_value, like_value, like_value, like_value])
+
+    where_clause = "WHERE " + " AND ".join(part.strip() for part in where_parts)
+    count_params = list(params)
+    page_params = list(params) + [limit, offset]
+
+    with get_conn() as conn:
+        total_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM audit_log a
+            LEFT JOIN users actor ON actor.id = a.actor_user_id
+            LEFT JOIN users target ON target.id = a.target_user_id
+            {where_clause}
+            """,
+            count_params,
+        ).fetchone()
+        total = int(total_row["cnt"]) if total_row else 0
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                a.id,
+                a.actor_user_id,
+                actor.email AS actor_email,
+                a.action,
+                a.target_user_id,
+                target.email AS target_email,
+                a.metadata_json,
+                a.created_at
+            FROM audit_log a
+            LEFT JOIN users actor ON actor.id = a.actor_user_id
+            LEFT JOIN users target ON target.id = a.target_user_id
+            {where_clause}
+            ORDER BY a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            page_params,
+        ).fetchall()
+
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        metadata = _parse_metadata_json(row["metadata_json"])
+        email = (
+            str(row["actor_email"] or "").strip()
+            or str(row["target_email"] or "").strip()
+            or str(metadata.get("email") or "").strip()
+            or None
+        )
+        items.append(
+            {
+                "id": row["id"],
+                "actor_user_id": row["actor_user_id"],
+                "actor_email": row["actor_email"],
+                "action": row["action"],
+                "target_user_id": row["target_user_id"],
+                "target_email": row["target_email"],
+                "email": email,
+                "ip": str(metadata.get("ip") or "").strip() or None,
+                "reason": str(metadata.get("reason") or "").strip() or None,
+                "method": _login_method_from_action(row["action"]),
+                "metadata": row["metadata_json"],
+                "created_at": row["created_at"],
+            }
+        )
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "outcome": normalized_outcome,
+        "items": items,
+    }
 
 
 def log_kb_access_event(
