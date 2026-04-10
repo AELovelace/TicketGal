@@ -96,9 +96,22 @@ const auditLogResetBtn = document.getElementById("audit-log-reset-btn");
 const auditLogPrev = document.getElementById("audit-log-prev");
 const auditLogNext = document.getElementById("audit-log-next");
 const auditLogPageInfo = document.getElementById("audit-log-page-info");
+const kbAccessLogModal = document.getElementById("kb-access-log-modal");
+const kbAccessLogClose = document.getElementById("kb-access-log-close");
+const kbAccessLogBody = document.getElementById("kb-access-log-body");
+const kbAccessLogStatus = document.getElementById("kb-access-log-status");
+const kbAccessLogSearchFilter = document.getElementById("kb-access-log-search-filter");
+const kbAccessLogResultFilter = document.getElementById("kb-access-log-result-filter");
+const kbAccessLogFilterBtn = document.getElementById("kb-access-log-filter-btn");
+const kbAccessLogResetBtn = document.getElementById("kb-access-log-reset-btn");
+const kbAccessLogPrev = document.getElementById("kb-access-log-prev");
+const kbAccessLogNext = document.getElementById("kb-access-log-next");
+const kbAccessLogPageInfo = document.getElementById("kb-access-log-page-info");
 
 let auditLogOffset = 0;
 const AUDIT_LOG_PAGE_SIZE = 50;
+let kbAccessLogOffset = 0;
+const KB_ACCESS_LOG_PAGE_SIZE = 50;
 
 let currentResetUserId = null;
 
@@ -1089,6 +1102,33 @@ function closeAuditLogModal() {
   if (auditLogModal) auditLogModal.classList.add("hidden");
 }
 
+function openKBAccessLogModal() {
+  if (!kbAccessLogModal) return;
+  kbAccessLogOffset = 0;
+  if (kbAccessLogSearchFilter) kbAccessLogSearchFilter.value = "";
+  if (kbAccessLogResultFilter) kbAccessLogResultFilter.value = "";
+  kbAccessLogModal.classList.remove("hidden");
+  kbAccessLogModal.focus();
+  loadKBAccessLog();
+}
+
+function closeKBAccessLogModal() {
+  if (kbAccessLogModal) kbAccessLogModal.classList.add("hidden");
+}
+
+function formatAuditMetadata(metadata) {
+  if (!metadata) return "-";
+  try {
+    const parsed = JSON.parse(metadata);
+    const parts = Object.entries(parsed)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([key, value]) => `${key}: ${value}`);
+    return parts.join("  ") || "-";
+  } catch {
+    return safeText(metadata) || "-";
+  }
+}
+
 async function loadAuditLog() {
   if (!auditLogBody || currentUser?.role !== "admin") return;
 
@@ -1172,6 +1212,86 @@ async function loadAuditLog() {
     if (auditLogStatus) auditLogStatus.textContent = "";
   } catch (error) {
     if (auditLogStatus) auditLogStatus.textContent = `Failed to load audit log: ${error.message}`;
+  }
+}
+
+async function loadKBAccessLog() {
+  if (!kbAccessLogBody || currentUser?.role !== "admin") return;
+
+  const searchFilter = safeText(kbAccessLogSearchFilter?.value || "").trim();
+  const resultFilter = safeText(kbAccessLogResultFilter?.value || "").trim();
+  const params = new URLSearchParams({
+    limit: String(KB_ACCESS_LOG_PAGE_SIZE),
+    offset: String(kbAccessLogOffset),
+  });
+  if (searchFilter) params.set("search", searchFilter);
+  if (resultFilter) params.set("result", resultFilter);
+
+  if (kbAccessLogStatus) kbAccessLogStatus.textContent = "Loading...";
+  if (kbAccessLogPrev) kbAccessLogPrev.disabled = true;
+  if (kbAccessLogNext) kbAccessLogNext.disabled = true;
+
+  try {
+    const data = await api(`/api/admin/kb-access-log?${params.toString()}`);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const total = Number(data?.total || 0);
+
+    kbAccessLogBody.innerHTML = "";
+    if (!items.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.className = "muted";
+      cell.textContent = "No knowledgebase access entries found.";
+      row.appendChild(cell);
+      kbAccessLogBody.appendChild(row);
+    } else {
+      items.forEach((entry) => {
+        const tr = document.createElement("tr");
+
+        const tdTime = document.createElement("td");
+        tdTime.className = "audit-col-time";
+        tdTime.textContent = formatUiDateTime(entry?.created_at);
+        tr.appendChild(tdTime);
+
+        const tdResult = document.createElement("td");
+        tdResult.className = "audit-col-action";
+        const resultBadge = document.createElement("span");
+        const result = safeText(entry?.access_result) || "unknown";
+        resultBadge.className = `audit-action-badge audit-action-${result}`;
+        resultBadge.textContent = result;
+        tdResult.appendChild(resultBadge);
+        tr.appendChild(tdResult);
+
+        const tdActor = document.createElement("td");
+        tdActor.textContent = safeText(entry?.actor_email) || (entry?.actor_user_id ? `#${entry.actor_user_id}` : "unknown");
+        tr.appendChild(tdActor);
+
+        const tdArticle = document.createElement("td");
+        const articleTitle = safeText(entry?.article_title).trim();
+        const articleSlug = safeText(entry?.article_slug).trim();
+        tdArticle.textContent = articleTitle && articleSlug
+          ? `${articleTitle} (${articleSlug})`
+          : articleTitle || articleSlug || (entry?.article_id ? `#${entry.article_id}` : "-");
+        tr.appendChild(tdArticle);
+
+        const tdMeta = document.createElement("td");
+        tdMeta.className = "audit-col-meta";
+        tdMeta.textContent = formatAuditMetadata(entry?.metadata);
+        tr.appendChild(tdMeta);
+
+        kbAccessLogBody.appendChild(tr);
+      });
+    }
+
+    const pageNum = Math.floor(kbAccessLogOffset / KB_ACCESS_LOG_PAGE_SIZE) + 1;
+    const totalPages = Math.max(1, Math.ceil(total / KB_ACCESS_LOG_PAGE_SIZE));
+    if (kbAccessLogPageInfo) kbAccessLogPageInfo.textContent = `Page ${pageNum} of ${totalPages}  (${total} total)`;
+    if (kbAccessLogPrev) kbAccessLogPrev.disabled = kbAccessLogOffset <= 0;
+    if (kbAccessLogNext) kbAccessLogNext.disabled = kbAccessLogOffset + KB_ACCESS_LOG_PAGE_SIZE >= total;
+    if (kbAccessLogStatus) kbAccessLogStatus.textContent = "";
+  } catch (error) {
+    if (kbAccessLogStatus) kbAccessLogStatus.textContent = `Failed to load KB access log: ${error.message}`;
   }
 }
 
@@ -3452,8 +3572,12 @@ if (passwordResetInput) {
 }
 
 const openAuditLogBtn = document.getElementById("open-audit-log-btn");
+const openKBAccessLogBtn = document.getElementById("open-kb-access-log-btn");
 if (openAuditLogBtn) {
   openAuditLogBtn.addEventListener("click", openAuditLogModal);
+}
+if (openKBAccessLogBtn) {
+  openKBAccessLogBtn.addEventListener("click", openKBAccessLogModal);
 }
 if (auditLogClose) {
   auditLogClose.addEventListener("click", closeAuditLogModal);
@@ -3496,6 +3620,54 @@ if (auditLogNext) {
     loadAuditLog();
   });
 }
+if (kbAccessLogClose) {
+  kbAccessLogClose.addEventListener("click", closeKBAccessLogModal);
+}
+if (kbAccessLogModal) {
+  kbAccessLogModal.addEventListener("click", (event) => {
+    if (event.target === kbAccessLogModal) closeKBAccessLogModal();
+  });
+}
+if (kbAccessLogFilterBtn) {
+  kbAccessLogFilterBtn.addEventListener("click", () => {
+    kbAccessLogOffset = 0;
+    loadKBAccessLog();
+  });
+}
+if (kbAccessLogResetBtn) {
+  kbAccessLogResetBtn.addEventListener("click", () => {
+    if (kbAccessLogSearchFilter) kbAccessLogSearchFilter.value = "";
+    if (kbAccessLogResultFilter) kbAccessLogResultFilter.value = "";
+    kbAccessLogOffset = 0;
+    loadKBAccessLog();
+  });
+}
+if (kbAccessLogSearchFilter) {
+  kbAccessLogSearchFilter.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") {
+      kbAccessLogOffset = 0;
+      loadKBAccessLog();
+    }
+  });
+}
+if (kbAccessLogResultFilter) {
+  kbAccessLogResultFilter.addEventListener("change", () => {
+    kbAccessLogOffset = 0;
+    loadKBAccessLog();
+  });
+}
+if (kbAccessLogPrev) {
+  kbAccessLogPrev.addEventListener("click", () => {
+    kbAccessLogOffset = Math.max(0, kbAccessLogOffset - KB_ACCESS_LOG_PAGE_SIZE);
+    loadKBAccessLog();
+  });
+}
+if (kbAccessLogNext) {
+  kbAccessLogNext.addEventListener("click", () => {
+    kbAccessLogOffset += KB_ACCESS_LOG_PAGE_SIZE;
+    loadKBAccessLog();
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -3503,6 +3675,7 @@ document.addEventListener("keydown", (event) => {
     closeAdminCreateTicketModal();
     closePasswordResetModal();
     closeAuditLogModal();
+    closeKBAccessLogModal();
   }
 });
 

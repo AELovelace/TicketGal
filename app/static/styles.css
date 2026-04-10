@@ -1176,7 +1176,11 @@ body.theme-premium .report-ai-error {
   min-height: 36px;
 }
 
-#audit-log-table-wrap {
+.audit-log-filters select {
+  min-height: 36px;
+}
+
+.audit-log-table-wrap {
   overflow-x: auto;
 }
 
@@ -1239,6 +1243,16 @@ body.theme-premium .report-ai-error {
   color: #6b3d00;
 }
 
+.audit-action-allowed {
+  background: #e6f4ea;
+  color: #1a5c30;
+}
+
+.audit-action-denied {
+  background: #fdecea;
+  color: #8f1d1d;
+}
+
 .audit-log-pagination {
   display: flex;
   align-items: center;
@@ -1247,7 +1261,8 @@ body.theme-premium .report-ai-error {
   flex-wrap: wrap;
 }
 
-#audit-log-page-info {
+#audit-log-page-info,
+#kb-access-log-page-info {
   flex: 1;
   text-align: center;
   color: var(--muted);

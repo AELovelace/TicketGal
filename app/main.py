@@ -72,6 +72,7 @@ from .database import (
     list_cached_tickets,
     list_users,
     log_audit_event,
+    log_kb_access_event,
     replace_cached_ticket_comments,
     replace_ticket_cache_snapshot,
     reset_user_password,
@@ -82,6 +83,7 @@ from .database import (
     mark_transaction_completed,
     mark_transaction_retry,
     get_audit_log_page,
+    get_kb_access_audit_page,
     get_login_lockout_until,
     record_login_failure,
     update_kb_article,
@@ -908,6 +910,25 @@ def admin_audit_log(
         offset=offset,
         action_filter=action,
         actor_user_id=actor_user_id,
+    )
+
+
+@app.get("/api/admin/kb-access-log")
+def admin_kb_access_log(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None, max_length=120),
+    result: Optional[str] = Query(default=None, pattern="^(allowed|denied)$"),
+    actor_user_id: Optional[int] = Query(default=None),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return get_kb_access_audit_page(
+        limit=limit,
+        offset=offset,
+        search_filter=search,
+        actor_user_id=actor_user_id,
+        access_result=result,
     )
 
 
@@ -3375,13 +3396,24 @@ async def get_kb_article_endpoint(
 ) -> Dict[str, Any]:
     """Fetch a specific knowledgebase article by slug."""
     article = get_kb_article_by_slug(article_slug)
-    
+
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
-    
+
     if not can_user_access_kb_article(user, article):
+        log_kb_access_event(
+            int(user["id"]),
+            int(article["id"]),
+            str(article["slug"]),
+            str(article["title"]),
+            "denied",
+            json.dumps({
+                "visibility_type": article.get("visibility_type"),
+                "restricted_to_customer_id": article.get("restricted_to_customer_id"),
+            }),
+        )
         raise HTTPException(status_code=403, detail="You do not have access to this article")
-    
+
     # Read markdown content from disk
     file_path = article.get("file_path")
     content = ""
@@ -3392,7 +3424,19 @@ async def get_kb_article_endpoint(
                 content = path.read_text(encoding="utf-8")
         except Exception:
             content = "(Content unavailable)"
-    
+
+    log_kb_access_event(
+        int(user["id"]),
+        int(article["id"]),
+        str(article["slug"]),
+        str(article["title"]),
+        "allowed",
+        json.dumps({
+            "visibility_type": article.get("visibility_type"),
+            "restricted_to_customer_id": article.get("restricted_to_customer_id"),
+        }),
+    )
+
     return {
         "id": article["id"],
         "slug": article["slug"],

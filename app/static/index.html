@@ -405,7 +405,10 @@
             <div class="settings-section">
               <h3>Audit Log</h3>
               <p class="muted">Browse security and admin events recorded by the system.</p>
-              <button id="open-audit-log-btn" type="button">View Audit Log</button>
+              <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
+                <button id="open-audit-log-btn" type="button">View Audit Log</button>
+                <button id="open-kb-access-log-btn" type="button">KB Access Log</button>
+              </div>
             </div>
 
             <div class="settings-section">
@@ -620,7 +623,7 @@
         <button id="audit-log-reset-btn" type="button">Reset</button>
       </div>
       <p id="audit-log-status" class="muted"></p>
-      <div id="audit-log-table-wrap">
+      <div id="audit-log-table-wrap" class="audit-log-table-wrap">
         <table class="audit-log-table">
           <thead>
             <tr>
@@ -638,6 +641,45 @@
         <button id="audit-log-prev" type="button" disabled>&#8592; Prev</button>
         <span id="audit-log-page-info"></span>
         <button id="audit-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="kb-access-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-access-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="kb-access-log-modal-title">Knowledgebase Access Log</h2>
+        <button id="kb-access-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="kb-access-log-search-filter" type="search" placeholder="Filter by user, article title, or slug" autocomplete="off">
+        <select id="kb-access-log-result-filter" aria-label="Filter KB access result">
+          <option value="">All Results</option>
+          <option value="allowed">Allowed</option>
+          <option value="denied">Denied</option>
+        </select>
+        <button id="kb-access-log-filter-btn" type="button">Apply</button>
+        <button id="kb-access-log-reset-btn" type="button">Reset</button>
+      </div>
+      <p id="kb-access-log-status" class="muted"></p>
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Result</th>
+              <th>User</th>
+              <th>Article</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="kb-access-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="kb-access-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="kb-access-log-page-info"></span>
+        <button id="kb-access-log-next" type="button" disabled>Next &#8594;</button>
       </div>
     </div>
   </div>

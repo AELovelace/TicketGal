@@ -520,6 +520,51 @@ def _create_knowledgebase_schema() -> None:
         conn.commit()
 
 
+def _create_kb_access_audit_schema() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kb_access_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER,
+                article_id INTEGER,
+                article_slug TEXT,
+                article_title TEXT,
+                access_result TEXT NOT NULL CHECK(access_result IN ('allowed', 'denied')),
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (article_id) REFERENCES knowledgebase_articles(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_access_audit_created_at
+            ON kb_access_audit(created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_access_audit_actor
+            ON kb_access_audit(actor_user_id, created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_access_audit_article
+            ON kb_access_audit(article_id, created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_kb_access_audit_result
+            ON kb_access_audit(access_result, created_at DESC)
+            """
+        )
+        conn.commit()
+
+
 def init_db() -> None:
     _ensure_database_parent(settings.db_path)
     _ensure_database_parent(settings.ticket_cache_db_path)
@@ -531,6 +576,7 @@ def init_db() -> None:
     _recover_in_progress_transactions()
     _migrate_legacy_ticket_cache_to_dedicated_db()
     _create_knowledgebase_schema()
+    _create_kb_access_audit_schema()
 
     with get_conn() as conn:
         conn.execute(
@@ -1835,6 +1881,119 @@ def get_audit_log_page(
             "action": row["action"],
             "target_user_id": row["target_user_id"],
             "target_email": row["target_email"],
+            "metadata": row["metadata_json"],
+            "created_at": row["created_at"],
+        })
+
+    return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+
+def log_kb_access_event(
+    actor_user_id: Optional[int],
+    article_id: Optional[int],
+    article_slug: Optional[str],
+    article_title: Optional[str],
+    access_result: str,
+    metadata_json: Optional[str] = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO kb_access_audit(
+                actor_user_id,
+                article_id,
+                article_slug,
+                article_title,
+                access_result,
+                metadata_json,
+                created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                actor_user_id,
+                article_id,
+                article_slug,
+                article_title,
+                access_result,
+                metadata_json,
+                _utc_now_iso(),
+            ),
+        )
+        conn.commit()
+
+
+def get_kb_access_audit_page(
+    limit: int = 100,
+    offset: int = 0,
+    search_filter: Optional[str] = None,
+    actor_user_id: Optional[int] = None,
+    access_result: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return KB access-audit entries, newest first, with optional filtering."""
+    where_parts: list = []
+    params: list = []
+
+    if search_filter:
+        query = f"%{search_filter.strip()}%"
+        where_parts.append(
+            "(k.article_slug LIKE ? OR k.article_title LIKE ? OR actor.email LIKE ?)"
+        )
+        params.extend([query, query, query])
+    if actor_user_id is not None:
+        where_parts.append("k.actor_user_id = ?")
+        params.append(actor_user_id)
+    if access_result:
+        where_parts.append("k.access_result = ?")
+        params.append(access_result)
+
+    where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    count_params = list(params)
+    page_params = list(params) + [limit, offset]
+
+    with get_conn() as conn:
+        total_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM kb_access_audit k
+            LEFT JOIN users actor ON actor.id = k.actor_user_id
+            {where_clause}
+            """,
+            count_params,
+        ).fetchone()
+        total = int(total_row["cnt"]) if total_row else 0
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                k.id,
+                k.actor_user_id,
+                actor.email AS actor_email,
+                k.article_id,
+                k.article_slug,
+                k.article_title,
+                k.access_result,
+                k.metadata_json,
+                k.created_at
+            FROM kb_access_audit k
+            LEFT JOIN users actor ON actor.id = k.actor_user_id
+            {where_clause}
+            ORDER BY k.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            page_params,
+        ).fetchall()
+
+    items = []
+    for row in rows:
+        items.append({
+            "id": row["id"],
+            "actor_user_id": row["actor_user_id"],
+            "actor_email": row["actor_email"],
+            "article_id": row["article_id"],
+            "article_slug": row["article_slug"],
+            "article_title": row["article_title"],
+            "access_result": row["access_result"],
             "metadata": row["metadata_json"],
             "created_at": row["created_at"],
         })
