@@ -638,6 +638,46 @@ td select {
   display: none;
 }
 
+body.ticket-viewer-standalone .brand-strip,
+body.ticket-viewer-standalone .hero,
+body.ticket-viewer-standalone #alerts-feed,
+body.ticket-viewer-standalone #user-shell,
+body.ticket-viewer-standalone #admin-shell,
+body.ticket-viewer-standalone #auth-view {
+  display: none !important;
+}
+
+body.ticket-viewer-standalone .shell {
+  width: min(1380px, 98vw);
+  margin: 0 auto;
+  display: block;
+}
+
+body.ticket-viewer-standalone #app-view {
+  display: block !important;
+}
+
+body.ticket-viewer-standalone #ticket-viewer {
+  position: static;
+  inset: auto;
+  background: transparent;
+  display: block;
+  padding: 0;
+}
+
+body.ticket-viewer-standalone #ticket-viewer.hidden {
+  display: block !important;
+}
+
+body.ticket-viewer-standalone #ticket-viewer .ticket-viewer-panel {
+  width: 100%;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+  border: 0;
+  padding: 0.8rem 0.4rem 1rem;
+}
+
 .ticket-viewer-panel {
   width: min(1320px, 97vw);
   max-height: 85vh;

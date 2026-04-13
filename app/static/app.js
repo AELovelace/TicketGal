@@ -197,10 +197,12 @@ const authRedirectState = readAndClearAuthRedirectState();
 
 const DISMISSED_ALERTS_KEY = "ticketgal.dismissed_alert_ids";
 const TICKET_VIEWER_MODE_KEY = "ticketgal.ticket_viewer_mode";
+const TICKET_VIEWER_STANDALONE_PARAM = "viewer_standalone";
 
 let ticketViewerMode = "modal";
 let pendingTicketViewerLaunch = null;
 let pendingTicketViewerLaunchHandled = false;
+let isStandaloneTicketViewerWindow = false;
 
 function getDismissedAlertIds() {
   try {
@@ -309,10 +311,23 @@ function parsePendingTicketViewerLaunch() {
   return null;
 }
 
+function parseStandaloneTicketViewerWindowFlag() {
+  const params = new URLSearchParams(window.location.search);
+  return safeText(params.get(TICKET_VIEWER_STANDALONE_PARAM)).trim() === "1";
+}
+
+function applyStandaloneTicketViewerLayout() {
+  document.body.classList.add("ticket-viewer-standalone");
+  if (ticketViewerClose) {
+    ticketViewerClose.textContent = "Close Window";
+  }
+}
+
 function clearPendingTicketViewerLaunchFromUrl() {
   const params = new URLSearchParams(window.location.search);
   params.delete("open_ticket_id");
   params.delete("open_queue_id");
+  params.delete(TICKET_VIEWER_STANDALONE_PARAM);
   const nextQuery = params.toString();
   const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash || ""}`;
   window.history.replaceState({}, document.title, nextUrl);
@@ -322,6 +337,7 @@ function buildTicketViewerWindowUrl({ ticketId = "", queueId = "" } = {}) {
   const url = new URL(window.location.href);
   url.searchParams.delete("open_ticket_id");
   url.searchParams.delete("open_queue_id");
+  url.searchParams.set(TICKET_VIEWER_STANDALONE_PARAM, "1");
   if (ticketId) {
     url.searchParams.set("open_ticket_id", String(ticketId));
   }
@@ -357,6 +373,9 @@ async function maybeOpenPendingTicketViewerLaunch() {
   if (pendingTicketViewerLaunchHandled || !pendingTicketViewerLaunch || !currentUser) return;
   pendingTicketViewerLaunchHandled = true;
   try {
+    if (isStandaloneTicketViewerWindow) {
+      applyStandaloneTicketViewerLayout();
+    }
     if (pendingTicketViewerLaunch.type === "queue") {
       await openQueuedTicketViewer(pendingTicketViewerLaunch.id);
     } else {
@@ -1942,6 +1961,10 @@ async function loadLoginRateLimits() {
 }
 
 function closeTicketViewer() {
+  if (isStandaloneTicketViewerWindow) {
+    window.close();
+    return;
+  }
   if (!ticketViewer) return;
   ticketViewer.classList.add("hidden");
   if (ticketViewerMeta) ticketViewerMeta.innerHTML = "";
@@ -4503,6 +4526,7 @@ ticketViewerModeButtons.forEach((button) => {
 
 ticketViewerMode = readTicketViewerMode();
 pendingTicketViewerLaunch = parsePendingTicketViewerLaunch();
+isStandaloneTicketViewerWindow = parseStandaloneTicketViewerWindowFlag();
 updateTicketViewerModeUi();
 
 async function loadAdminSignupsPreference() {
