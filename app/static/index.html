@@ -87,6 +87,7 @@
               </div>
               <div class="actions">
                 <button id="user-in-progress-refresh-btn" type="button">Refresh</button>
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
               </div>
             </div>
 
@@ -114,6 +115,7 @@
               </div>
               <div class="actions">
                 <button id="refresh-btn" type="button">Refresh</button>
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
                 <div id="user-status-filter" class="status-filter-checks">
                   <label><input type="checkbox" value="Open" checked> Open</label>
                   <label><input type="checkbox" value="Pending" checked> Pending</label>
@@ -318,6 +320,7 @@
             </div>
             <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
               <button id="admin-status-refresh-btn" type="button">Refresh</button>
+              <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
               <label class="ticket-search-field" for="admin-ticket-search">
                 <span>Search tickets</span>
                 <input id="admin-ticket-search" type="search" placeholder="Search by ID, title, email, company..." autocomplete="off">
@@ -451,6 +454,10 @@
                 <input id="admin-alerts-toggle" type="checkbox" checked>
                 <span>Enable Atera Alerts sidebar</span>
               </label>
+              <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
+              </div>
+              <p id="ticket-viewer-mode-status" class="muted"></p>
               <p id="alerts-toggle-status" class="muted"></p>
             </div>
           </section>

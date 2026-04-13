@@ -77,6 +77,8 @@ const alertsStatus = document.getElementById("alerts-status");
 const alertsList = document.getElementById("alerts-list");
 const alertsRefreshBtn = document.getElementById("alerts-refresh-btn");
 const adminAlertsToggle = document.getElementById("admin-alerts-toggle");
+const ticketViewerModeStatus = document.getElementById("ticket-viewer-mode-status");
+const ticketViewerModeButtons = Array.from(document.querySelectorAll("[data-viewer-mode-toggle]"));
 
 // Password reset modal elements
 const passwordResetModal = document.getElementById("password-reset-modal");
@@ -194,6 +196,11 @@ let microsoftAuthEnabled = false;
 const authRedirectState = readAndClearAuthRedirectState();
 
 const DISMISSED_ALERTS_KEY = "ticketgal.dismissed_alert_ids";
+const TICKET_VIEWER_MODE_KEY = "ticketgal.ticket_viewer_mode";
+
+let ticketViewerMode = "modal";
+let pendingTicketViewerLaunch = null;
+let pendingTicketViewerLaunchHandled = false;
 
 function getDismissedAlertIds() {
   try {
@@ -245,6 +252,121 @@ function dismissAlert(alertId) {
 function safeText(value) {
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+function readTicketViewerMode() {
+  let stored = "";
+  try {
+    stored = safeText(localStorage.getItem(TICKET_VIEWER_MODE_KEY)).trim().toLowerCase();
+  } catch {
+    stored = "";
+  }
+  return stored === "window" ? "window" : "modal";
+}
+
+function writeTicketViewerMode(mode) {
+  const nextMode = mode === "window" ? "window" : "modal";
+  ticketViewerMode = nextMode;
+  try {
+    localStorage.setItem(TICKET_VIEWER_MODE_KEY, nextMode);
+  } catch {
+    // Ignore storage failures and keep in-memory preference.
+  }
+  updateTicketViewerModeUi();
+}
+
+function updateTicketViewerModeUi() {
+  const isWindowMode = ticketViewerMode === "window";
+  ticketViewerModeButtons.forEach((button) => {
+    button.textContent = isWindowMode ? "Viewer: Window" : "Viewer: Modal";
+  });
+  if (ticketViewerModeStatus) {
+    ticketViewerModeStatus.textContent = isWindowMode
+      ? "Ticket Viewer opens in a separate window."
+      : "Ticket Viewer opens as a modal in this tab.";
+  }
+}
+
+function toggleTicketViewerMode() {
+  writeTicketViewerMode(ticketViewerMode === "window" ? "modal" : "window");
+}
+
+function parsePendingTicketViewerLaunch() {
+  const params = new URLSearchParams(window.location.search);
+  const ticketIdRaw = safeText(params.get("open_ticket_id")).trim();
+  const queueIdRaw = safeText(params.get("open_queue_id")).trim();
+
+  const ticketId = Number(ticketIdRaw);
+  if (Number.isFinite(ticketId) && ticketId > 0) {
+    return { type: "ticket", id: String(ticketId) };
+  }
+
+  const queueId = Number(queueIdRaw);
+  if (Number.isFinite(queueId) && queueId > 0) {
+    return { type: "queue", id: String(queueId) };
+  }
+
+  return null;
+}
+
+function clearPendingTicketViewerLaunchFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  params.delete("open_ticket_id");
+  params.delete("open_queue_id");
+  const nextQuery = params.toString();
+  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState({}, document.title, nextUrl);
+}
+
+function buildTicketViewerWindowUrl({ ticketId = "", queueId = "" } = {}) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("open_ticket_id");
+  url.searchParams.delete("open_queue_id");
+  if (ticketId) {
+    url.searchParams.set("open_ticket_id", String(ticketId));
+  }
+  if (queueId) {
+    url.searchParams.set("open_queue_id", String(queueId));
+  }
+  return url.toString();
+}
+
+function launchTicketViewerWindow({ ticketId = "", queueId = "" } = {}) {
+  const popupUrl = buildTicketViewerWindowUrl({ ticketId, queueId });
+  const popup = window.open(popupUrl, "_blank", "noopener,noreferrer,width=1380,height=920");
+  return popup;
+}
+
+async function openTicketViewerByPreference(ticketId) {
+  if (ticketViewerMode === "window") {
+    const popup = launchTicketViewerWindow({ ticketId });
+    if (popup) return;
+  }
+  await openTicketViewer(ticketId);
+}
+
+async function openQueuedTicketViewerByPreference(queueId) {
+  if (ticketViewerMode === "window") {
+    const popup = launchTicketViewerWindow({ queueId });
+    if (popup) return;
+  }
+  await openQueuedTicketViewer(queueId);
+}
+
+async function maybeOpenPendingTicketViewerLaunch() {
+  if (pendingTicketViewerLaunchHandled || !pendingTicketViewerLaunch || !currentUser) return;
+  pendingTicketViewerLaunchHandled = true;
+  try {
+    if (pendingTicketViewerLaunch.type === "queue") {
+      await openQueuedTicketViewer(pendingTicketViewerLaunch.id);
+    } else {
+      await openTicketViewer(pendingTicketViewerLaunch.id);
+    }
+  } catch {
+    // If the launch payload cannot be opened, keep the app usable.
+  } finally {
+    clearPendingTicketViewerLaunchFromUrl();
+  }
 }
 
 function readCookie(name) {
@@ -3804,7 +3926,7 @@ if (reportAiSummaryEl) {
     const ticketId = Number(linkBtn.dataset.ticketId || 0);
     if (!Number.isFinite(ticketId) || ticketId <= 0) return;
 
-    await openTicketViewer(ticketId);
+    await openTicketViewerByPreference(ticketId);
   });
 }
 if (adminSyncTicketsBtn) {
@@ -3868,7 +3990,7 @@ userTicketsBody.addEventListener("click", async (event) => {
   if (openBtn instanceof HTMLElement) {
     const ticketId = openBtn.dataset.ticketId;
     if (ticketId) {
-      await openTicketViewer(ticketId);
+      await openTicketViewerByPreference(ticketId);
     }
     return;
   }
@@ -3877,7 +3999,7 @@ userTicketsBody.addEventListener("click", async (event) => {
   if (openQueuedBtn instanceof HTMLElement) {
     const queueId = openQueuedBtn.dataset.queuedTransactionId;
     if (queueId) {
-      await openQueuedTicketViewer(queueId);
+      await openQueuedTicketViewerByPreference(queueId);
     }
     return;
   }
@@ -3906,7 +4028,7 @@ if (userInProgressBody) {
     if (openBtn instanceof HTMLElement) {
       const ticketId = openBtn.dataset.ticketId;
       if (ticketId) {
-        await openTicketViewer(ticketId);
+        await openTicketViewerByPreference(ticketId);
       }
       return;
     }
@@ -3915,7 +4037,7 @@ if (userInProgressBody) {
     if (openQueuedBtn instanceof HTMLElement) {
       const queueId = openQueuedBtn.dataset.queuedTransactionId;
       if (queueId) {
-        await openQueuedTicketViewer(queueId);
+        await openQueuedTicketViewerByPreference(queueId);
       }
       return;
     }
@@ -3946,7 +4068,7 @@ adminStatusBody.addEventListener("click", async (event) => {
   if (openBtn instanceof HTMLElement) {
     const ticketId = openBtn.dataset.ticketId;
     if (ticketId) {
-      await openTicketViewer(ticketId);
+      await openTicketViewerByPreference(ticketId);
     }
     return;
   }
@@ -3955,7 +4077,7 @@ adminStatusBody.addEventListener("click", async (event) => {
   if (openQueuedBtn instanceof HTMLElement) {
     const queueId = openQueuedBtn.dataset.queuedTransactionId;
     if (queueId) {
-      await openQueuedTicketViewer(queueId);
+      await openQueuedTicketViewerByPreference(queueId);
     }
     return;
   }
@@ -4375,6 +4497,14 @@ if (adminAlertsToggle) {
   });
 }
 
+ticketViewerModeButtons.forEach((button) => {
+  button.addEventListener("click", toggleTicketViewerMode);
+});
+
+ticketViewerMode = readTicketViewerMode();
+pendingTicketViewerLaunch = parsePendingTicketViewerLaunch();
+updateTicketViewerModeUi();
+
 async function loadAdminSignupsPreference() {
   try {
     const result = await api("/api/settings/signups");
@@ -4466,6 +4596,7 @@ async function refreshMe() {
         alertsStatus.textContent = "Alerts are available to admins only.";
       }
     }
+    await maybeOpenPendingTicketViewerLaunch();
   } catch {
     currentUser = null;
     updateKBButtonVisibility();
