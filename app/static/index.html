@@ -316,11 +316,13 @@
             <p class="card-kicker">STATUS GOVERNANCE</p>
             <div class="page-header-actions">
               <h2>Ticket Statuses</h2>
-              <button id="admin-status-create-btn" type="button">Create Ticket</button>
+              <div class="actions" style="flex-direction:column;align-items:flex-end;gap:0.45rem;">
+                <button id="admin-status-create-btn" type="button">Create Ticket</button>
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
+              </div>
             </div>
             <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
               <button id="admin-status-refresh-btn" type="button">Refresh</button>
-              <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
               <label class="ticket-search-field" for="admin-ticket-search">
                 <span>Search tickets</span>
                 <input id="admin-ticket-search" type="search" placeholder="Search by ID, title, email, company..." autocomplete="off">
