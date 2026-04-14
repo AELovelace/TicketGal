@@ -19,7 +19,7 @@ body {
 body::after {
   content: "Ticketgal 0.9.0 - ELW Designs";
   position: absolute;
-  right: 0.75rem;
+  left: 0.75rem;
   bottom: 0.1rem;
   white-space: nowrap;
   font-size: 0.72rem;
@@ -28,10 +28,6 @@ body::after {
   z-index: 20;
   pointer-events: none;
   user-select: none;
-}
-
-body:has(#app-view.alerts-enabled:not(.hidden))::after {
-  right: calc(320px + 1.25rem);
 }
 
 .brand-strip {
@@ -859,10 +855,6 @@ body.ticket-viewer-standalone #ticket-viewer .ticket-viewer-panel {
 }
 
 @media (max-width: 860px) {
-  body:has(#app-view.alerts-enabled:not(.hidden))::after {
-    right: 0.75rem;
-  }
-
   .brand-strip {
     flex-wrap: wrap;
     gap: 0.4rem;

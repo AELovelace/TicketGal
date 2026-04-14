@@ -2492,6 +2492,59 @@ function buildUpdateControls(ticket, isAdminTable) {
   comment.placeholder = isQueued ? "Add queued update for replay" : "Add ticket update";
   comment.dataset.role = "comment-text";
 
+  if (isAdminTable) {
+    const recomposeBtn = document.createElement("button");
+    recomposeBtn.type = "button";
+    recomposeBtn.dataset.role = "comment-recompose";
+    recomposeBtn.textContent = "Recompose";
+
+    const recomposeStatus = document.createElement("span");
+    recomposeStatus.className = "muted";
+    recomposeStatus.dataset.role = "comment-recompose-status";
+
+    recomposeBtn.addEventListener("click", async () => {
+      const text = comment.value.trim();
+      if (!text) {
+        recomposeStatus.textContent = "Enter an update first.";
+        return;
+      }
+      recomposeBtn.disabled = true;
+      recomposeStatus.textContent = "Rewriting...";
+      try {
+        const aiResult = await api("/api/tickets/ai-assist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description: text }),
+        });
+        const rewritten = safeText(aiResult?.description || "").trim();
+        if (rewritten) {
+          comment.value = rewritten.slice(0, 4000);
+          const fallbackUsed = Boolean(aiResult?.fallback_used);
+          const fallbackReason = safeText(aiResult?.fallback_reason || "").trim();
+          if (fallbackUsed) {
+            recomposeStatus.textContent = fallbackReason
+              ? `Fallback rewrite applied. ${fallbackReason}`
+              : "Fallback rewrite applied. Review before posting.";
+          } else {
+            recomposeStatus.textContent = "Rewrite applied. Review before posting.";
+          }
+        } else {
+          recomposeStatus.textContent = "AI returned no rewrite.";
+        }
+      } catch (err) {
+        recomposeStatus.textContent = `Recompose failed: ${safeText(err.message)}`;
+      } finally {
+        recomposeBtn.disabled = false;
+      }
+    });
+
+    const recomposeDiv = document.createElement("div");
+    recomposeDiv.className = "actions";
+    recomposeDiv.appendChild(recomposeBtn);
+    recomposeDiv.appendChild(recomposeStatus);
+    wrap.appendChild(recomposeDiv);
+  }
+
   const tech = document.createElement("input");
   tech.type = "number";
   tech.min = "1";
