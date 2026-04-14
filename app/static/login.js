@@ -119,18 +119,10 @@ async function loadBranding() {
     if (brandAuthTitle && brand.portal_title) brandAuthTitle.textContent = safeText(brand.portal_title);
     if (brandAuthDescription && brand.auth_description) brandAuthDescription.textContent = safeText(brand.auth_description);
 
+    // Login page shows copyright only — help text/email are suppressed here.
     const footerHelp = document.getElementById("footer-help");
-    const footerHelpText = document.getElementById("footer-help-text");
-    const footerHelpEmail = document.getElementById("footer-help-email");
     const footerCopyright = document.getElementById("footer-copyright");
-    const hasFooterHelp = brand.footer_help_text || brand.footer_help_email;
-    if (footerHelp) footerHelp.classList.toggle("hidden", !hasFooterHelp);
-    if (footerHelpText) footerHelpText.textContent = safeText(brand.footer_help_text);
-    if (footerHelpEmail && brand.footer_help_email) {
-      const email = safeText(brand.footer_help_email).trim();
-      footerHelpEmail.textContent = email;
-      footerHelpEmail.href = `mailto:${email}`;
-    }
+    if (footerHelp) footerHelp.classList.add("hidden");
     if (footerCopyright && brand.footer_copyright) {
       footerCopyright.textContent = safeText(brand.footer_copyright);
       footerCopyright.classList.remove("hidden");
