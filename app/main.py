@@ -378,6 +378,33 @@ def _resolve_microsoft_user(email: str, microsoft_oid: str, microsoft_tenant_id:
     if user:
         existing_oid = (user.get("microsoft_oid") or "").strip()
         existing_tid = (user.get("microsoft_tenant_id") or "").strip()
+        mismatch_oid = bool(existing_oid and existing_oid != microsoft_oid)
+        mismatch_tenant = bool(existing_tid and microsoft_tenant_id and existing_tid != microsoft_tenant_id)
+
+        # Temporary launch fallback: allow relinking stale Microsoft identity bindings
+        # only when the email domain is already allowlisted and the feature flag is enabled.
+        if (mismatch_oid or mismatch_tenant) and settings.microsoft_allow_domain_fallback and allowed_email_domain(email):
+            if not link_user_microsoft_account(int(user["id"]), microsoft_oid, microsoft_tenant_id):
+                raise HTTPException(status_code=500, detail="Failed to relink Microsoft account")
+            log_audit_event(
+                int(user["id"]),
+                "auth.login.microsoft.relinked_via_domain_fallback",
+                None,
+                json.dumps(
+                    {
+                        "email": email,
+                        "old_oid": existing_oid,
+                        "new_oid": microsoft_oid,
+                        "old_tenant_id": existing_tid or None,
+                        "new_tenant_id": microsoft_tenant_id,
+                    }
+                ),
+            )
+            refreshed_user = get_user_by_id(int(user["id"]))
+            if not refreshed_user:
+                raise HTTPException(status_code=500, detail="Relinked user could not be reloaded")
+            return refreshed_user
+
         if existing_oid:
             if existing_oid != microsoft_oid:
                 raise HTTPException(status_code=403, detail="Microsoft account does not match the linked TicketGal user")
