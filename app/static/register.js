@@ -102,6 +102,23 @@ function applyBranding(branding) {
   if (branding.product_name) {
     document.title = `${safeText(branding.product_name)} - Register`;
   }
+
+  const footerHelp = document.getElementById("footer-help");
+  const footerHelpText = document.getElementById("footer-help-text");
+  const footerHelpEmail = document.getElementById("footer-help-email");
+  const footerCopyright = document.getElementById("footer-copyright");
+  const hasFooterHelp = branding.footer_help_text || branding.footer_help_email;
+  if (footerHelp) footerHelp.classList.toggle("hidden", !hasFooterHelp);
+  if (footerHelpText) footerHelpText.textContent = safeText(branding.footer_help_text);
+  if (footerHelpEmail && branding.footer_help_email) {
+    const email = safeText(branding.footer_help_email).trim();
+    footerHelpEmail.textContent = email;
+    footerHelpEmail.href = `mailto:${email}`;
+  }
+  if (footerCopyright && branding.footer_copyright) {
+    footerCopyright.textContent = safeText(branding.footer_copyright);
+    footerCopyright.classList.remove("hidden");
+  }
 }
 
 async function loadBranding() {

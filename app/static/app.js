@@ -513,6 +513,23 @@ function applyBranding(branding) {
     brandHeroTitle.textContent = safeText(branding.operations_title);
   }
 
+  const footerHelp = document.getElementById("footer-help");
+  const footerHelpText = document.getElementById("footer-help-text");
+  const footerHelpEmail = document.getElementById("footer-help-email");
+  const footerCopyright = document.getElementById("footer-copyright");
+  const hasFooterHelp = branding.footer_help_text || branding.footer_help_email;
+  if (footerHelp) footerHelp.classList.toggle("hidden", !hasFooterHelp);
+  if (footerHelpText) footerHelpText.textContent = safeText(branding.footer_help_text);
+  if (footerHelpEmail && branding.footer_help_email) {
+    const email = safeText(branding.footer_help_email).trim();
+    footerHelpEmail.textContent = email;
+    footerHelpEmail.href = `mailto:${email}`;
+  }
+  if (footerCopyright && branding.footer_copyright) {
+    footerCopyright.textContent = safeText(branding.footer_copyright);
+    footerCopyright.classList.remove("hidden");
+  }
+
   const productName = safeText(branding.product_name).trim();
   if (productName) {
     setBaseDocumentTitle(productName);

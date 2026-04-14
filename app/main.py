@@ -1166,6 +1166,9 @@ def get_branding() -> Dict[str, Any]:
         "auth_description": settings.brand_auth_description,
         "register_description": settings.brand_register_description,
         "allowed_domains_note": allowed_domains_note,
+        "footer_help_text": settings.brand_footer_help_text,
+        "footer_help_email": settings.brand_footer_help_email,
+        "footer_copyright": settings.brand_footer_copyright,
     }
 
 

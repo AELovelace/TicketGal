@@ -116,6 +116,9 @@ class Settings:
             "Create a new account. Admin approval is required before first login.",
         )
         self.brand_allowed_domains_label = os.getenv("BRAND_ALLOWED_DOMAINS_LABEL", "Allowed domains")
+        self.brand_footer_help_text = os.getenv("BRAND_FOOTER_HELP_TEXT", "").strip()
+        self.brand_footer_help_email = os.getenv("BRAND_FOOTER_HELP_EMAIL", "").strip()
+        self.brand_footer_copyright = os.getenv("BRAND_FOOTER_COPYRIGHT", "").strip()
         self.admin_email = os.getenv("ADMIN_EMAIL", "")
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
