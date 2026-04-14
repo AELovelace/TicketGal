@@ -8,10 +8,25 @@ body {
   margin: 0;
   font-family: "Montserrat", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   color: var(--ink);
+  position: relative;
+  min-height: 100vh;
   background:
     linear-gradient(135deg, rgba(198, 167, 93, 0.14), transparent 40%),
     radial-gradient(circle at 20% 0%, rgba(31, 63, 102, 0.08), transparent 50%),
     var(--paper);
+}
+
+body::after {
+  content: "Ticketgal 0.9.0 - ELW Designs";
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.5rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: rgba(25, 36, 50, 0.65);
+  z-index: 20;
+  pointer-events: none;
+  user-select: none;
 }
 
 .brand-strip {
