@@ -146,6 +146,7 @@ class Settings:
             ).split(",")
             if scope.strip()
         ]
+        self.microsoft_allow_domain_fallback = _flag("MICROSOFT_ALLOW_DOMAIN_FALLBACK", "0")
         require_mfa_flag = os.getenv("MICROSOFT_REQUIRE_MFA", "0").strip().lower()
         self.microsoft_require_mfa = require_mfa_flag in {"1", "true", "yes"}
         self.microsoft_enabled = bool(self.microsoft_client_id and self.microsoft_client_secret)

@@ -1316,8 +1316,16 @@ def microsoft_callback(
     if not microsoft_oid:
         return _build_auth_redirect(message="Microsoft account did not provide a stable identity")
     if not _microsoft_tenant_allowed(microsoft_tenant_id):
-        log_audit_event(None, "auth.login.microsoft.failed", None, json.dumps({"reason": "tenant_not_allowed", "tenant_id": microsoft_tenant_id, "ip": _get_client_ip(request)}))
-        return _build_auth_redirect()
+        if settings.microsoft_allow_domain_fallback and allowed_email_domain(email):
+            log_audit_event(
+                None,
+                "auth.login.microsoft.tenant_fallback_used",
+                None,
+                json.dumps({"email": email, "tenant_id": microsoft_tenant_id, "ip": _get_client_ip(request)}),
+            )
+        else:
+            log_audit_event(None, "auth.login.microsoft.failed", None, json.dumps({"reason": "tenant_not_allowed", "tenant_id": microsoft_tenant_id, "ip": _get_client_ip(request)}))
+            return _build_auth_redirect()
 
     try:
         user = _resolve_microsoft_user(email, microsoft_oid, microsoft_tenant_id)
