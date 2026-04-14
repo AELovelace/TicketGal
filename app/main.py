@@ -290,7 +290,7 @@ def _microsoft_tenant_allowed(microsoft_tenant_id: Optional[str]) -> bool:
         return True
     if not microsoft_tenant_id:
         return False
-    return microsoft_tenant_id in allowed_tenants
+    return microsoft_tenant_id.strip().lower() in allowed_tenants
 
 
 def _clear_microsoft_oauth_cookies(response: Response) -> None:

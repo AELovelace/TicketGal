@@ -119,7 +119,7 @@ class Settings:
         self.microsoft_client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "")
         self.microsoft_tenant_id = os.getenv("MICROSOFT_TENANT_ID", "common").strip() or "common"
         self.allowed_microsoft_tenant_ids = [
-            tenant_id.strip()
+            tenant_id.strip().lower()
             for tenant_id in os.getenv("ALLOWED_MICROSOFT_TENANT_IDS", "").split(",")
             if tenant_id.strip()
         ]
