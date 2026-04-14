@@ -71,6 +71,9 @@ class Settings:
         self.transactions_db_path = str(
             _resolve_path(os.getenv("TICKET_TRANSACTIONS_DB_PATH", str(Path(self.db_dir) / "ticketgal_transactions.db")))
         )
+        self.knowledgebase_db_path = str(
+            _resolve_path(os.getenv("KNOWLEDGEBASE_DB_PATH", str(Path(self.db_dir) / "ticketgal_knowledgebase.db")))
+        )
         self.data_encryption_key = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
         self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "ticketgal_session")
         self.session_hours = int(os.getenv("SESSION_HOURS", "12"))
@@ -98,6 +101,10 @@ class Settings:
         self.brand_operations_title = os.getenv("BRAND_OPERATIONS_TITLE", f"{self.brand_product_name} Operations Desk")
         self.brand_top_banner_left = os.getenv("BRAND_TOP_BANNER_LEFT", "YOUR REGION")
         self.brand_top_banner_right = os.getenv("BRAND_TOP_BANNER_RIGHT", "YOUR ORGANIZATION")
+        self.brand_top_banner_left_image = os.getenv("BRAND_TOP_BANNER_LEFT_IMAGE", "").strip()
+        self.brand_top_banner_left_image_alt = os.getenv("BRAND_TOP_BANNER_LEFT_IMAGE_ALT", "").strip()
+        self.brand_top_banner_right_image = os.getenv("BRAND_TOP_BANNER_RIGHT_IMAGE", "").strip()
+        self.brand_top_banner_right_image_alt = os.getenv("BRAND_TOP_BANNER_RIGHT_IMAGE_ALT", "").strip()
         self.brand_auth_eyebrow = os.getenv("BRAND_AUTH_EYEBROW", "SERVICE OPERATIONS")
         self.brand_hero_eyebrow = os.getenv("BRAND_HERO_EYEBROW", "IT TEAM")
         self.brand_auth_description = os.getenv(

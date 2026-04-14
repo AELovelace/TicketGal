@@ -9,7 +9,9 @@ const localLoginDivider = document.getElementById("local-login-divider");
 const localLoginBtn = document.getElementById("local-login-btn");
 const registerLink = document.getElementById("register-link");
 
+const brandStrip = document.getElementById("brand-strip");
 const brandTopLeft = document.getElementById("brand-top-left");
+const brandTopSeparator = document.getElementById("brand-top-separator");
 const brandTopRight = document.getElementById("brand-top-right");
 const brandAuthEyebrow = document.getElementById("brand-auth-eyebrow");
 const brandAuthTitle = document.getElementById("brand-auth-title");
@@ -21,6 +23,36 @@ let microsoftAuthEnabled = false;
 function safeText(value) {
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+function normalizeBrandImageSrc(value) {
+  const src = safeText(value).trim();
+  if (!src) return "";
+  if (/^\//.test(src) || /^https?:\/\//i.test(src)) {
+    return src;
+  }
+  return "";
+}
+
+function applyBrandStripSlot(slotEl, fallbackText, imageSrc, imageAlt) {
+  if (!slotEl) return false;
+
+  const src = normalizeBrandImageSrc(imageSrc);
+  slotEl.textContent = "";
+
+  if (src) {
+    const logo = document.createElement("img");
+    logo.className = "brand-strip-logo";
+    logo.src = src;
+    logo.alt = safeText(imageAlt).trim() || safeText(fallbackText).trim() || "Brand logo";
+    slotEl.classList.add("brand-strip-slot-image");
+    slotEl.appendChild(logo);
+    return true;
+  }
+
+  slotEl.classList.remove("brand-strip-slot-image");
+  slotEl.textContent = safeText(fallbackText);
+  return false;
 }
 
 function applyAuthModeVisibility() {
@@ -62,8 +94,27 @@ async function loadBranding() {
     if (!result.ok) return;
 
     const brand = await result.json();
-    if (brandTopLeft && brand.top_banner_left) brandTopLeft.textContent = safeText(brand.top_banner_left);
-    if (brandTopRight && brand.top_banner_right) brandTopRight.textContent = safeText(brand.top_banner_right);
+    const leftIsImage = applyBrandStripSlot(
+      brandTopLeft,
+      brand.top_banner_left,
+      brand.top_banner_left_image,
+      brand.top_banner_left_image_alt,
+    );
+    const rightIsImage = applyBrandStripSlot(
+      brandTopRight,
+      brand.top_banner_right,
+      brand.top_banner_right_image,
+      brand.top_banner_right_image_alt,
+    );
+    const hasAnyImage = leftIsImage || rightIsImage;
+
+    if (brandTopSeparator) {
+      brandTopSeparator.classList.toggle("hidden", hasAnyImage);
+    }
+    if (brandStrip) {
+      brandStrip.classList.toggle("brand-strip-has-image", hasAnyImage);
+    }
+
     if (brandAuthEyebrow && brand.auth_eyebrow) brandAuthEyebrow.textContent = safeText(brand.auth_eyebrow);
     if (brandAuthTitle && brand.portal_title) brandAuthTitle.textContent = safeText(brand.portal_title);
     if (brandAuthDescription && brand.auth_description) brandAuthDescription.textContent = safeText(brand.auth_description);

@@ -1,12 +1,49 @@
 const registerForm = document.getElementById("register-form");
 const registerStatus = document.getElementById("register-status");
+const brandStrip = document.getElementById("brand-strip");
 const brandTopLeft = document.getElementById("brand-top-left");
+const brandTopSeparator = document.getElementById("brand-top-separator");
 const brandTopRight = document.getElementById("brand-top-right");
 const brandAuthEyebrow = document.getElementById("brand-auth-eyebrow");
 const brandAuthTitle = document.getElementById("brand-auth-title");
 const brandRegisterDescription = document.getElementById("brand-register-description");
 const registerAllowedDomainsNote = document.getElementById("register-allowed-domains-note");
 let userPasswordAuthEnabled = true;
+
+function safeText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function normalizeBrandImageSrc(value) {
+  const src = safeText(value).trim();
+  if (!src) return "";
+  if (/^\//.test(src) || /^https?:\/\//i.test(src)) {
+    return src;
+  }
+  return "";
+}
+
+function applyBrandStripSlot(slotEl, fallbackText, imageSrc, imageAlt) {
+  if (!slotEl) return false;
+
+  const src = normalizeBrandImageSrc(imageSrc);
+  slotEl.textContent = "";
+
+  if (src) {
+    const logo = document.createElement("img");
+    logo.className = "brand-strip-logo";
+    logo.src = src;
+    logo.alt = safeText(imageAlt).trim() || safeText(fallbackText).trim() || "Brand logo";
+    slotEl.classList.add("brand-strip-slot-image");
+    slotEl.appendChild(logo);
+    return true;
+  }
+
+  slotEl.classList.remove("brand-strip-slot-image");
+  slotEl.textContent = safeText(fallbackText);
+  return false;
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "include", ...options });
@@ -28,27 +65,42 @@ async function api(path, options = {}) {
 function applyBranding(branding) {
   if (!branding || typeof branding !== "object") return;
 
-  if (brandTopLeft && branding.top_banner_left) {
-    brandTopLeft.textContent = String(branding.top_banner_left);
+  const leftIsImage = applyBrandStripSlot(
+    brandTopLeft,
+    branding.top_banner_left,
+    branding.top_banner_left_image,
+    branding.top_banner_left_image_alt,
+  );
+  const rightIsImage = applyBrandStripSlot(
+    brandTopRight,
+    branding.top_banner_right,
+    branding.top_banner_right_image,
+    branding.top_banner_right_image_alt,
+  );
+  const hasAnyImage = leftIsImage || rightIsImage;
+
+  if (brandTopSeparator) {
+    brandTopSeparator.classList.toggle("hidden", hasAnyImage);
   }
-  if (brandTopRight && branding.top_banner_right) {
-    brandTopRight.textContent = String(branding.top_banner_right);
+  if (brandStrip) {
+    brandStrip.classList.toggle("brand-strip-has-image", hasAnyImage);
   }
+
   if (brandAuthEyebrow && branding.auth_eyebrow) {
-    brandAuthEyebrow.textContent = String(branding.auth_eyebrow);
+    brandAuthEyebrow.textContent = safeText(branding.auth_eyebrow);
   }
   if (brandAuthTitle && branding.portal_title) {
-    brandAuthTitle.textContent = String(branding.portal_title);
+    brandAuthTitle.textContent = safeText(branding.portal_title);
   }
   if (brandRegisterDescription && branding.register_description) {
-    brandRegisterDescription.textContent = String(branding.register_description);
+    brandRegisterDescription.textContent = safeText(branding.register_description);
   }
   if (registerAllowedDomainsNote && branding.allowed_domains_note) {
-    registerAllowedDomainsNote.textContent = String(branding.allowed_domains_note);
+    registerAllowedDomainsNote.textContent = safeText(branding.allowed_domains_note);
   }
 
   if (branding.product_name) {
-    document.title = `${String(branding.product_name)} - Register`;
+    document.title = `${safeText(branding.product_name)} - Register`;
   }
 }
 

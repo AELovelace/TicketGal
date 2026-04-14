@@ -132,6 +132,18 @@ def get_transactions_conn() -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 
+@contextmanager
+def get_kb_conn() -> Generator[sqlite3.Connection, None, None]:
+    _ensure_database_parent(settings.knowledgebase_db_path)
+    conn = sqlite3.connect(settings.knowledgebase_db_path)
+    conn.row_factory = sqlite3.Row
+    _apply_common_pragmas(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _create_ticket_cache_schema() -> None:
     with get_ticket_cache_conn() as conn:
         conn.execute(
@@ -459,7 +471,7 @@ def _backfill_ticket_cache_dates() -> None:
 
 
 def _create_knowledgebase_schema() -> None:
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS knowledgebase_articles (
@@ -473,9 +485,7 @@ def _create_knowledgebase_schema() -> None:
                 updated_by_user_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
-                FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+                is_active INTEGER NOT NULL DEFAULT 1
             )
             """
         )
@@ -504,10 +514,7 @@ def _create_knowledgebase_schema() -> None:
                 user_id INTEGER NOT NULL,
                 granted_at TEXT NOT NULL,
                 granted_by_user_id INTEGER,
-                PRIMARY KEY (article_id, user_id),
-                FOREIGN KEY (article_id) REFERENCES knowledgebase_articles(id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (granted_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+                PRIMARY KEY (article_id, user_id)
             )
             """
         )
@@ -521,7 +528,7 @@ def _create_knowledgebase_schema() -> None:
 
 
 def _create_kb_access_audit_schema() -> None:
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS kb_access_audit (
@@ -532,9 +539,7 @@ def _create_kb_access_audit_schema() -> None:
                 article_title TEXT,
                 access_result TEXT NOT NULL CHECK(access_result IN ('allowed', 'denied')),
                 metadata_json TEXT,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
-                FOREIGN KEY (article_id) REFERENCES knowledgebase_articles(id) ON DELETE SET NULL
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -565,10 +570,172 @@ def _create_kb_access_audit_schema() -> None:
         conn.commit()
 
 
+def _legacy_knowledgebase_tables_exist_in_main_db() -> bool:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('knowledgebase_articles', 'kb_article_user_whitelist', 'kb_access_audit')
+            """
+        ).fetchall()
+    return bool(rows)
+
+
+def _migrate_legacy_knowledgebase_to_dedicated_db() -> None:
+    if not _legacy_knowledgebase_tables_exist_in_main_db():
+        return
+
+    articles: List[sqlite3.Row] = []
+    whitelist_rows: List[sqlite3.Row] = []
+    audit_rows: List[sqlite3.Row] = []
+
+    with get_conn() as conn:
+        has_articles = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledgebase_articles'"
+        ).fetchone() is not None
+        has_whitelist = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_article_user_whitelist'"
+        ).fetchone() is not None
+        has_audit = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_access_audit'"
+        ).fetchone() is not None
+
+        if has_articles:
+            articles = conn.execute("SELECT * FROM knowledgebase_articles").fetchall()
+        if has_whitelist:
+            whitelist_rows = conn.execute("SELECT * FROM kb_article_user_whitelist").fetchall()
+        if has_audit:
+            audit_rows = conn.execute("SELECT * FROM kb_access_audit").fetchall()
+
+    with get_kb_conn() as kb_conn:
+        if articles:
+            kb_conn.executemany(
+                """
+                INSERT INTO knowledgebase_articles(
+                    id,
+                    slug,
+                    title,
+                    visibility_type,
+                    restricted_to_customer_id,
+                    file_path,
+                    created_by_user_id,
+                    updated_by_user_id,
+                    created_at,
+                    updated_at,
+                    is_active
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    slug = excluded.slug,
+                    title = excluded.title,
+                    visibility_type = excluded.visibility_type,
+                    restricted_to_customer_id = excluded.restricted_to_customer_id,
+                    file_path = excluded.file_path,
+                    created_by_user_id = excluded.created_by_user_id,
+                    updated_by_user_id = excluded.updated_by_user_id,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    is_active = excluded.is_active
+                """,
+                [
+                    (
+                        row["id"],
+                        row["slug"],
+                        row["title"],
+                        row["visibility_type"],
+                        row["restricted_to_customer_id"],
+                        row["file_path"],
+                        row["created_by_user_id"],
+                        row["updated_by_user_id"],
+                        row["created_at"],
+                        row["updated_at"],
+                        row["is_active"],
+                    )
+                    for row in articles
+                ],
+            )
+        if whitelist_rows:
+            kb_conn.executemany(
+                """
+                INSERT OR REPLACE INTO kb_article_user_whitelist(
+                    article_id,
+                    user_id,
+                    granted_at,
+                    granted_by_user_id
+                )
+                VALUES(?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["article_id"],
+                        row["user_id"],
+                        row["granted_at"],
+                        row["granted_by_user_id"],
+                    )
+                    for row in whitelist_rows
+                ],
+            )
+        if audit_rows:
+            kb_conn.executemany(
+                """
+                INSERT INTO kb_access_audit(
+                    id,
+                    actor_user_id,
+                    article_id,
+                    article_slug,
+                    article_title,
+                    access_result,
+                    metadata_json,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    actor_user_id = excluded.actor_user_id,
+                    article_id = excluded.article_id,
+                    article_slug = excluded.article_slug,
+                    article_title = excluded.article_title,
+                    access_result = excluded.access_result,
+                    metadata_json = excluded.metadata_json,
+                    created_at = excluded.created_at
+                """,
+                [
+                    (
+                        row["id"],
+                        row["actor_user_id"],
+                        row["article_id"],
+                        row["article_slug"],
+                        row["article_title"],
+                        row["access_result"],
+                        row["metadata_json"],
+                        row["created_at"],
+                    )
+                    for row in audit_rows
+                ],
+            )
+        kb_conn.commit()
+
+    with get_conn() as conn:
+        conn.execute("DROP TABLE IF EXISTS kb_article_user_whitelist")
+        conn.execute("DROP TABLE IF EXISTS kb_access_audit")
+        conn.execute("DROP TABLE IF EXISTS knowledgebase_articles")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_articles_visibility")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_articles_customer")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_articles_active")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_whitelist_user")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_access_audit_created_at")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_access_audit_actor")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_access_audit_article")
+        conn.execute("DROP INDEX IF EXISTS idx_kb_access_audit_result")
+        conn.commit()
+
+
 def init_db() -> None:
     _ensure_database_parent(settings.db_path)
     _ensure_database_parent(settings.ticket_cache_db_path)
     _ensure_database_parent(settings.transactions_db_path)
+    _ensure_database_parent(settings.knowledgebase_db_path)
     _create_ticket_cache_schema()
     _backfill_ticket_cache_dates()
     _backfill_status_history()
@@ -577,6 +744,7 @@ def init_db() -> None:
     _migrate_legacy_ticket_cache_to_dedicated_db()
     _create_knowledgebase_schema()
     _create_kb_access_audit_schema()
+    _migrate_legacy_knowledgebase_to_dedicated_db()
 
     with get_conn() as conn:
         conn.execute(
@@ -2072,7 +2240,7 @@ def log_kb_access_event(
     access_result: str,
     metadata_json: Optional[str] = None,
 ) -> None:
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         conn.execute(
             """
             INSERT INTO kb_access_audit(
@@ -2127,12 +2295,11 @@ def get_kb_access_audit_page(
     count_params = list(params)
     page_params = list(params) + [limit, offset]
 
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         total_row = conn.execute(
             f"""
             SELECT COUNT(*) AS cnt
             FROM kb_access_audit k
-            LEFT JOIN users actor ON actor.id = k.actor_user_id
             {where_clause}
             """,
             count_params,
@@ -2144,7 +2311,6 @@ def get_kb_access_audit_page(
             SELECT
                 k.id,
                 k.actor_user_id,
-                actor.email AS actor_email,
                 k.article_id,
                 k.article_slug,
                 k.article_title,
@@ -2152,7 +2318,6 @@ def get_kb_access_audit_page(
                 k.metadata_json,
                 k.created_at
             FROM kb_access_audit k
-            LEFT JOIN users actor ON actor.id = k.actor_user_id
             {where_clause}
             ORDER BY k.id DESC
             LIMIT ? OFFSET ?
@@ -2162,10 +2327,16 @@ def get_kb_access_audit_page(
 
     items = []
     for row in rows:
+        actor_email = None
+        actor_id = row["actor_user_id"]
+        if actor_id is not None:
+            actor = get_user_by_id(int(actor_id))
+            if actor:
+                actor_email = actor.get("email")
         items.append({
             "id": row["id"],
             "actor_user_id": row["actor_user_id"],
-            "actor_email": row["actor_email"],
+            "actor_email": actor_email,
             "article_id": row["article_id"],
             "article_slug": row["article_slug"],
             "article_title": row["article_title"],
@@ -2479,7 +2650,7 @@ def create_kb_article(
     """Create a new knowledgebase article and write markdown to disk."""
     now = _utc_now_iso()
     
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         try:
             cursor = conn.execute(
                 """
@@ -2512,7 +2683,7 @@ def create_kb_article(
 
 def get_kb_article_by_id(article_id: int) -> Optional[Dict[str, Any]]:
     """Fetch knowledgebase article by ID."""
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         row = conn.execute(
             """
             SELECT * FROM knowledgebase_articles
@@ -2529,7 +2700,7 @@ def get_kb_article_by_id(article_id: int) -> Optional[Dict[str, Any]]:
 
 def get_kb_article_by_slug(slug: str) -> Optional[Dict[str, Any]]:
     """Fetch knowledgebase article by slug."""
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         row = conn.execute(
             """
             SELECT * FROM knowledgebase_articles
@@ -2561,7 +2732,7 @@ def list_kb_articles(visibility_type: Optional[str] = None, include_inactive: bo
     
     query += " ORDER BY created_at DESC"
     
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         rows = conn.execute(query, params).fetchall()
     
     return [dict(row) for row in rows]
@@ -2578,7 +2749,7 @@ def upsert_kb_article_from_scan(
     """Insert or refresh a knowledgebase article discovered on disk."""
     now = _utc_now_iso()
 
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         conn.execute(
             """
             INSERT INTO knowledgebase_articles(
@@ -2626,7 +2797,7 @@ def deactivate_missing_kb_articles(active_slugs: List[str], updated_by_user_id: 
     """Soft-delete KB rows that are not present in the latest filesystem scan."""
     now = _utc_now_iso()
 
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         if active_slugs:
             placeholders = ",".join("?" for _ in active_slugs)
             cursor = conn.execute(
@@ -2688,7 +2859,7 @@ def update_kb_article(
     
     params.append(article_id)
     
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         cursor = conn.execute(
             f"UPDATE knowledgebase_articles SET {', '.join(updates)} WHERE id = ?",
             params,
@@ -2700,7 +2871,7 @@ def update_kb_article(
 
 def delete_kb_article(article_id: int) -> bool:
     """Soft delete knowledgebase article."""
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         cursor = conn.execute(
             "UPDATE knowledgebase_articles SET is_active = 0, updated_at = ? WHERE id = ?",
             (_utc_now_iso(), article_id),
@@ -2714,7 +2885,7 @@ def grant_kb_article_access(article_id: int, user_id: int, granted_by_user_id: i
     """Grant a user access to an article via allowlist."""
     now = _utc_now_iso()
     
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         try:
             conn.execute(
                 """
@@ -2734,7 +2905,7 @@ def grant_kb_article_access(article_id: int, user_id: int, granted_by_user_id: i
 
 def revoke_kb_article_access(article_id: int, user_id: int) -> bool:
     """Revoke a user's access to an article."""
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         cursor = conn.execute(
             "DELETE FROM kb_article_user_whitelist WHERE article_id = ? AND user_id = ?",
             (article_id, user_id),
@@ -2746,7 +2917,7 @@ def revoke_kb_article_access(article_id: int, user_id: int) -> bool:
 
 def get_kb_article_whitelist(article_id: int) -> List[Dict[str, Any]]:
     """Get all users with allowlist access to an article."""
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         rows = conn.execute(
             """
             SELECT * FROM kb_article_user_whitelist
@@ -2761,7 +2932,7 @@ def get_kb_article_whitelist(article_id: int) -> List[Dict[str, Any]]:
 
 def user_has_kb_article_allowlist_access(article_id: int, user_id: int) -> bool:
     """Check if user is on the allowlist for an article."""
-    with get_conn() as conn:
+    with get_kb_conn() as conn:
         row = conn.execute(
             "SELECT 1 FROM kb_article_user_whitelist WHERE article_id = ? AND user_id = ?",
             (article_id, user_id),

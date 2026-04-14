@@ -156,6 +156,12 @@ Branding values are loaded from a separate file so deployments can be re-skinned
 
 The UI reads branding through `GET /api/branding`.
 
+Top banner supports either text or logos on each side:
+
+- `BRAND_TOP_BANNER_LEFT` and `BRAND_TOP_BANNER_RIGHT` set text values.
+- `BRAND_TOP_BANNER_LEFT_IMAGE` and `BRAND_TOP_BANNER_RIGHT_IMAGE` can replace either side with an image URL (for local assets, use `/static/...`).
+- `BRAND_TOP_BANNER_LEFT_IMAGE_ALT` and `BRAND_TOP_BANNER_RIGHT_IMAGE_ALT` set accessible alt text for those logos.
+
 ## AI Assist
 
 Admin ticket creation can call `POST /api/tickets/ai-assist` to rewrite messy intake text into cleaner helpdesk language and infer title, priority, and type.

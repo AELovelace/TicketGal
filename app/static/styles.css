@@ -22,6 +22,34 @@ body {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   padding: 0.55rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.brand-strip-slot {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.brand-strip-slot-image {
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.brand-strip-logo {
+  display: block;
+  max-height: 34px;
+  width: auto;
+  max-width: min(40vw, 240px);
+  object-fit: contain;
+}
+
+.brand-strip-has-image {
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
 }
 
 .brand-strip .dot {
@@ -811,6 +839,16 @@ body.ticket-viewer-standalone #ticket-viewer .ticket-viewer-panel {
 }
 
 @media (max-width: 860px) {
+  .brand-strip {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .brand-strip-logo {
+    max-height: 30px;
+    max-width: min(70vw, 220px);
+  }
+
   .ticket-search-field,
   .ticket-search-field input {
     min-width: 100%;
