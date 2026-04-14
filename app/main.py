@@ -1317,7 +1317,7 @@ def microsoft_callback(
         return _build_auth_redirect(message="Microsoft account did not provide a stable identity")
     if not _microsoft_tenant_allowed(microsoft_tenant_id):
         log_audit_event(None, "auth.login.microsoft.failed", None, json.dumps({"reason": "tenant_not_allowed", "tenant_id": microsoft_tenant_id, "ip": _get_client_ip(request)}))
-        return _build_auth_redirect(message="Microsoft tenant is not allowed for this portal")
+        return _build_auth_redirect()
 
     try:
         user = _resolve_microsoft_user(email, microsoft_oid, microsoft_tenant_id)
