@@ -43,6 +43,7 @@ from .database import (
     create_session,
     create_user,
     delete_kb_article,
+    deactivate_missing_kb_articles,
     delete_user,
     delete_session,
     get_kb_article_by_slug,
@@ -80,6 +81,7 @@ from .database import (
     seed_admin,
     set_signups_enabled,
     set_user_theme_enabled,
+    upsert_kb_article_from_scan,
     mark_transaction_completed,
     mark_transaction_retry,
     get_audit_log_page,
@@ -310,6 +312,43 @@ def _build_auth_redirect(message: Optional[str] = None, success: Optional[str] =
     response = RedirectResponse(url=url, status_code=303)
     _clear_microsoft_oauth_cookies(response)
     return response
+
+
+def _kb_title_from_markdown(path: Path) -> str:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if line.startswith("#"):
+                    heading = line.lstrip("#").strip()
+                    if heading:
+                        return heading[:200]
+    except OSError:
+        pass
+
+    fallback = path.stem.replace("-", " ").replace("_", " ").strip()
+    return (fallback.title() or "Untitled Article")[:200]
+
+
+def _parse_company_assigned_customer_id(article_path: Path, relative_parts: List[str]) -> Optional[int]:
+    if len(relative_parts) >= 2 and relative_parts[1].isdigit():
+        return int(relative_parts[1])
+
+    stem = article_path.stem
+    match = re.match(r"^(\d+)[-_]", stem)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def _build_kb_slug_from_relative_path(relative_parts: List[str]) -> str:
+    if len(relative_parts) < 2:
+        return ""
+    stem_parts = list(relative_parts[1:])
+    stem_parts[-1] = Path(stem_parts[-1]).stem
+    raw_slug = "-".join(part for part in stem_parts if part)
+    return _generate_kb_slug(raw_slug)
 
 
 def _extract_microsoft_email(claims: Dict[str, Any]) -> str:
@@ -1373,6 +1412,87 @@ def toggle_signups(
     set_signups_enabled(new_state)
     log_audit_event(int(user["id"]), "admin.signups.toggled", None, json.dumps({"enabled": new_state}))
     return {"signups_enabled": new_state, "message": "Signups " + ("enabled" if new_state else "disabled")}
+
+
+@app.post("/api/admin/rescan-knowledgebase")
+async def admin_rescan_knowledgebase(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Rescan markdown files in app/knowledgebase and refresh KB DB metadata (admin only)."""
+    require_admin(user)
+
+    kb_root = Path("app/knowledgebase")
+    visibility_dirs = ["public", "admin_only", "company_assigned", "user_allowlist"]
+
+    known_articles = {str(a.get("slug")): a for a in list_kb_articles(include_inactive=True)}
+    scanned_slugs: List[str] = []
+    scanned_slug_set = set()
+    inserted = 0
+    updated = 0
+    reactivated = 0
+    skipped_company_assigned = 0
+    skipped_duplicate_slug = 0
+
+    for visibility in visibility_dirs:
+        visibility_root = kb_root / visibility
+        if not visibility_root.exists() or not visibility_root.is_dir():
+            continue
+
+        for file_path in sorted(visibility_root.rglob("*.md")):
+            if not file_path.is_file():
+                continue
+
+            relative_parts = list(file_path.relative_to(kb_root).parts)
+            slug = _build_kb_slug_from_relative_path(relative_parts)
+            if not slug:
+                continue
+
+            if slug in scanned_slug_set:
+                skipped_duplicate_slug += 1
+                continue
+
+            restricted_to_customer_id: Optional[int] = None
+            if visibility == "company_assigned":
+                restricted_to_customer_id = _parse_company_assigned_customer_id(file_path, relative_parts)
+                if restricted_to_customer_id is None:
+                    skipped_company_assigned += 1
+                    continue
+
+            existing = known_articles.get(slug)
+            if existing is None:
+                inserted += 1
+            else:
+                updated += 1
+                if not bool(existing.get("is_active")):
+                    reactivated += 1
+
+            upsert_kb_article_from_scan(
+                slug=slug,
+                title=_kb_title_from_markdown(file_path),
+                visibility_type=visibility,
+                file_path=str(file_path.as_posix()),
+                restricted_to_customer_id=restricted_to_customer_id,
+                updated_by_user_id=int(user["id"]),
+            )
+            scanned_slugs.append(slug)
+            scanned_slug_set.add(slug)
+
+    deactivated = deactivate_missing_kb_articles(scanned_slugs, updated_by_user_id=int(user["id"]))
+
+    details = {
+        "scanned_files": len(scanned_slugs),
+        "inserted": inserted,
+        "updated": updated,
+        "reactivated": reactivated,
+        "deactivated": deactivated,
+        "skipped_company_assigned_without_customer_id": skipped_company_assigned,
+        "skipped_duplicate_slug": skipped_duplicate_slug,
+    }
+    log_audit_event(int(user["id"]), "kb.rescan.completed", None, json.dumps(details))
+
+    return {
+        "status": "success",
+        "message": "Knowledgebase rescan complete",
+        **details,
+    }
 
 
 @app.post("/api/admin/sync-tickets-from-atera")

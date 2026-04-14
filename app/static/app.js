@@ -167,6 +167,8 @@ const adminCreateTicketModal = document.getElementById("admin-create-ticket-moda
 const adminCreateTicketModalClose = document.getElementById("admin-create-ticket-modal-close");
 const adminSyncTicketsBtn = document.getElementById("admin-sync-tickets-btn");
 const adminSyncTicketsStatus = document.getElementById("admin-sync-tickets-status");
+const adminRescanKbBtn = document.getElementById("admin-rescan-kb-btn");
+const adminRescanKbStatus = document.getElementById("admin-rescan-kb-status");
 
 let reportLoadedPeriod = null;
 let reportRequestSeq = 0;
@@ -203,6 +205,7 @@ let ticketViewerMode = "modal";
 let pendingTicketViewerLaunch = null;
 let pendingTicketViewerLaunchHandled = false;
 let isStandaloneTicketViewerWindow = false;
+let baseDocumentTitle = document.title;
 
 function getDismissedAlertIds() {
   try {
@@ -254,6 +257,27 @@ function dismissAlert(alertId) {
 function safeText(value) {
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+function setBaseDocumentTitle(value) {
+  const text = safeText(value).trim();
+  if (!text) return;
+  baseDocumentTitle = text;
+  if (!ticketViewer || ticketViewer.classList.contains("hidden")) {
+    document.title = text;
+  }
+}
+
+function restoreBaseDocumentTitle() {
+  document.title = baseDocumentTitle;
+}
+
+function setTicketViewerDocumentTitle({ ticketId = "", queueId = "", ticketTitle = "", queued = false } = {}) {
+  const idPart = queued
+    ? (safeText(queueId).trim() ? `Queued #${safeText(queueId).trim()}` : "Queued Ticket")
+    : (safeText(ticketId).trim() ? `#${safeText(ticketId).trim()}` : "Ticket");
+  const titlePart = safeText(ticketTitle).trim() || "(no title)";
+  document.title = `${idPart} - ${titlePart}`;
 }
 
 function readTicketViewerMode() {
@@ -444,7 +468,7 @@ function applyBranding(branding) {
 
   const productName = safeText(branding.product_name).trim();
   if (productName) {
-    document.title = productName;
+    setBaseDocumentTitle(productName);
   }
 }
 
@@ -1971,6 +1995,7 @@ function closeTicketViewer() {
   if (ticketViewerUpdate) ticketViewerUpdate.innerHTML = "";
   if (ticketViewerUpdateStatus) ticketViewerUpdateStatus.textContent = "";
   if (ticketViewerHistory) ticketViewerHistory.innerHTML = "";
+  restoreBaseDocumentTitle();
 }
 
 function closePasswordResetModal() {
@@ -2038,6 +2063,11 @@ async function openTicketViewer(ticketId) {
       Company: ${safeText(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
       End User: ${safeText(ticket.EndUserEmail || "")}
     `;
+    setTicketViewerDocumentTitle({
+      ticketId: safeText(ticket.TicketID || ticketId),
+      ticketTitle: safeText(ticket.TicketTitle),
+      queued: false,
+    });
 
     if (ticketViewerUpdate) {
       const heading = document.createElement("h3");
@@ -2123,6 +2153,7 @@ async function openTicketViewer(ticketId) {
   } catch (error) {
     ticketViewerMeta.innerHTML = "";
     ticketViewerHistory.innerHTML = `<div class=\"history-entry\">Failed to load history: ${safeText(error.message)}</div>`;
+    restoreBaseDocumentTitle();
   }
 }
 
@@ -2146,6 +2177,11 @@ async function openQueuedTicketViewer(queueId) {
       Company: ${safeText(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
       End User: ${safeText(ticket.EndUserEmail || "")}
     `;
+    setTicketViewerDocumentTitle({
+      queueId: safeText(queueId),
+      ticketTitle: safeText(ticket.TicketTitle),
+      queued: true,
+    });
 
     if (ticketViewerUpdate && currentUser?.role === "admin") {
       const heading = document.createElement("h3");
@@ -2194,6 +2230,7 @@ async function openQueuedTicketViewer(queueId) {
   } catch (error) {
     ticketViewerMeta.innerHTML = "";
     ticketViewerHistory.innerHTML = `<div class="history-entry">Failed to load queued ticket: ${safeText(error.message)}</div>`;
+    restoreBaseDocumentTitle();
   }
 }
 
@@ -3673,6 +3710,50 @@ async function syncTicketsFromAtera() {
   }
 }
 
+async function rescanKnowledgebaseFromDisk() {
+  if (!adminRescanKbBtn) return;
+
+  adminRescanKbBtn.disabled = true;
+  if (adminRescanKbStatus) {
+    adminRescanKbStatus.textContent = "Rescanning knowledgebase markdown files...";
+  }
+
+  try {
+    const result = await api("/api/admin/rescan-knowledgebase", {
+      method: "POST",
+    });
+
+    const scanned = Number(result?.scanned_files || 0);
+    const inserted = Number(result?.inserted || 0);
+    const updated = Number(result?.updated || 0);
+    const reactivated = Number(result?.reactivated || 0);
+    const deactivated = Number(result?.deactivated || 0);
+    const skippedCompanyAssigned = Number(result?.skipped_company_assigned_without_customer_id || 0);
+    const skippedDuplicateSlug = Number(result?.skipped_duplicate_slug || 0);
+
+    if (adminRescanKbStatus) {
+      adminRescanKbStatus.textContent =
+        `KB rescan complete. Scanned ${scanned}. Added ${inserted}, updated ${updated}, reactivated ${reactivated}, deactivated ${deactivated}.`
+        + (skippedCompanyAssigned > 0
+          ? ` Skipped ${skippedCompanyAssigned} company-assigned files without customer ID metadata.`
+          : "")
+        + (skippedDuplicateSlug > 0
+          ? ` Skipped ${skippedDuplicateSlug} files because their slugs conflicted with another scanned file.`
+          : "");
+    }
+
+    if (currentUser?.role === "admin") {
+      await loadKBArticles("admin");
+    }
+  } catch (error) {
+    if (adminRescanKbStatus) {
+      adminRescanKbStatus.textContent = `KB rescan failed: ${error.message}`;
+    }
+  } finally {
+    adminRescanKbBtn.disabled = false;
+  }
+}
+
 async function postUpdateFromRow(row, ticketId, isAdmin, statusTarget = null) {
   const comment = row.querySelector("[data-role='comment-text']");
   const techId = row.querySelector("[data-role='tech-id']");
@@ -3954,6 +4035,9 @@ if (reportAiSummaryEl) {
 }
 if (adminSyncTicketsBtn) {
   adminSyncTicketsBtn.addEventListener("click", syncTicketsFromAtera);
+}
+if (adminRescanKbBtn) {
+  adminRescanKbBtn.addEventListener("click", rescanKnowledgebaseFromDisk);
 }
 
 if (userStatusFilter) {

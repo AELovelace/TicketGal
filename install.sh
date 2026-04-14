@@ -79,7 +79,16 @@ else
     info "Running from install directory; skipping file copy."
 fi
 
-# ── 4. Python virtual environment & dependencies ──────────────
+# ── 4. Create runtime directories ────────────────────────────
+info "Creating runtime directories…"
+mkdir -p \
+    "${INSTALL_DIR}/app/db" \
+    "${INSTALL_DIR}/app/knowledgebase/admin_only" \
+    "${INSTALL_DIR}/app/knowledgebase/company_assigned" \
+    "${INSTALL_DIR}/app/knowledgebase/public"
+success "Runtime directories created."
+
+# ── 5. Python virtual environment & dependencies ──────────────
 info "Creating virtual environment at ${VENV_DIR}…"
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 
@@ -90,7 +99,7 @@ info "Installing Python dependencies from requirements.txt…"
 "${VENV_DIR}/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements.txt"
 success "Python dependencies installed."
 
-# ── 5. Create .env from template (skip if already present) ────
+# ── 6. Create .env from template (skip if already present) ────
 ENV_FILE="${INSTALL_DIR}/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
     info "Creating .env template at ${ENV_FILE}…"
@@ -149,11 +158,11 @@ else
     info ".env already exists – skipping template creation."
 fi
 
-# ── 6. Ensure start-prod.sh is executable ─────────────────────
+# ── 7. Ensure start-prod.sh is executable ─────────────────────
 chmod +x "${INSTALL_DIR}/start-prod.sh"
 chmod +x "${INSTALL_DIR}/scripts/install_nginx_modsecurity.sh"
 
-# ── 7. Fix ownership ──────────────────────────────────────────
+# ── 8. Fix ownership ──────────────────────────────────────────
 info "Setting ownership of ${INSTALL_DIR} to ${APP_USER}:${APP_GROUP}…"
 chown -R "${APP_USER}:${APP_GROUP}" "$INSTALL_DIR"
 
@@ -161,7 +170,7 @@ chown -R "${APP_USER}:${APP_GROUP}" "$INSTALL_DIR"
 chmod 600 "$ENV_FILE"
 success "Permissions set."
 
-# ── 8. Grant port-binding capability for optional low-port direct bind ──
+# ── 9. Grant port-binding capability for optional low-port direct bind ──
 PYTHON_EXECUTABLE="${VENV_DIR}/bin/python"
 if command -v setcap &>/dev/null; then
     info "Granting CAP_NET_BIND_SERVICE to Python executable for optional direct low-port bind…"
@@ -172,7 +181,7 @@ else
     setcap 'cap_net_bind_service=+ep' "$PYTHON_EXECUTABLE" || true
 fi
 
-# ── 9. Install & enable systemd service ──────────────────────
+# ── 10. Install & enable systemd service ─────────────────────
 info "Installing systemd service…"
 
 # Write the service file (derived from ticketgal.service in repo)

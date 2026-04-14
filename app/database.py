@@ -2567,6 +2567,95 @@ def list_kb_articles(visibility_type: Optional[str] = None, include_inactive: bo
     return [dict(row) for row in rows]
 
 
+def upsert_kb_article_from_scan(
+    slug: str,
+    title: str,
+    visibility_type: str,
+    file_path: str,
+    updated_by_user_id: int,
+    restricted_to_customer_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Insert or refresh a knowledgebase article discovered on disk."""
+    now = _utc_now_iso()
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO knowledgebase_articles(
+                slug, title, visibility_type, restricted_to_customer_id,
+                file_path, created_by_user_id, updated_by_user_id,
+                created_at, updated_at, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(slug) DO UPDATE SET
+                title = excluded.title,
+                visibility_type = excluded.visibility_type,
+                restricted_to_customer_id = excluded.restricted_to_customer_id,
+                file_path = excluded.file_path,
+                updated_by_user_id = excluded.updated_by_user_id,
+                updated_at = excluded.updated_at,
+                is_active = 1
+            """,
+            (
+                slug,
+                title,
+                visibility_type,
+                restricted_to_customer_id,
+                file_path,
+                updated_by_user_id,
+                updated_by_user_id,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT * FROM knowledgebase_articles
+            WHERE slug = ?
+            """,
+            (slug,),
+        ).fetchone()
+
+    if not row:
+        raise RuntimeError("Failed to upsert scanned knowledgebase article")
+    return dict(row)
+
+
+def deactivate_missing_kb_articles(active_slugs: List[str], updated_by_user_id: int) -> int:
+    """Soft-delete KB rows that are not present in the latest filesystem scan."""
+    now = _utc_now_iso()
+
+    with get_conn() as conn:
+        if active_slugs:
+            placeholders = ",".join("?" for _ in active_slugs)
+            cursor = conn.execute(
+                f"""
+                UPDATE knowledgebase_articles
+                SET is_active = 0,
+                    updated_by_user_id = ?,
+                    updated_at = ?
+                WHERE is_active = 1
+                  AND slug NOT IN ({placeholders})
+                """,
+                (updated_by_user_id, now, *active_slugs),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE knowledgebase_articles
+                SET is_active = 0,
+                    updated_by_user_id = ?,
+                    updated_at = ?
+                WHERE is_active = 1
+                """,
+                (updated_by_user_id, now),
+            )
+        conn.commit()
+
+    return int(cursor.rowcount)
+
+
 def update_kb_article(
     article_id: int,
     title: Optional[str] = None,
