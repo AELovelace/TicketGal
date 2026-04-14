@@ -2687,6 +2687,7 @@ async def get_reports_summary(
     pending_request_tickets = stats.get("pending_request_tickets") or []
     open_request_tickets = stats.get("open_request_tickets") or []
     resolved_request_tickets = stats.get("resolved_request_tickets") or []
+
     sample_titles = stats.get("sample_titles") or []
     pending_sample_titles = stats.get("pending_sample_titles") or []
 
@@ -2779,11 +2780,7 @@ async def get_reports_summary(
                 if tid <= 0:
                     continue
 
-                try:
-                    comments_result = await client.list_ticket_comments(ticket_id=tid, page=1, items_in_page=50)
-                    comments = comments_result.get("items", []) if isinstance(comments_result, dict) else []
-                except AteraApiError:
-                    comments = []
+                comments = list_cached_ticket_comments(tid)
 
                 comments = sorted(
                     [c for c in comments if isinstance(c, dict)],
@@ -2847,22 +2844,7 @@ async def get_reports_summary(
             if tid <= 0:
                 continue
 
-            # Re-validate against live ticket status so AI analysis does not
-            # include stale cache entries that have already been closed/resolved.
-            try:
-                live_ticket = await client.get_ticket(tid)
-            except AteraApiError:
-                live_ticket = None
-
-            live_status = str((live_ticket or {}).get("TicketStatus") or "").strip().lower()
-            if live_status and live_status != "pending":
-                continue
-
-            try:
-                comments_result = await client.list_ticket_comments(ticket_id=tid, page=1, items_in_page=50)
-                comments = comments_result.get("items", []) if isinstance(comments_result, dict) else []
-            except AteraApiError:
-                comments = []
+            comments = list_cached_ticket_comments(tid)
 
             comments = sorted(
                 [c for c in comments if isinstance(c, dict)],
