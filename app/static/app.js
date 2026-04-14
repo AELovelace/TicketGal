@@ -3911,20 +3911,7 @@ if (microsoftLoginBtn) {
 
 logoutBtn.addEventListener("click", async () => {
   await api("/auth/logout", { method: "POST" });
-  currentUser = null;
-  stopAlertsPolling();
-  if (alertsList) {
-    alertsList.innerHTML = "";
-  }
-  if (alertsStatus) {
-    alertsStatus.textContent = "Sign in to view alerts.";
-  }
-  applyTheme(false);
-  updateKBButtonVisibility();
-  showAuth();
-  loginStatus.textContent = "";
-  await loadAuthProviders();
-  await checkSignupsEnabled();
+  window.location.assign("/login");
 });
 
 userCreateForm.addEventListener("submit", async (event) => {
@@ -4679,6 +4666,11 @@ async function refreshMe() {
   try {
     const result = await api("/auth/me");
     currentUser = result.user;
+    const targetPath = currentUser?.role === "admin" ? "/admin" : "/portal";
+    if (window.location.pathname !== targetPath) {
+      window.location.replace(targetPath);
+      return;
+    }
     updateKBButtonVisibility();
     applyRoleView();
     loadAdminThemePreference();
@@ -4706,21 +4698,7 @@ async function refreshMe() {
     }
     await maybeOpenPendingTicketViewerLaunch();
   } catch {
-    currentUser = null;
-    updateKBButtonVisibility();
-    stopAlertsPolling();
-    if (alertsList) {
-      alertsList.innerHTML = "";
-    }
-    if (alertsStatus) {
-      alertsStatus.textContent = "Sign in to view alerts.";
-    }
-    showAuth();
-    if (authRedirectState.error) {
-      loginStatus.textContent = authRedirectState.error;
-    }
-    await loadAuthProviders();
-    await checkSignupsEnabled();
+    window.location.assign("/login");
   }
 }
 

@@ -305,9 +305,9 @@ def _build_auth_redirect(message: Optional[str] = None, success: Optional[str] =
     if success:
         query["auth_success"] = success
 
-    url = "/"
+    url = "/login"
     if query:
-        url = f"/?{urlencode(query)}"
+        url = f"/login?{urlencode(query)}"
 
     response = RedirectResponse(url=url, status_code=303)
     _clear_microsoft_oauth_cookies(response)
@@ -418,6 +418,7 @@ def _file_hash(path: Path) -> str:
 
 _ASSET_HASHES: Dict[str, str] = {}
 _QUEUE_WORKER_TASK: Optional[asyncio.Task[Any]] = None
+views_dir = Path(__file__).parent / "views"
 
 
 @app.on_event("startup")
@@ -426,6 +427,7 @@ def startup() -> None:
     if settings.admin_email and settings.admin_password:
         seed_admin(settings.admin_email, hash_password(settings.admin_password))
     _ASSET_HASHES["app.js"] = _file_hash(static_dir / "app.js")
+    _ASSET_HASHES["login.js"] = _file_hash(static_dir / "login.js")
     _ASSET_HASHES["styles.css"] = _file_hash(static_dir / "styles.css")
 
 
@@ -489,17 +491,62 @@ async def theme_css() -> Response:
 
 
 @app.get("/")
-async def index() -> Response:
-    html = (static_dir / "index.html").read_text(encoding="utf-8")
-    # Replace any existing ?v=... query strings with current content hashes
+async def index(request: Request) -> RedirectResponse:
+    token = request.cookies.get(settings.session_cookie_name)
+    if not token:
+        return RedirectResponse(url="/login", status_code=303)
+
+    session = get_session(token)
+    if not session:
+        return RedirectResponse(url="/login", status_code=303)
+
+    user = get_user_by_id(int(session["user_id"]))
+    if not user or not bool(user.get("is_active")) or not bool(user.get("approved")):
+        return RedirectResponse(url="/login", status_code=303)
+
+    return RedirectResponse(url="/admin" if user.get("role") == "admin" else "/portal", status_code=303)
+
+
+def _render_shell_html(file_name: str) -> Response:
+    html = (views_dir / file_name).read_text(encoding="utf-8")
     import re as _re
+
     html = _re.sub(r'/static/styles\.css\?v=[^"]+', f'/static/styles.css?v={_ASSET_HASHES.get("styles.css", "dev")}', html)
     html = _re.sub(r'/static/app\.js\?v=[^"]+', f'/static/app.js?v={_ASSET_HASHES.get("app.js", "dev")}', html)
+    html = _re.sub(r'/static/login\.js\?v=[^"]+', f'/static/login.js?v={_ASSET_HASHES.get("login.js", "dev")}', html)
     return Response(
         content=html,
         media_type="text/html",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/login")
+async def login_page(request: Request) -> Response:
+    token = request.cookies.get(settings.session_cookie_name)
+    if token:
+        session = get_session(token)
+        if session:
+            user = get_user_by_id(int(session["user_id"]))
+            if user and bool(user.get("is_active")) and bool(user.get("approved")):
+                return RedirectResponse(
+                    url="/admin" if user.get("role") == "admin" else "/portal",
+                    status_code=303,
+                )
+    return _render_shell_html("login.html")
+
+
+@app.get("/admin")
+async def admin_shell_page(user: Dict[str, Any] = Depends(get_current_user)) -> Response:
+    require_admin(user)
+    return _render_shell_html("app-shell.html")
+
+
+@app.get("/portal")
+async def portal_shell_page(user: Dict[str, Any] = Depends(get_current_user)) -> Response:
+    if user.get("role") == "admin":
+        return RedirectResponse(url="/admin", status_code=303)
+    return _render_shell_html("app-shell.html")
 
 
 @app.get("/register")
