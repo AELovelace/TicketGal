@@ -123,6 +123,19 @@ class Settings:
             for tenant_id in os.getenv("ALLOWED_MICROSOFT_TENANT_IDS", "").split(",")
             if tenant_id.strip()
         ]
+        authority_override = os.getenv("MICROSOFT_AUTHORITY_TENANT", "").strip().lower()
+        if authority_override:
+            self.microsoft_authority_tenant = authority_override
+        elif len(self.allowed_microsoft_tenant_ids) > 1 and self.microsoft_tenant_id.lower() not in {
+            "common",
+            "organizations",
+            "consumers",
+        }:
+            # When allowing more than one tenant, use an org-wide authority so users can authenticate
+            # from either tenant, then enforce exact tenant IDs in callback allowlist checks.
+            self.microsoft_authority_tenant = "organizations"
+        else:
+            self.microsoft_authority_tenant = self.microsoft_tenant_id
         self.microsoft_redirect_path = os.getenv("MICROSOFT_REDIRECT_PATH", "/auth/microsoft/callback")
         self.microsoft_prompt = os.getenv("MICROSOFT_PROMPT", "select_account").strip()
         self.microsoft_scopes = [

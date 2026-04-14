@@ -249,7 +249,7 @@ def _is_lockout_exempt_ip(client_ip: str) -> bool:
 
 
 def _microsoft_authority() -> str:
-    return f"https://login.microsoftonline.com/{settings.microsoft_tenant_id}"
+    return f"https://login.microsoftonline.com/{settings.microsoft_authority_tenant}"
 
 
 def _require_microsoft_auth() -> None:
