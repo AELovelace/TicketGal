@@ -2133,6 +2133,11 @@ async function openTicketViewer(ticketId) {
       queued: false,
     });
 
+    // Recover gracefully if the initial admin property fetch failed during bootstrap.
+    if (currentUser?.role === "admin" && (!Array.isArray(cachedProperties) || !cachedProperties.length)) {
+      await loadProperties();
+    }
+
     if (ticketViewerUpdate) {
       const heading = document.createElement("h3");
       heading.textContent = "Post Update";
@@ -2247,6 +2252,11 @@ async function openQueuedTicketViewer(queueId) {
       queued: true,
     });
 
+    // Recover gracefully if the initial admin property fetch failed during bootstrap.
+    if (currentUser?.role === "admin" && (!Array.isArray(cachedProperties) || !cachedProperties.length)) {
+      await loadProperties();
+    }
+
     if (ticketViewerUpdate && currentUser?.role === "admin") {
       const heading = document.createElement("h3");
       heading.textContent = "Queue Update";
@@ -2335,9 +2345,13 @@ function populatePropertySelect(select) {
   select.appendChild(noneOption);
 
   cachedProperties.forEach((property) => {
+    const propertyId = property?.customer_id ?? property?.CustomerID ?? null;
+    if (propertyId === null || propertyId === undefined || propertyId === "") return;
     const option = document.createElement("option");
-    option.value = String(property.customer_id);
-    option.textContent = safeText(property.customer_name || `Property ${property.customer_id}`);
+    option.value = String(propertyId);
+    option.textContent = safeText(
+      property?.customer_name || property?.CustomerName || `Property ${propertyId}`,
+    );
     select.appendChild(option);
   });
 }
@@ -2618,9 +2632,13 @@ function buildUpdateControls(ticket, isAdminTable) {
     const selectedCompanyId = safeText(ticket.CustomerID || "").trim();
     let matchedCurrentCompany = false;
     cachedProperties.forEach((property) => {
+      const propertyId = property?.customer_id ?? property?.CustomerID ?? null;
+      if (propertyId === null || propertyId === undefined || propertyId === "") return;
       const option = document.createElement("option");
-      option.value = String(property.customer_id);
-      option.textContent = safeText(property.customer_name || `Property ${property.customer_id}`);
+      option.value = String(propertyId);
+      option.textContent = safeText(
+        property?.customer_name || property?.CustomerName || `Property ${propertyId}`,
+      );
       option.selected = option.value === selectedCompanyId;
       if (option.selected) {
         matchedCurrentCompany = true;
@@ -3967,6 +3985,12 @@ async function saveTicketCompanyFromRow(row, ticketId, statusTarget = null) {
     return;
   }
 
+  const selectedRaw = safeText(companySelect.value).trim();
+  const selectedCustomerId = selectedRaw ? Number(selectedRaw) : null;
+  if (selectedRaw && (!Number.isFinite(selectedCustomerId) || selectedCustomerId <= 0)) {
+    throw new Error("Please choose a valid company before saving.");
+  }
+
   const queuedTransactionId = safeText(saveBtn.dataset.queuedTransactionId || "");
   const endpoint = queuedTransactionId
     ? `/api/queued-tickets/${queuedTransactionId}/company`
@@ -3976,7 +4000,7 @@ async function saveTicketCompanyFromRow(row, ticketId, statusTarget = null) {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      customer_id: companySelect.value ? Number(companySelect.value) : null,
+      customer_id: selectedCustomerId,
     }),
   });
 
