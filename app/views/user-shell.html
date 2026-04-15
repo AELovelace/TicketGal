@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TicketGal</title>
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260407-2">
+</head>
+<body class="user-portal-shell">
+  <div id="brand-strip" class="brand-strip">
+    <span id="brand-top-left" class="brand-strip-slot">YOUR REGION</span>
+    <span id="brand-top-separator" class="dot">|</span>
+    <span id="brand-top-right" class="brand-strip-slot">YOUR ORGANIZATION</span>
+  </div>
+
+  <main class="shell">
+    <section id="auth-view" class="auth-shell">
+      <p id="brand-auth-eyebrow" class="eyebrow">SERVICE OPERATIONS</p>
+      <h1 id="brand-auth-title">TicketGal Service Portal</h1>
+      <p id="brand-auth-description" class="muted">Log in to continue. All accounts are password-protected. New user registrations require admin approval.</p>
+
+      <div class="auth-single">
+        <form id="login-form" class="card auth-card">
+          <p class="card-kicker">ACCESS</p>
+          <h2>Sign In:</h2>
+          <div id="microsoft-auth-block" class="auth-alt hidden">
+            <button id="microsoft-login-btn" class="microsoft-login-btn" type="button">Sign in with Microsoft 365</button>
+            <p class="muted auth-note">Uses your Microsoft 365 work account and can reuse your Edge sign-in session.</p>
+          </div>
+          <div id="local-login-block">
+            <div id="local-login-divider" class="auth-divider"><span>or</span></div>
+            <label>
+              Company Email
+              <input id="login-email" type="email" required>
+            </label>
+            <label>
+              Password
+              <input id="login-password" type="password" required>
+            </label><br>
+            <center><button id="local-login-btn" type="submit">Sign In</button></center>
+          </div>
+          <p id="login-status" class="muted"></p>
+          <p id="register-link" class="muted register-link">Need an account? <a href="/register">Register here</a></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="app-view" class="hidden">
+      <header class="hero">
+        <div>
+          <p id="brand-hero-eyebrow" class="eyebrow light">IT TEAM</p>
+          <h1 id="brand-hero-title">TicketGal Operations Desk</h1>
+          <p id="welcome-text">Portal</p>
+        </div>
+        <button id="logout-btn" type="button">Logout</button>
+      </header>
+
+      <aside id="alerts-feed" class="card">
+        <div class="list-header">
+          <div>
+            <p class="card-kicker">ATERA ALERTS</p>
+            <h2>Notifications</h2>
+          </div>
+          <button id="alerts-refresh-btn" type="button">Refresh</button>
+        </div>
+        <p id="alerts-status" class="muted">Loading alerts...</p>
+        <div id="alerts-list" class="alerts-list"></div>
+      </aside>
+
+      <section id="user-shell" class="hidden user-shell-layout">
+        <aside class="user-sidenav card">
+          <p class="card-kicker">PORTAL NAVIGATION</p>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-in-progress">In Progress</button>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-tickets">All Tickets</button>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-knowledgebase">Knowledgebase</button>
+          <button type="button" class="user-nav-btn" data-user-page="user-page-create">Create Ticket</button>
+        </aside>
+
+        <div class="user-content">
+          <section id="user-page-in-progress" class="user-page card hidden">
+            <div class="list-header">
+              <div>
+                <p class="card-kicker">ACTIVE WORK</p>
+                <h2>In-Progress Tickets</h2>
+                <p class="muted">Open, pending, and queued requests that still need action.</p>
+              </div>
+              <div class="actions">
+                <button id="user-in-progress-refresh-btn" type="button">Refresh</button>
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Status</th>
+                  <th>Company</th>
+                  <th>End User</th>
+                  <th>Update</th>
+                </tr>
+              </thead>
+              <tbody id="user-in-progress-body"></tbody>
+            </table>
+            <p id="user-in-progress-status" class="muted"></p>
+          </section>
+
+          <section id="user-page-tickets" class="user-page card hidden">
+            <div class="list-header">
+              <div>
+                <p class="card-kicker">TICKET HISTORY</p>
+                <h2>All Tickets</h2>
+              </div>
+              <div class="actions">
+                <button id="refresh-btn" type="button">Refresh</button>
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
+                <div id="user-status-filter" class="status-filter-checks">
+                  <label><input type="checkbox" value="Open" checked> Open</label>
+                  <label><input type="checkbox" value="Pending" checked> Pending</label>
+                  <label><input type="checkbox" value="Resolved" checked> Resolved</label>
+                  <label><input type="checkbox" value="Closed" checked> Closed</label>
+                </div>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Status</th>
+                  <th>Company</th>
+                  <th>End User</th>
+                  <th>Update</th>
+                </tr>
+              </thead>
+              <tbody id="tickets-body"></tbody>
+            </table>
+            <p id="list-status" class="muted"></p>
+          </section>
+
+          <section id="user-page-knowledgebase" class="user-page card hidden">
+            <div class="user-kb-hero">
+              <div>
+                <p class="card-kicker">PROPERTY RESOURCES</p>
+                <h2>Knowledgebase</h2>
+                <p class="muted">Articles pinned to your property, plus any public resources you can access.</p>
+              </div>
+              <div class="user-property-chip-wrap">
+                <span id="user-property-chip" class="user-property-chip">No property assigned</span>
+              </div>
+            </div>
+
+            <div class="kb-controls kb-controls-user">
+              <div class="kb-search-box">
+                <input id="user-kb-search-input" type="search" placeholder="Search articles..." maxlength="200">
+                <button id="user-kb-search-btn" type="button">Search</button>
+              </div>
+            </div>
+            <div class="kb-content">
+              <div id="user-kb-articles-list" class="kb-articles-list"></div>
+              <div id="user-kb-article-viewer" class="kb-article-viewer hidden"></div>
+            </div>
+          </section>
+
+          <section id="user-page-create" class="user-page card hidden">
+            <p class="card-kicker">SERVICE INTAKE</p>
+            <h2>Create Ticket</h2>
+            <p id="user-property-note" class="muted"></p>
+            <div id="drop-zone" class="drop-zone" aria-label="Drop email file here">
+              Drop a .eml email file here to auto-fill fields
+            </div>
+            <p id="drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+            <form id="create-ticket-form" class="grid">
+              <label>
+                Title
+                <input id="ticket-title" type="text" required>
+              </label>
+
+              <label>
+                End User Email
+                <input id="end-user-email" type="email" placeholder="user@company.com">
+              </label>
+
+              <label class="span-2">
+                Description
+                <textarea id="ticket-description" rows="6" required></textarea>
+              </label>
+
+              <label>
+                Priority
+                <select id="ticket-priority">
+                  <option>Low</option>
+                  <option>Medium</option>
+                  <option>High</option>
+                  <option>Critical</option>
+                </select>
+              </label>
+
+              <label>
+                Type
+                <select id="ticket-type">
+                  <option>Incident</option>
+                  <option>Problem</option>
+                  <option>Request</option>
+                  <option>Change</option>
+                </select>
+              </label>
+
+              <label>
+                Technician ID (admin optional)
+                <input id="technician-id" type="number" min="1">
+              </label>
+
+              <label>
+                Initial Status
+                <select id="ticket-status"></select>
+              </label>
+
+              <div class="span-2 actions">
+                <button type="submit">Create Ticket</button>
+                <span id="create-status" class="muted"></span>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="admin-shell" class="hidden admin-shell">
+        <aside class="admin-sidenav card">
+          <p class="card-kicker">ADMIN NAVIGATION</p>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-create">Create Ticket</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-status">Ticket Statuses</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-users">User Management</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-knowledgebase">Knowledgebase</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-reports">Reports</button>
+          <button type="button" class="nav-btn" data-admin-page="admin-page-settings">Settings</button>
+        </aside>
+
+        <div class="admin-content">
+          <section id="admin-page-create" class="admin-page card hidden">
+            <p class="card-kicker">SERVICE INTAKE</p>
+            <h2>Create Ticket</h2>
+            <div id="admin-drop-zone" class="drop-zone" aria-label="Drop email file here">
+              Drop a .eml email file here to auto-fill fields
+            </div>
+            <p id="admin-drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+            <form id="admin-create-ticket-form" class="grid">
+              <label>
+                Title
+                <input id="admin-ticket-title" type="text" required>
+              </label>
+
+              <label>
+                End User Email
+                <input id="admin-end-user-email" type="email" placeholder="user@company.com">
+              </label>
+
+              <label class="span-2">
+                Description
+                <textarea id="admin-ticket-description" rows="6" required></textarea>
+              </label>
+
+              <div class="span-2 actions">
+                <button id="admin-ticket-ai-assist" type="button">Recompose</button>
+                <span id="admin-ticket-ai-status" class="muted"></span>
+              </div>
+
+              <label>
+                Priority
+                <select id="admin-ticket-priority">
+                  <option>Low</option>
+                  <option>Medium</option>
+                  <option>High</option>
+                  <option>Critical</option>
+                </select>
+              </label>
+
+              <label>
+                Type
+                <select id="admin-ticket-type">
+                  <option>Incident</option>
+                  <option>Problem</option>
+                  <option>Request</option>
+                  <option>Change</option>
+                </select>
+              </label>
+
+              <label>
+                Technician ID
+                <input id="admin-technician-id" type="number" min="1" value="1">
+              </label>
+
+              <label>
+                Property
+                <select id="admin-ticket-property"></select>
+              </label>
+
+              <label>
+                Initial Status
+                <select id="admin-ticket-status"></select>
+              </label>
+
+              <div class="span-2 actions">
+                <button type="submit">Create Ticket</button>
+                <span id="admin-create-status" class="muted"></span>
+              </div>
+            </form>
+          </section>
+
+          <section id="admin-page-status" class="admin-page card hidden">
+            <p class="card-kicker">STATUS GOVERNANCE</p>
+            <div class="page-header-actions">
+              <h2>Ticket Statuses</h2>
+              <div class="actions" style="flex-direction:column;align-items:flex-end;gap:0.45rem;">
+                <button id="admin-status-create-btn" type="button">Create Ticket</button>
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
+              </div>
+            </div>
+            <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
+              <button id="admin-status-refresh-btn" type="button">Refresh</button>
+              <label class="ticket-search-field" for="admin-ticket-search">
+                <span>Search tickets</span>
+                <input id="admin-ticket-search" type="search" placeholder="Search by ID, title, email, company..." autocomplete="off">
+              </label>
+              <div id="admin-status-filter" class="status-filter-checks">
+                <label><input type="checkbox" value="Open" checked> Open</label>
+                <label><input type="checkbox" value="Pending" checked> Pending</label>
+                <label><input type="checkbox" value="Resolved" checked> Resolved</label>
+                <label><input type="checkbox" value="Closed" checked> Closed</label>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Email</th>
+                  <th>Current Status</th>
+                  <th>Details</th>
+                  <th>New Status</th>
+                </tr>
+              </thead>
+              <tbody id="admin-status-body"></tbody>
+            </table>
+            <p id="admin-status-message" class="muted"></p>
+          </section>
+
+          <section id="admin-page-users" class="admin-page card hidden">
+            <p class="card-kicker">CONTROL CENTER</p>
+            <h2>User Management</h2>
+            <p class="muted">Approve, promote/demote, reset passwords, and remove user accounts.</p>
+
+            <div class="user-search-bar">
+              <input id="user-search" type="search" placeholder="Filter users by email..." autocomplete="off">
+            </div>
+
+            <div class="admin-grid">
+              <div>
+                <h3>Pending Approvals</h3>
+                <button id="refresh-users-btn" type="button">Refresh Users</button>
+                <div id="pending-users"></div>
+              </div>
+
+              <div class="span-2">
+                <h3>Role &amp; Account Controls</h3>
+                <p class="muted">Assign a property to a user to auto-assign their future tickets.</p>
+                <div id="user-management-list"></div>
+              </div>
+
+              <div class="span-2">
+                <h3>Login Lockouts</h3>
+                <p class="muted">Monitor active lockouts and clear a specific email/IP entry for emergency unblocking.</p>
+                <div class="actions lockout-controls">
+                  <select id="lockout-key-type" aria-label="Lockout key type">
+                    <option value="email">Email</option>
+                    <option value="ip">IP</option>
+                  </select>
+                  <input id="lockout-key-value" type="text" placeholder="user@company.com or 192.0.2.10" aria-label="Lockout key value">
+                  <button id="clear-lockout-btn" type="button">Clear Lockout</button>
+                  <button id="refresh-lockouts-btn" type="button">Refresh Lockouts</button>
+                </div>
+                <p id="lockout-status" class="muted"></p>
+                <div id="lockout-list"></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="admin-page-knowledgebase" class="admin-page card hidden">
+            <p class="card-kicker">KNOWLEDGE MANAGEMENT</p>
+            <h2>Knowledgebase</h2>
+            <p class="muted">Search, review, and maintain markdown knowledgebase articles.</p>
+            <div class="kb-controls">
+              <div class="kb-search-box">
+                <input id="kb-search-input" type="search" placeholder="Search articles..." maxlength="200">
+                <button id="kb-search-btn" type="button">Search</button>
+              </div>
+              <button id="kb-new-article-btn" type="button" class="btn-admin-only" style="display:none;">New Article</button>
+            </div>
+            <div class="kb-content">
+              <div id="kb-articles-list" class="kb-articles-list"></div>
+              <div id="kb-article-viewer" class="kb-article-viewer hidden"></div>
+            </div>
+          </section>
+
+          <section id="admin-page-settings" class="admin-page card hidden">
+            <p class="card-kicker">PREFERENCES</p>
+            <h2>Settings</h2>
+
+            <div class="settings-section">
+              <h3>Audit Log</h3>
+              <p class="muted">Browse security and admin events recorded by the system.</p>
+              <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
+                <button id="open-audit-log-btn" type="button">View Audit Log</button>
+                <button id="open-login-access-log-btn" type="button">Login Access Log</button>
+                <button id="open-failed-login-log-btn" type="button">Failed Login Log</button>
+                <button id="open-kb-access-log-btn" type="button">KB Access Log</button>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>Data Sync</h3>
+              <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
+                <button id="admin-sync-tickets-btn" type="button">Sync Atera Tickets</button>
+                <button id="admin-rescan-kb-btn" type="button">Rescan KB Markdown</button>
+                <span id="admin-sync-tickets-status" class="muted"></span>
+              </div>
+              <p id="admin-rescan-kb-status" class="muted"></p>
+              <p class="muted">Pulls all tickets from Atera into the local reporting cache.</p>
+              <p class="muted">Rescans app/knowledgebase markdown files and refreshes the knowledgebase database records.</p>
+            </div>
+
+            <div class="settings-section">
+              <h3>Theme</h3>
+              <label class="theme-toggle-label">
+                <input id="admin-theme-toggle" type="checkbox">
+                <span>Enable premium rose theme</span>
+              </label>
+              <p id="theme-status" class="muted"></p>
+            </div>
+
+            <div class="settings-section">
+              <h3>User Registration</h3>
+              <label class="theme-toggle-label">
+                <input id="admin-signups-toggle" type="checkbox">
+                <span>Allow new user signups</span>
+              </label>
+              <p id="signups-status" class="muted"></p>
+            </div>
+
+            <div class="settings-section">
+              <h3>Interface</h3>
+              <label class="theme-toggle-label">
+                <input id="admin-alerts-toggle" type="checkbox" checked>
+                <span>Enable Atera Alerts sidebar</span>
+              </label>
+              <div class="actions" style="justify-content:flex-start;gap:0.75rem;flex-wrap:wrap;">
+                <button type="button" data-viewer-mode-toggle>Viewer: Modal</button>
+              </div>
+              <p id="ticket-viewer-mode-status" class="muted"></p>
+              <p id="alerts-toggle-status" class="muted"></p>
+            </div>
+          </section>
+
+          <section id="admin-page-reports" class="admin-page card hidden">
+            <p class="card-kicker">ANALYTICS</p>
+            <h2>Ticket Reports</h2>
+
+            <div class="report-period-selector">
+              <button type="button" class="period-btn" data-period="week">1 Week</button>
+              <button type="button" class="period-btn" data-period="month">1 Month</button>
+              <button type="button" class="period-btn" data-period="year">1 Year</button>
+              <button type="button" class="period-btn" data-period="custom">Custom Range</button>
+            </div>
+
+            <div id="report-custom-controls" class="report-custom-controls hidden">
+              <label>
+                Start Date
+                <input id="report-custom-start" type="date">
+              </label>
+              <label>
+                End Date
+                <input id="report-custom-end" type="date">
+              </label>
+              <button id="report-custom-run" type="button">Run Custom</button>
+            </div>
+
+            <p id="report-loading" class="muted hidden">Generating report&hellip;</p>
+
+            <div id="report-stats" class="report-stats hidden">
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-opened-count">&mdash;</div>
+                <div class="report-stat-label">Opened This Period</div>
+              </div>
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-resolved-count">&mdash;</div>
+                <div class="report-stat-label">Resolved / Closed</div>
+              </div>
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-open-count">&mdash;</div>
+                <div class="report-stat-label">Currently Open</div>
+              </div>
+              <div class="report-stat-card">
+                <div class="report-stat-number" id="report-pending-count">&mdash;</div>
+                <div class="report-stat-label">Currently Pending</div>
+              </div>
+            </div>
+
+            <div id="report-customer-section" class="hidden">
+              <h3>Activity by Property</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Property</th>
+                    <th>Opened</th>
+                    <th>Resolved</th>
+                    <th>Pending</th>
+                  </tr>
+                </thead>
+                <tbody id="report-customer-body"></tbody>
+              </table>
+            </div>
+
+            <div id="report-ai-section" class="hidden">
+              <h3>Workload Analysis</h3>
+              <div id="report-ai-loading" class="report-ai-loading hidden">
+                <span class="report-ai-spinner" aria-hidden="true"></span>
+                <span>Generating workload analysis...</span>
+              </div>
+              <div id="report-ai-summary" class="report-ai-summary"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </section>
+
+  </main>
+
+  <div id="ticket-viewer" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="ticket-viewer-title">
+    <div class="ticket-viewer-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="ticket-viewer-title">Ticket Viewer</h2>
+        <button id="ticket-viewer-close" type="button">Close</button>
+      </div>
+      <div id="ticket-viewer-meta" class="ticket-viewer-meta"></div>
+      <div id="ticket-viewer-update" class="ticket-viewer-update"></div>
+      <p id="ticket-viewer-update-status" class="muted"></p>
+      <div id="ticket-viewer-history" class="ticket-viewer-history"></div>
+    </div>
+  </div>
+
+  <div id="admin-create-ticket-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="admin-create-ticket-modal-title">
+    <div class="ticket-viewer-panel create-ticket-modal-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="admin-create-ticket-modal-title">Create Ticket</h2>
+        <button id="admin-create-ticket-modal-close" type="button">Close</button>
+      </div>
+      <p class="muted">Create a new ticket without leaving the status board.</p>
+      <div id="admin-modal-drop-zone" class="drop-zone" aria-label="Drop email file here">
+        Drop a .eml email file here to auto-fill fields
+      </div>
+      <p id="admin-modal-drop-hint" class="muted">Tip: drag directly from Outlook, or drop a saved .eml/.msg file.</p>
+
+      <form id="admin-modal-create-ticket-form" class="grid">
+        <label>
+          Title
+          <input id="admin-modal-ticket-title" type="text" required>
+        </label>
+
+        <label>
+          End User Email
+          <input id="admin-modal-end-user-email" type="email" placeholder="user@company.com">
+        </label>
+
+        <label class="span-2">
+          Description
+          <textarea id="admin-modal-ticket-description" rows="6" required></textarea>
+        </label>
+
+        <div class="span-2 actions">
+          <button id="admin-modal-ticket-ai-assist" type="button">Recompose</button>
+          <span id="admin-modal-ticket-ai-status" class="muted"></span>
+        </div>
+
+        <label>
+          Priority
+          <select id="admin-modal-ticket-priority">
+            <option>Low</option>
+            <option>Medium</option>
+            <option>High</option>
+            <option>Critical</option>
+          </select>
+        </label>
+
+        <label>
+          Type
+          <select id="admin-modal-ticket-type">
+            <option>Incident</option>
+            <option>Problem</option>
+            <option>Request</option>
+            <option>Change</option>
+          </select>
+        </label>
+
+        <label>
+          Technician ID
+          <input id="admin-modal-technician-id" type="number" min="1" value="1">
+        </label>
+
+        <label>
+          Property
+          <select id="admin-modal-ticket-property"></select>
+        </label>
+
+        <label>
+          Initial Status
+          <select id="admin-modal-ticket-status"></select>
+        </label>
+
+        <div class="span-2 actions">
+          <button type="submit">Create Ticket</button>
+          <span id="admin-modal-create-status" class="muted"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="audit-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="audit-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="audit-log-modal-title">Audit Log</h2>
+        <button id="audit-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="audit-log-action-filter" type="search" placeholder="Filter by action (e.g. auth.login)" autocomplete="off">
+        <button id="audit-log-filter-btn" type="button">Apply</button>
+        <button id="audit-log-reset-btn" type="button">Reset</button>
+      </div>
+      <p id="audit-log-status" class="muted"></p>
+      <div id="audit-log-table-wrap" class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Action</th>
+              <th>Actor</th>
+              <th>Target</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="audit-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="audit-log-page-info"></span>
+        <button id="audit-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="kb-access-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-access-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="kb-access-log-modal-title">Knowledgebase Access Log</h2>
+        <button id="kb-access-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="kb-access-log-search-filter" type="search" placeholder="Filter by user, article title, or slug" autocomplete="off">
+        <select id="kb-access-log-result-filter" aria-label="Filter KB access result">
+          <option value="">All Results</option>
+          <option value="allowed">Allowed</option>
+          <option value="denied">Denied</option>
+        </select>
+        <button id="kb-access-log-filter-btn" type="button">Apply</button>
+        <button id="kb-access-log-reset-btn" type="button">Reset</button>
+      </div>
+      <p id="kb-access-log-status" class="muted"></p>
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Result</th>
+              <th>User</th>
+              <th>Article</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="kb-access-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="kb-access-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="kb-access-log-page-info"></span>
+        <button id="kb-access-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="login-access-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="login-access-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="login-access-log-modal-title">Successful Login Access Log</h2>
+        <button id="login-access-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="login-access-log-search-filter" type="search" placeholder="Filter by user, IP, or method" autocomplete="off">
+        <button id="login-access-log-filter-btn" type="button">Apply</button>
+        <button id="login-access-log-reset-btn" type="button">Reset</button>
+        <button id="login-access-log-export-btn" type="button">Export CSV</button>
+      </div>
+      <p id="login-access-log-status" class="muted"></p>
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Method</th>
+              <th>User</th>
+              <th>IP Address</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="login-access-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="login-access-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="login-access-log-page-info"></span>
+        <button id="login-access-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="failed-login-log-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="failed-login-log-modal-title">
+    <div class="ticket-viewer-panel audit-log-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="failed-login-log-modal-title">Failed Login Audit Log</h2>
+        <button id="failed-login-log-close" type="button">Close</button>
+      </div>
+      <div class="audit-log-filters">
+        <input id="failed-login-log-search-filter" type="search" placeholder="Filter by email, IP, or reason" autocomplete="off">
+        <button id="failed-login-log-filter-btn" type="button">Apply</button>
+        <button id="failed-login-log-reset-btn" type="button">Reset</button>
+        <button id="failed-login-log-export-btn" type="button">Export CSV</button>
+      </div>
+      <p id="failed-login-log-status" class="muted"></p>
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Outcome</th>
+              <th>User / Email</th>
+              <th>IP Address</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="failed-login-log-body"></tbody>
+        </table>
+      </div>
+      <div class="audit-log-pagination">
+        <button id="failed-login-log-prev" type="button" disabled>&#8592; Prev</button>
+        <span id="failed-login-log-page-info"></span>
+        <button id="failed-login-log-next" type="button" disabled>Next &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="password-reset-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="password-reset-title">
+    <div class="ticket-viewer-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="password-reset-title">Reset Password</h2>
+        <button id="password-reset-close" type="button">Close</button>
+      </div>
+      <div class="password-reset-content">
+        <p>User: <span id="password-reset-user-email"></span></p>
+        <label>
+          New Password
+          <input id="password-reset-input" type="password" placeholder="Min 8 characters" minlength="8" required>
+        </label>
+        <div class="actions">
+          <button id="password-reset-submit" type="button">Set Password</button>
+          <span id="password-reset-status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="kb-editor-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="kb-editor-title-heading">
+    <div class="ticket-viewer-panel kb-editor-panel">
+      <div class="ticket-viewer-header">
+        <h2 id="kb-editor-title-heading">Edit Article</h2>
+        <button id="kb-editor-close" type="button">Close</button>
+      </div>
+      <div class="kb-editor-form">
+        <label>
+          Title
+          <input id="kb-editor-title-input" type="text" placeholder="Article title" maxlength="200" required>
+        </label>
+        <label>
+          Visibility
+          <select id="kb-editor-visibility">
+            <option value="public">Public (visible to all users)</option>
+            <option value="admin_only">Admin Only</option>
+            <option value="company_assigned">Company Assigned</option>
+            <option value="user_allowlist">User Allowlist</option>
+          </select>
+        </label>
+        <label id="kb-editor-customer-label" style="display:none;">
+          Restrict to Property
+          <select id="kb-editor-customer-id">
+            <option value="">-- Select a property --</option>
+          </select>
+        </label>
+        <label>
+          Content (Markdown)
+          <div id="kb-editor-codemirror"></div>
+        </label>
+        <p id="kb-editor-upload-hint" class="muted kb-editor-upload-hint">Drag a PNG, JPG, GIF, or WebP image into the editor to upload it and insert markdown automatically.</p>
+        <div class="kb-editor-actions">
+          <button id="kb-editor-save" type="button">Save</button>
+          <button id="kb-editor-cancel" type="button">Cancel</button>
+          <button id="kb-editor-delete" type="button" class="btn-danger" style="display:none;">Delete</button>
+          <span id="kb-editor-status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CodeMirror 5 markdown editor (served locally for reliability) -->
+  <link rel="stylesheet" href="/static/codemirror.min.css">
+  <script src="/static/codemirror.min.js"></script>
+  <script src="/static/codemirror-markdown.min.js"></script>
+
+  <!-- marked.js for markdown rendering (served locally for reliability) -->
+  <script src="/static/marked.min.js"></script>
+
+  <script src="/static/app.js?v=20260407-2" defer></script>
+
+  <footer class="app-footer">
+    <div id="footer-help" class="app-footer-help hidden">
+      <span id="footer-help-text"></span>
+      <a id="footer-help-email" href="#"></a>
+    </div>
+    <p id="footer-copyright" class="hidden"></p>
+  </footer>
+</body>
+</html>

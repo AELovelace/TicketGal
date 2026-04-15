@@ -3572,9 +3572,18 @@ async function submitCreateForm(prefix, isAdmin) {
     ? "Atera is unavailable. Ticket create request was queued for retry."
     : "Ticket created successfully.";
   resetCreateForm(prefix, isAdmin);
-  statusEl.textContent = Boolean(result?.queued)
+  const completionMessage = Boolean(result?.queued)
     ? "Atera is unavailable. Ticket create request was queued for retry."
     : "Ticket created successfully.";
+  statusEl.textContent = completionMessage;
+
+  if (!isAdmin) {
+    setUserPage("user-page-in-progress");
+    if (userInProgressStatus) {
+      userInProgressStatus.textContent = completionMessage;
+    }
+  }
+
   if (prefix === "admin-modal-") {
     closeAdminCreateTicketModal();
     if (adminStatusMessage) {

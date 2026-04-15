@@ -110,6 +110,11 @@ body::after {
   gap: 1rem;
 }
 
+body.user-portal-shell .shell,
+.shell.user-mode {
+  width: 60vw;
+}
+
 .shell.admin-mode {
   width: 98vw;
 }
@@ -918,6 +923,11 @@ body.ticket-viewer-standalone #ticket-viewer .ticket-viewer-panel {
 
   .shell.admin-mode {
     width: 96vw;
+  }
+
+  body.user-portal-shell .shell,
+  .shell.user-mode {
+    width: 94vw;
   }
 
   .admin-shell {

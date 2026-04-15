@@ -566,14 +566,14 @@ async def login_page(request: Request) -> Response:
 @app.get("/admin")
 async def admin_shell_page(user: Dict[str, Any] = Depends(get_current_user)) -> Response:
     require_admin(user)
-    return _render_shell_html("app-shell.html")
+    return _render_shell_html("admin-shell.html")
 
 
 @app.get("/portal")
 async def portal_shell_page(user: Dict[str, Any] = Depends(get_current_user)) -> Response:
     if user.get("role") == "admin":
         return RedirectResponse(url="/admin", status_code=303)
-    return _render_shell_html("app-shell.html")
+    return _render_shell_html("user-shell.html")
 
 
 @app.get("/register")
