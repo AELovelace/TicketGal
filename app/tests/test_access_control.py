@@ -4,6 +4,13 @@ import pytest
 
 class TestAuthenticationGates:
     """Test that unauthenticated users cannot access protected routes."""
+
+    @pytest.mark.parametrize("path", ["/admin", "/portal", "/kb-editor"])
+    def test_shell_routes_redirect_to_login_when_unauthenticated(self, client, path):
+        """Shell routes should redirect to login instead of returning raw auth errors."""
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers.get("location") == "/login"
     
     def test_profile_requires_auth(self, client):
         """Profile endpoint requires authentication."""

@@ -548,6 +548,15 @@ def _render_shell_html(file_name: str) -> Response:
     )
 
 
+def _get_page_user_or_login_redirect(request: Request) -> Dict[str, Any] | RedirectResponse:
+    try:
+        return get_current_user(request)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return RedirectResponse(url="/login", status_code=303)
+        raise
+
+
 @app.get("/login")
 async def login_page(request: Request) -> Response:
     token = request.cookies.get(settings.session_cookie_name)
@@ -564,13 +573,21 @@ async def login_page(request: Request) -> Response:
 
 
 @app.get("/admin")
-async def admin_shell_page(user: Dict[str, Any] = Depends(get_current_user)) -> Response:
+async def admin_shell_page(request: Request) -> Response:
+    auth_result = _get_page_user_or_login_redirect(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    user = auth_result
     require_admin(user)
     return _render_shell_html("admin-shell.html")
 
 
 @app.get("/portal")
-async def portal_shell_page(user: Dict[str, Any] = Depends(get_current_user)) -> Response:
+async def portal_shell_page(request: Request) -> Response:
+    auth_result = _get_page_user_or_login_redirect(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    user = auth_result
     if user.get("role") == "admin":
         return RedirectResponse(url="/admin", status_code=303)
     return _render_shell_html("user-shell.html")
@@ -582,7 +599,11 @@ async def register_page() -> FileResponse:
 
 
 @app.get("/kb-editor")
-async def kb_editor_page(user: Dict[str, Any] = Depends(get_current_user)) -> FileResponse:
+async def kb_editor_page(request: Request) -> Response:
+    auth_result = _get_page_user_or_login_redirect(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    user = auth_result
     require_admin(user)
     return FileResponse(static_dir / "kb-editor.html")
 
