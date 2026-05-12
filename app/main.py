@@ -729,7 +729,12 @@ def _queued_create_ticket_from_payload(tx: Dict[str, Any], payload: Dict[str, An
 
 def _extract_ticket_id_from_result(result: Any) -> int:
     if isinstance(result, dict):
-        return int(result.get("TicketID") or result.get("ticket_id") or result.get("ticketId") or 0)
+        for key in ("TicketID", "ticket_id", "ticketId", "ActionID", "actionId", "id"):
+            raw_value = result.get(key)
+            try:
+                return int(str(raw_value or "").strip())
+            except (TypeError, ValueError):
+                continue
     return 0
 
 
@@ -901,6 +906,24 @@ async def _fetch_all_ticket_comments(ticket_id: int, page_size: int = 50, max_pa
         if len(parsed) < page_size:
             break
     return comments
+
+
+async def _fetch_all_properties(page_size: int = 50, max_pages: int = 200) -> List[Dict[str, Any]]:
+    properties: List[Dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        result = await client.list_properties(page=page, items_in_page=page_size)
+        items = result.get("items", []) if isinstance(result, dict) else []
+        parsed = [item for item in items if isinstance(item, dict)]
+        if not parsed:
+            break
+        properties.extend(parsed)
+
+        total = int(result.get("totalItemCount", 0) or 0) if isinstance(result, dict) else 0
+        if total > 0 and len(properties) >= total:
+            break
+        if len(parsed) < page_size:
+            break
+    return properties
 
 
 async def _refresh_cached_ticket_from_atera(ticket_id: int, changed_by_user_id: Optional[int] = None) -> None:
@@ -1683,11 +1706,10 @@ async def admin_sync_tickets(user: Dict[str, Any] = Depends(get_current_user)) -
 async def admin_list_properties(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     require_admin(user)
     try:
-        result = await client.list_properties(page=1, items_in_page=500)
+        items = await _fetch_all_properties()
     except AteraApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    items = result.get("items", []) if isinstance(result, dict) else []
     mapped = [
         {
             "customer_id": item.get("CustomerID"),
@@ -1714,11 +1736,10 @@ async def admin_assign_user_property(
         return {"message": "Property assignment cleared"}
 
     try:
-        properties = await client.list_properties(page=1, items_in_page=500)
+        items = await _fetch_all_properties()
     except AteraApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    items = properties.get("items", []) if isinstance(properties, dict) else []
     matched = next((item for item in items if item.get("CustomerID") == request.property_customer_id), None)
     if not matched:
         raise HTTPException(status_code=400, detail="Selected property not found in Atera")
@@ -2488,11 +2509,10 @@ async def set_ticket_company(
     selected_customer_name = ""
     if selected_customer_id is not None:
         try:
-            properties_result = await client.list_properties(page=1, items_in_page=500)
+            property_items = await _fetch_all_properties()
         except AteraApiError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-        property_items = properties_result.get("items", []) if isinstance(properties_result, dict) else []
         matched = next((item for item in property_items if item.get("CustomerID") == selected_customer_id), None)
         if not matched:
             raise HTTPException(status_code=400, detail="Selected company not found in Atera")
@@ -2604,11 +2624,10 @@ async def set_queued_ticket_company(
     selected_customer_name = ""
     if selected_customer_id is not None:
         try:
-            properties_result = await client.list_properties(page=1, items_in_page=500)
+            property_items = await _fetch_all_properties()
         except AteraApiError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-        property_items = properties_result.get("items", []) if isinstance(properties_result, dict) else []
         matched = next((item for item in property_items if item.get("CustomerID") == selected_customer_id), None)
         if not matched:
             raise HTTPException(status_code=400, detail="Selected company not found in Atera")
@@ -3742,8 +3761,7 @@ async def list_kb_articles_endpoint(
     )
     if needs_property_names:
         try:
-            properties = await client.list_properties(page=1, items_in_page=500)
-            items = properties.get("items", []) if isinstance(properties, dict) else []
+            items = await _fetch_all_properties()
             property_name_by_id = {
                 int(item.get("CustomerID")): str(item.get("CustomerName") or "").strip()
                 for item in items
@@ -3855,11 +3873,10 @@ async def create_kb_article_endpoint(
     # Validate restricted_to_customer_id if company_assigned
     if request.visibility_type == "company_assigned" and request.restricted_to_customer_id:
         try:
-            properties = await client.list_properties(page=1, items_in_page=500)
+            items = await _fetch_all_properties()
         except AteraApiError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
         
-        items = properties.get("items", []) if isinstance(properties, dict) else []
         if not any(item.get("CustomerID") == request.restricted_to_customer_id for item in items):
             raise HTTPException(status_code=400, detail="Selected property not found in Atera")
     
@@ -3931,11 +3948,10 @@ async def update_kb_article_endpoint(
     # Validate restricted_to_customer_id if being updated
     if request.visibility_type == "company_assigned" and request.restricted_to_customer_id:
         try:
-            properties = await client.list_properties(page=1, items_in_page=500)
+            items = await _fetch_all_properties()
         except AteraApiError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
         
-        items = properties.get("items", []) if isinstance(properties, dict) else []
         if not any(item.get("CustomerID") == request.restricted_to_customer_id for item in items):
             raise HTTPException(status_code=400, detail="Selected property not found in Atera")
     

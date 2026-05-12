@@ -98,7 +98,7 @@ Then open `http://127.0.0.1:8000`.
 
 At minimum, configure these in `.env`:
 
-- `ATERA_API_KEY`
+- `ATERA_API_TOKEN` from Atera's API Control Center. `ATERA_API_KEY` remains supported as a legacy fallback, but the current Atera API expects Bearer token authentication.
 - `HOST`
 - `PORT`
 - `ALLOWED_EMAIL_DOMAINS`

@@ -70,7 +70,7 @@ PORT=8000
 HTTPS_ENABLED=0
 PUBLIC_BASE_URL=https://tickets.example.com
 
-ATERA_API_KEY=your_real_key
+ATERA_API_TOKEN=your_api_control_center_token
 ATERA_BASE_URL=https://app.atera.com
 
 USER_PASSWORD_AUTH_ENABLED=1

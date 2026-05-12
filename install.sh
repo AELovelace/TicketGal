@@ -119,7 +119,7 @@ TICKETGAL_SSL_KEY_FILE=certs/dev-key.pem
 TICKETGAL_SSL_HOSTS=ticketgal.localdomain.internal,localhost,127.0.0.1
 
 # ── Atera ─────────────────────────────────────────────────────
-ATERA_API_KEY=
+ATERA_API_TOKEN=
 ATERA_BASE_URL=https://app.atera.com
 
 # ── Database ──────────────────────────────────────────────────

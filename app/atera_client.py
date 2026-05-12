@@ -1,6 +1,5 @@
 import re
 from typing import Any, Dict, Optional
-from urllib.parse import quote
 
 import httpx
 
@@ -15,9 +14,11 @@ class AteraApiError(Exception):
 
 
 class AteraClient:
+    MAX_ITEMS_IN_PAGE = 50
+
     def __init__(self) -> None:
         self.base_url = settings.atera_base_url
-        self.api_key = settings.atera_api_key
+        self.api_token = settings.atera_api_token or settings.atera_api_key
         # Explicit allowlist: only operations TicketGal requires.
         self._allowed_patterns = [
             ("GET", re.compile(r"^/api/v3/tickets$")),
@@ -28,9 +29,7 @@ class AteraClient:
             ("GET", re.compile(r"^/api/v3/tickets/\d+/comments$")),
             ("GET", re.compile(r"^/api/v3/customers$")),
             ("GET", re.compile(r"^/api/v3/alerts$")),
-            ("POST", re.compile(r"^/api/v3/alerts/[^/]+/dismiss$")),
-            ("POST", re.compile(r"^/api/v3/alerts/[^/]+/resolve$")),
-            ("PUT", re.compile(r"^/api/v3/alerts/[^/]+$")),
+            ("PUT", re.compile(r"^/api/v3/alerts/\d+$")),
         ]
 
     def _is_request_allowed(self, method: str, path: str) -> bool:
@@ -42,12 +41,21 @@ class AteraClient:
         )
 
     def _headers(self) -> Dict[str, str]:
-        if not self.api_key:
-            raise AteraApiError(500, "ATERA_API_KEY is not configured on the server.")
+        token = (self.api_token or "").strip()
+        if token.lower().startswith("bearer "):
+            token = token.split(None, 1)[1].strip()
+        if not token:
+            raise AteraApiError(500, "ATERA_API_TOKEN is not configured on the server.")
         return {
-            "X-API-KEY": self.api_key,
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+        }
+
+    def _pagination_params(self, page: int, items_in_page: int) -> Dict[str, int]:
+        return {
+            "page": max(1, int(page)),
+            "itemsInPage": min(self.MAX_ITEMS_IN_PAGE, max(1, int(items_in_page))),
         }
 
     def _safe_error_message(self, status_code: int) -> str:
@@ -111,8 +119,7 @@ class AteraClient:
         include_relations: bool,
     ) -> Any:
         params: Dict[str, Any] = {
-            "page": page,
-            "itemsInPage": items_in_page,
+            **self._pagination_params(page, items_in_page),
             "includeRelations": include_relations,
         }
         if customer_id is not None:
@@ -122,34 +129,26 @@ class AteraClient:
 
         return await self._request("GET", "/api/v3/tickets", params=params)
 
-    async def list_properties(self, page: int = 1, items_in_page: int = 500) -> Any:
-        params = {"page": page, "itemsInPage": items_in_page}
+    async def list_properties(self, page: int = 1, items_in_page: int = MAX_ITEMS_IN_PAGE) -> Any:
+        params = self._pagination_params(page, items_in_page)
         return await self._request("GET", "/api/v3/customers", params=params)
 
-    async def list_alerts(self) -> Any:
-        return await self._request("GET", "/api/v3/alerts")
+    async def list_alerts(
+        self,
+        page: int = 1,
+        items_in_page: int = MAX_ITEMS_IN_PAGE,
+        alert_status: Optional[str] = None,
+    ) -> Any:
+        params: Dict[str, Any] = self._pagination_params(page, items_in_page)
+        if alert_status:
+            params["alertStatus"] = alert_status
+        return await self._request("GET", "/api/v3/alerts", params=params)
 
     async def dismiss_alert(self, alert_id: str) -> Any:
-        encoded_alert_id = quote(str(alert_id).strip(), safe="")
-        attempts = [
-            ("POST", f"/api/v3/alerts/{encoded_alert_id}/dismiss", None),
-            ("POST", f"/api/v3/alerts/{encoded_alert_id}/resolve", None),
-            ("PUT", f"/api/v3/alerts/{encoded_alert_id}", {"AlertStatus": "Dismissed"}),
-        ]
-
-        last_exc: Optional[AteraApiError] = None
-        for method, path, payload in attempts:
-            try:
-                return await self._request(method, path, json=payload)
-            except AteraApiError as exc:
-                last_exc = exc
-                if exc.status_code in {400, 404, 405, 422}:
-                    continue
-                raise
-
-        if last_exc:
-            raise last_exc
-        raise AteraApiError(500, "Unable to dismiss alert")
+        cleaned_alert_id = str(alert_id).strip()
+        if not cleaned_alert_id.isdigit():
+            raise AteraApiError(400, "Alert ID is invalid.")
+        return await self._request("PUT", f"/api/v3/alerts/{cleaned_alert_id}")
 
     async def create_ticket(self, payload: Dict[str, Any]) -> Any:
         return await self._request("POST", "/api/v3/tickets", json=payload)
@@ -164,5 +163,5 @@ class AteraClient:
         return await self._request("POST", f"/api/v3/tickets/{ticket_id}/comments", json=payload)
 
     async def list_ticket_comments(self, ticket_id: int, page: int = 1, items_in_page: int = 50) -> Any:
-        params = {"page": page, "itemsInPage": items_in_page}
+        params = self._pagination_params(page, items_in_page)
         return await self._request("GET", f"/api/v3/tickets/{ticket_id}/comments", params=params)

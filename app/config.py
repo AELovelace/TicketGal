@@ -47,7 +47,8 @@ class Settings:
 
         user_password_flag = os.getenv("USER_PASSWORD_AUTH_ENABLED", "0").strip().lower()
         self.user_password_auth_enabled = user_password_flag in {"1", "true", "yes"}
-        self.atera_api_key = os.getenv("ATERA_API_KEY", "")
+        self.atera_api_token = os.getenv("ATERA_API_TOKEN", "").strip()
+        self.atera_api_key = os.getenv("ATERA_API_KEY", "").strip()
         self.atera_base_url = os.getenv("ATERA_BASE_URL", "https://app.atera.com").rstrip("/")
         self.enable_cache_read_fallback = _flag("ENABLE_CACHE_READ_FALLBACK", "1")
         self.health_check_atera = _flag("HEALTH_CHECK_ATERA", "1")
