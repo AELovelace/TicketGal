@@ -37,9 +37,11 @@ from .database import (
     approve_user,
     assign_user_property,
     can_user_access_kb_article,
+    claim_next_report_job,
     clear_login_rate_limit_entry,
     clear_login_rate_limits,
     create_kb_article,
+    create_report_job,
     create_session,
     create_user,
     delete_kb_article,
@@ -54,6 +56,7 @@ from .database import (
     enqueue_transaction,
     get_cached_ticket_by_id,
     get_pending_queue_create,
+    get_report_job,
     get_ticket_cache_last_sync_at,
     get_transaction_queue_summary,
     get_signups_enabled,
@@ -74,6 +77,8 @@ from .database import (
     list_users,
     log_audit_event,
     log_kb_access_event,
+    mark_report_job_completed,
+    mark_report_job_failed,
     replace_cached_ticket_comments,
     replace_ticket_cache_snapshot,
     reset_user_password,
@@ -445,6 +450,7 @@ def _file_hash(path: Path) -> str:
 
 _ASSET_HASHES: Dict[str, str] = {}
 _QUEUE_WORKER_TASK: Optional[asyncio.Task[Any]] = None
+_REPORT_JOB_WORKER_TASK: Optional[asyncio.Task[Any]] = None
 views_dir = Path(__file__).parent / "views"
 
 
@@ -480,6 +486,28 @@ async def shutdown_queue_worker() -> None:
         pass
     finally:
         _QUEUE_WORKER_TASK = None
+
+
+@app.on_event("startup")
+async def startup_report_job_worker() -> None:
+    global _REPORT_JOB_WORKER_TASK
+    if _REPORT_JOB_WORKER_TASK and not _REPORT_JOB_WORKER_TASK.done():
+        return
+    _REPORT_JOB_WORKER_TASK = asyncio.create_task(_report_job_worker_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown_report_job_worker() -> None:
+    global _REPORT_JOB_WORKER_TASK
+    if _REPORT_JOB_WORKER_TASK is None:
+        return
+    _REPORT_JOB_WORKER_TASK.cancel()
+    try:
+        await _REPORT_JOB_WORKER_TASK
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _REPORT_JOB_WORKER_TASK = None
 
 
 _CSS_VALUE_SAFE = re.compile(r'^[a-zA-Z0-9\s#.,()%\-+/]+$')
@@ -1040,6 +1068,47 @@ async def _queue_worker_loop() -> None:
             # Keep the worker alive even if one cycle fails.
             pass
         await asyncio.sleep(interval)
+
+
+async def _process_report_job(job: Dict[str, Any]) -> None:
+    job_id = int(job.get("id") or 0)
+    if job_id <= 0:
+        return
+
+    period = str(job.get("period") or "week")
+    custom_start = str(job.get("custom_start") or "").strip() or None
+    custom_end = str(job.get("custom_end") or "").strip() or None
+
+    try:
+        result = await get_reports_summary(
+            period=period,
+            custom_start=custom_start,
+            custom_end=custom_end,
+            include_ai=True,
+            user={"role": "admin"},
+        )
+        mark_report_job_completed(job_id, result)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=True)
+        mark_report_job_failed(job_id, detail or f"HTTP {exc.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        mark_report_job_failed(job_id, f"AI summary unavailable: {exc}")
+
+
+async def _report_job_worker_loop() -> None:
+    idle_sleep_seconds = 1.0
+    while True:
+        try:
+            job = claim_next_report_job()
+            if not job:
+                await asyncio.sleep(idle_sleep_seconds)
+                continue
+            await _process_report_job(job)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Keep the worker alive even if one cycle fails.
+            await asyncio.sleep(idle_sleep_seconds)
 
 
 @app.get("/api/admin/queue/status")
@@ -2883,18 +2952,14 @@ async def get_ticket_history(
     }
 
 
-@app.get("/api/reports/summary")
-async def get_reports_summary(
-    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
-    custom_start: Optional[str] = Query(default=None),
-    custom_end: Optional[str] = Query(default=None),
-    include_ai: bool = Query(default=False),
-    user: Dict[str, Any] = Depends(get_current_user),
-) -> Dict[str, Any]:
-    require_admin(user)
-
+def _resolve_report_period(
+    period: str,
+    custom_start: Optional[str] = None,
+    custom_end: Optional[str] = None,
+) -> tuple[str, Optional[str], str]:
     now = datetime.now(tz=timezone.utc)
     period_end: Optional[str] = None
+
     if period == "week":
         period_start = (now - timedelta(weeks=1)).isoformat()
     elif period == "month":
@@ -2917,13 +2982,89 @@ async def get_reports_summary(
         period_start = start_dt.isoformat()
         period_end = end_exclusive_dt.isoformat()
 
-    stats = get_ticket_report_stats(period_start, period_end)
-
     period_label_map = {"week": "past 7 days", "month": "past 30 days", "year": "past 365 days"}
     if period == "custom":
         period_label = f"{custom_start} to {custom_end}"
     else:
         period_label = period_label_map.get(period, period)
+
+    return period_start, period_end, period_label
+
+
+def _format_report_job_response(job: Dict[str, Any]) -> Dict[str, Any]:
+    response: Dict[str, Any] = {
+        "job_id": int(job.get("id") or 0),
+        "status": str(job.get("status") or "pending"),
+        "period": str(job.get("period") or ""),
+        "custom_start": str(job.get("custom_start") or ""),
+        "custom_end": str(job.get("custom_end") or ""),
+        "created_at": str(job.get("created_at") or ""),
+        "started_at": str(job.get("started_at") or ""),
+        "completed_at": str(job.get("completed_at") or ""),
+        "last_error": str(job.get("last_error") or ""),
+    }
+
+    result = job.get("result")
+    if isinstance(result, dict):
+        response.update(result)
+    elif response["status"] == "failed":
+        response["ai_error"] = response["last_error"] or "AI summary unavailable."
+
+    return response
+
+
+@app.post("/api/reports/summary/jobs")
+async def create_reports_summary_job(
+    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
+    custom_start: Optional[str] = Query(default=None),
+    custom_end: Optional[str] = Query(default=None),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    require_admin(user)
+    _resolve_report_period(period, custom_start, custom_end)
+
+    job = create_report_job(
+        period=period,
+        custom_start=custom_start,
+        custom_end=custom_end,
+        requested_by_user_id=int(user["id"]),
+    )
+    payload = _format_report_job_response(job)
+    payload["reused"] = bool(job.get("reused"))
+    return JSONResponse(status_code=202, content=payload)
+
+
+@app.get("/api/reports/summary/jobs/{job_id}")
+async def get_reports_summary_job(
+    job_id: int,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+
+    job = get_report_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job not found")
+
+    return _format_report_job_response(job)
+
+
+@app.get("/api/reports/summary")
+async def get_reports_summary(
+    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
+    custom_start: Optional[str] = Query(default=None),
+    custom_end: Optional[str] = Query(default=None),
+    include_ai: bool = Query(default=False),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+
+    period_start, period_end, period_label = _resolve_report_period(
+        period=period,
+        custom_start=custom_start,
+        custom_end=custom_end,
+    )
+
+    stats = get_ticket_report_stats(period_start, period_end)
 
     top_customers = [
         f"{row['customer_name']} (opened {row['opened']}, resolved {row['resolved']})"

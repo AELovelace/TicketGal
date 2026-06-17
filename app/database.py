@@ -259,6 +259,36 @@ def _create_transactions_schema() -> None:
             ON transaction_queue(ticket_id)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requested_by_user_id INTEGER,
+                period TEXT NOT NULL CHECK(period IN ('week','month','year','custom')),
+                custom_start TEXT,
+                custom_end TEXT,
+                status TEXT NOT NULL CHECK(status IN ('pending','in_progress','failed','completed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                last_error TEXT,
+                result_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_report_jobs_status_id
+            ON report_jobs(status, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_report_jobs_requested_by_status
+            ON report_jobs(requested_by_user_id, status, id)
+            """
+        )
         conn.commit()
 
 
@@ -273,6 +303,26 @@ def _recover_in_progress_transactions() -> None:
             WHERE status = 'in_progress'
             """,
             (now_ts, now_iso),
+        )
+        conn.commit()
+
+
+def _recover_in_progress_report_jobs() -> None:
+    now_iso = _utc_now_iso()
+    with get_transactions_conn() as conn:
+        conn.execute(
+            """
+            UPDATE report_jobs
+            SET status = 'pending',
+                updated_at = ?,
+                started_at = NULL,
+                last_error = CASE
+                    WHEN last_error IS NULL OR last_error = '' THEN 'Recovered unfinished report job after restart.'
+                    ELSE last_error
+                END
+            WHERE status = 'in_progress'
+            """,
+            (now_iso,),
         )
         conn.commit()
 
@@ -741,6 +791,7 @@ def init_db() -> None:
     _backfill_status_history()
     _create_transactions_schema()
     _recover_in_progress_transactions()
+    _recover_in_progress_report_jobs()
     _migrate_legacy_ticket_cache_to_dedicated_db()
     _create_knowledgebase_schema()
     _create_kb_access_audit_schema()
@@ -1509,6 +1560,180 @@ def update_pending_queue_create_payload(tx_id: int, payload: Dict[str, Any]) -> 
         )
         conn.commit()
     return int(cur.rowcount or 0) > 0
+
+
+def _decode_report_job_row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+
+    job = dict(row)
+    raw_result = str(job.get("result_json") or "").strip()
+    if raw_result:
+        try:
+            parsed = json.loads(raw_result)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            job["result"] = parsed
+    return job
+
+
+def create_report_job(
+    period: str,
+    custom_start: Optional[str] = None,
+    custom_end: Optional[str] = None,
+    requested_by_user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    now_iso = _utc_now_iso()
+    normalized_start = str(custom_start or "").strip() or None
+    normalized_end = str(custom_end or "").strip() or None
+
+    with get_transactions_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM report_jobs
+            WHERE requested_by_user_id IS ?
+              AND period = ?
+              AND COALESCE(custom_start, '') = ?
+              AND COALESCE(custom_end, '') = ?
+              AND status IN ('pending', 'in_progress')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                requested_by_user_id,
+                period,
+                normalized_start or "",
+                normalized_end or "",
+            ),
+        ).fetchone()
+        if existing is not None:
+            job = _decode_report_job_row(existing) or {}
+            job["reused"] = True
+            return job
+
+        cur = conn.execute(
+            """
+            INSERT INTO report_jobs(
+                requested_by_user_id,
+                period,
+                custom_start,
+                custom_end,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES(?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                requested_by_user_id,
+                period,
+                normalized_start,
+                normalized_end,
+                now_iso,
+                now_iso,
+            ),
+        )
+        conn.commit()
+        job_id = int(cur.lastrowid)
+        row = conn.execute("SELECT * FROM report_jobs WHERE id = ?", (job_id,)).fetchone()
+
+    job = _decode_report_job_row(row) or {}
+    job["reused"] = False
+    return job
+
+
+def claim_next_report_job() -> Optional[Dict[str, Any]]:
+    now_iso = _utc_now_iso()
+
+    with get_transactions_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        active = conn.execute(
+            """
+            SELECT id
+            FROM report_jobs
+            WHERE status = 'in_progress'
+            LIMIT 1
+            """
+        ).fetchone()
+        if active is not None:
+            conn.commit()
+            return None
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM report_jobs
+            WHERE status = 'pending'
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+
+        job_id = int(row["id"])
+        conn.execute(
+            """
+            UPDATE report_jobs
+            SET status = 'in_progress',
+                started_at = COALESCE(started_at, ?),
+                updated_at = ?,
+                last_error = NULL
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, job_id),
+        )
+        claimed = conn.execute("SELECT * FROM report_jobs WHERE id = ?", (job_id,)).fetchone()
+        conn.commit()
+
+    return _decode_report_job_row(claimed)
+
+
+def mark_report_job_completed(job_id: int, result: Dict[str, Any]) -> None:
+    now_iso = _utc_now_iso()
+    result_json = json.dumps(result, separators=(",", ":"), ensure_ascii=True)
+    with get_transactions_conn() as conn:
+        conn.execute(
+            """
+            UPDATE report_jobs
+            SET status = 'completed',
+                updated_at = ?,
+                completed_at = ?,
+                last_error = NULL,
+                result_json = ?
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, result_json, int(job_id)),
+        )
+        conn.commit()
+
+
+def mark_report_job_failed(job_id: int, error_message: str) -> None:
+    now_iso = _utc_now_iso()
+    with get_transactions_conn() as conn:
+        conn.execute(
+            """
+            UPDATE report_jobs
+            SET status = 'failed',
+                updated_at = ?,
+                completed_at = ?,
+                last_error = ?,
+                result_json = NULL
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, (error_message or "")[:1500], int(job_id)),
+        )
+        conn.commit()
+
+
+def get_report_job(job_id: int) -> Optional[Dict[str, Any]]:
+    with get_transactions_conn() as conn:
+        row = conn.execute("SELECT * FROM report_jobs WHERE id = ?", (int(job_id),)).fetchone()
+    return _decode_report_job_row(row)
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:

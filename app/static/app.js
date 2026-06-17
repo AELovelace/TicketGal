@@ -3660,6 +3660,55 @@ function renderAiSummaryWithTicketLinks(container, text) {
   container.appendChild(fragment);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function renderReportAiSummary(result, aiSummaryEl, aiSection) {
+  if (!aiSummaryEl || !aiSection) return;
+
+  const pendingText = safeText(result?.pending_appendix || "")
+    .replace(/^Pending watchlist \(net-neutral\):\s*/i, "")
+    .trim();
+
+  if (result?.ai_error) {
+    aiSummaryEl.className = "report-ai-error";
+    renderAiSummaryWithTicketLinks(
+      aiSummaryEl,
+      pendingText
+        ? `AI service unavailable\n\nPending Watchlist (Net-Neutral)\n${pendingText}`
+        : safeText(result.ai_error),
+    );
+  } else {
+    const sections = [];
+    if (result?.ai_summary) {
+      sections.push(`Summary\n${safeText(result.ai_summary).trim()}`);
+    }
+    if (result?.open_request_context) {
+      sections.push(`Open Ticket Summary\n${safeText(result.open_request_context).trim()}`);
+    }
+    if (result?.pending_request_context) {
+      sections.push(`Pending Ticket Breakdown\n${safeText(result.pending_request_context).trim()}`);
+    }
+    if (result?.resolved_request_context) {
+      sections.push(`Resolved / Closed Highlights\n${safeText(result.resolved_request_context).trim()}`);
+    }
+    if (pendingText) {
+      sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);
+    }
+
+    aiSummaryEl.className = "report-ai-summary";
+    renderAiSummaryWithTicketLinks(
+      aiSummaryEl,
+      sections.length ? sections.join("\n\n") : "No AI summary available.",
+    );
+  }
+
+  aiSection.classList.remove("hidden");
+}
+
 async function loadReport(period, customStart = null, customEnd = null) {
   const requestId = ++reportRequestSeq;
   const loading = document.getElementById("report-loading");
@@ -3747,48 +3796,32 @@ async function loadReport(period, customStart = null, customEnd = null) {
       ? `custom:${customStart || ""}:${customEnd || ""}`
       : period;
 
-    // Fetch AI analysis separately so core report stats render immediately.
+    // Run AI analysis through a background job so long model runs do not sit behind one proxy-held request.
     const aiParams = new URLSearchParams(params);
-    aiParams.set("include_ai", "1");
+    aiParams.delete("include_ai");
     try {
-      const aiResult = await api(`/api/reports/summary?${aiParams.toString()}`);
+      const aiJob = await api(`/api/reports/summary/jobs?${aiParams.toString()}`, {
+        method: "POST",
+      });
+      if (requestId !== reportRequestSeq || !aiJob?.job_id) {
+        return;
+      }
+
+      let aiResult = aiJob;
+      while (requestId === reportRequestSeq && aiResult?.status !== "completed" && aiResult?.status !== "failed") {
+        await delay(2000);
+        if (requestId !== reportRequestSeq) {
+          return;
+        }
+        aiResult = await api(`/api/reports/summary/jobs/${encodeURIComponent(aiJob.job_id)}`);
+      }
+
       if (requestId !== reportRequestSeq) {
         return;
       }
 
       if (aiSummaryEl && aiSection) {
-        const pendingText = safeText(aiResult.pending_appendix || "")
-          .replace(/^Pending watchlist \(net-neutral\):\s*/i, "")
-          .trim();
-
-        if (aiResult.ai_error) {
-          aiSummaryEl.className = "report-ai-error";
-          renderAiSummaryWithTicketLinks(aiSummaryEl, pendingText
-            ? `AI service unavailable\n\nPending Watchlist (Net-Neutral)\n${pendingText}`
-            : safeText(aiResult.ai_error));
-        } else {
-          const sections = [];
-          if (aiResult.ai_summary) {
-            sections.push(`Summary\n${safeText(aiResult.ai_summary).trim()}`);
-          }
-          if (aiResult.open_request_context) {
-            sections.push(`Open Ticket Summary\n${safeText(aiResult.open_request_context).trim()}`);
-          }
-          if (aiResult.pending_request_context) {
-            sections.push(`Pending Ticket Breakdown\n${safeText(aiResult.pending_request_context).trim()}`);
-          }
-          if (aiResult.resolved_request_context) {
-            sections.push(`Resolved / Closed Highlights\n${safeText(aiResult.resolved_request_context).trim()}`);
-          }
-          if (pendingText) {
-            sections.push(`Pending Watchlist (Net-Neutral)\n${pendingText}`);
-          }
-          aiSummaryEl.className = "report-ai-summary";
-          renderAiSummaryWithTicketLinks(aiSummaryEl, sections.length
-            ? sections.join("\n\n")
-            : "No AI summary available.");
-        }
-        aiSection.classList.remove("hidden");
+        renderReportAiSummary(aiResult || {}, aiSummaryEl, aiSection);
       }
     } catch (error) {
       if (requestId !== reportRequestSeq) {
