@@ -196,11 +196,12 @@ _ADDIN_CSP = "; ".join([
 
 def _build_addin_manifest(base_url: str) -> str:
     b = base_url
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <OfficeApp
   xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
   xsi:type="MailApp">
 
   <Id>{_ADDIN_MANIFEST_GUID}</Id>
@@ -209,9 +210,8 @@ def _build_addin_manifest(base_url: str) -> str:
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Create Ticket"/>
   <Description DefaultValue="Create an Atera support ticket from this email"/>
-  <IconUrl DefaultValue="{b}/outlook-addin/icon-80.png"/>
+  <IconUrl DefaultValue="{b}/outlook-addin/icon-32.png"/>
   <HighResolutionIconUrl DefaultValue="{b}/outlook-addin/icon-80.png"/>
-  <SupportUrl DefaultValue="{b}"/>
 
   <Hosts>
     <Host Name="Mailbox"/>
@@ -249,7 +249,7 @@ def _build_addin_manifest(base_url: str) -> str:
     <Hosts>
       <Host xsi:type="MailHost">
         <DesktopFormFactor>
-          <FunctionFile resid="Taskpane.Url"/>
+          <FunctionFile resid="Commands.Url"/>
           <ExtensionPoint xsi:type="MessageReadCommandSurface">
             <OfficeTab id="TabDefault">
               <Group id="ticketgal.group1">
@@ -284,6 +284,7 @@ def _build_addin_manifest(base_url: str) -> str:
         <bt:Image id="Icon.80x80" DefaultValue="{b}/outlook-addin/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
+        <bt:Url id="Commands.Url" DefaultValue="{b}/outlook-addin/commands.html"/>
         <bt:Url id="Taskpane.Url" DefaultValue="{b}/outlook-addin/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
