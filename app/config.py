@@ -63,6 +63,7 @@ class Settings:
         self.host = os.getenv("HOST", "127.0.0.1")
         self.port = int(os.getenv("PORT", "8000"))
         self.public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+        self.ticketgal_base_url = os.getenv("TICKETGAL_BASE_URL", "").rstrip("/")
         db_dir_default = project_root / "app" / "db"
         self.db_dir = str(_resolve_path(os.getenv("DB_DIR", str(db_dir_default))))
         self.db_path = str(_resolve_path(os.getenv("DB_PATH", str(Path(self.db_dir) / "ticketgal.db"))))

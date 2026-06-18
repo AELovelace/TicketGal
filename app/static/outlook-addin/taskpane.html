@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create Ticket</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js" type="text/javascript"></script>
+  <link rel="stylesheet" href="/outlook-addin/taskpane.css">
+</head>
+<body>
+
+  <!-- Login view -->
+  <div id="view-login" class="view">
+    <div class="brand">TicketGal</div>
+    <p class="hint">Sign in to create a ticket from this email.</p>
+    <form id="login-form" autocomplete="on">
+      <label for="login-email">Email</label>
+      <input id="login-email" type="email" autocomplete="username" placeholder="you@example.com" required>
+      <label for="login-password">Password</label>
+      <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" required>
+      <div id="login-error" class="error-msg" hidden></div>
+      <button type="submit" id="login-btn">Sign In</button>
+    </form>
+  </div>
+
+  <!-- Loading view -->
+  <div id="view-loading" class="view" hidden>
+    <div class="spinner" aria-label="Loading"></div>
+    <p class="hint" id="loading-msg">Analyzing email with AI&hellip;</p>
+  </div>
+
+  <!-- Ticket form view -->
+  <div id="view-form" class="view" hidden>
+    <div class="section-label">New Ticket</div>
+    <form id="ticket-form">
+      <label for="field-title">Title</label>
+      <input id="field-title" type="text" maxlength="160" required>
+
+      <label for="field-description">Description</label>
+      <textarea id="field-description" rows="5" maxlength="4000" required></textarea>
+
+      <div class="row2">
+        <div>
+          <label for="field-priority">Priority</label>
+          <select id="field-priority">
+            <option value="">— select —</option>
+            <option value="Low">Low</option>
+            <option value="Medium">Medium</option>
+            <option value="High">High</option>
+            <option value="Critical">Critical</option>
+          </select>
+        </div>
+        <div>
+          <label for="field-type">Type</label>
+          <select id="field-type">
+            <option value="">— select —</option>
+            <option value="Incident">Incident</option>
+            <option value="Problem">Problem</option>
+            <option value="Request">Request</option>
+            <option value="Change">Change</option>
+          </select>
+        </div>
+      </div>
+
+      <label for="field-user-email">Requester Email</label>
+      <input id="field-user-email" type="email" maxlength="254">
+
+      <div class="row2">
+        <div>
+          <label for="field-first-name">First Name</label>
+          <input id="field-first-name" type="text" maxlength="80">
+        </div>
+        <div>
+          <label for="field-last-name">Last Name</label>
+          <input id="field-last-name" type="text" maxlength="80">
+        </div>
+      </div>
+
+      <div id="form-error" class="error-msg" hidden></div>
+      <div id="ai-note" class="ai-badge" hidden>AI-assisted &mdash; review before submitting</div>
+      <button type="submit" id="submit-btn">Create Ticket</button>
+    </form>
+  </div>
+
+  <!-- Success view -->
+  <div id="view-success" class="view" hidden>
+    <div class="success-icon">&#10003;</div>
+    <p class="hint">Ticket created successfully.</p>
+    <p id="success-ticket-id" class="ticket-id"></p>
+    <button id="new-ticket-btn">Create Another</button>
+  </div>
+
+  <script src="/outlook-addin/taskpane.js"></script>
+</body>
+</html>

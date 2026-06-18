@@ -1,0 +1,126 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #192432;
+  background: #f8f5ed;
+  padding: 16px;
+  min-height: 100vh;
+}
+
+.view { display: flex; flex-direction: column; gap: 10px; }
+.view[hidden] { display: none; }
+
+.brand {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0e1c2f;
+  letter-spacing: 0.03em;
+  margin-bottom: 2px;
+}
+
+.hint { color: #617086; font-size: 12px; }
+
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #617086;
+  margin-bottom: 4px;
+}
+
+label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #617086;
+  display: block;
+  margin-bottom: 3px;
+  margin-top: 6px;
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ddd4c1;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #192432;
+  background: #fffdf8;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus, textarea:focus { border-color: #1f3f66; }
+
+textarea { resize: vertical; min-height: 90px; }
+
+.row2 {
+  display: -ms-flexbox;
+  display: flex;
+}
+.row2 > div { -ms-flex: 1; flex: 1; min-width: 0; }
+.row2 > div + div { margin-left: 8px; }
+
+button {
+  margin-top: 10px;
+  padding: 8px 14px;
+  background: #1f3f66;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.15s;
+}
+button:hover:not(:disabled) { background: #142a45; }
+button:disabled { background: #617086; cursor: not-allowed; }
+
+.error-msg {
+  color: #c0392b;
+  font-size: 12px;
+  padding: 6px 8px;
+  background: #fdf0ee;
+  border: 1px solid #f1a899;
+  border-radius: 4px;
+}
+
+.ai-badge {
+  font-size: 11px;
+  color: #617086;
+  padding: 4px 8px;
+  background: #f0f4fa;
+  border: 1px solid #c6d6ec;
+  border-radius: 4px;
+}
+
+/* spinner */
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid #ddd4c1;
+  border-top-color: #1f3f66;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 24px auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#view-loading { align-items: center; }
+#view-loading .hint { text-align: center; }
+
+/* success */
+.success-icon {
+  width: 48px; height: 48px;
+  background: #1f3f66;
+  color: #fff;
+  border-radius: 50%;
+  font-size: 26px;
+  line-height: 48px;
+  text-align: center;
+  margin: 20px auto 12px;
+}
+.ticket-id { font-weight: 600; color: #0e1c2f; text-align: center; }
+#view-success { align-items: center; }
+#view-success .hint { text-align: center; }

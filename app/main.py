@@ -156,6 +156,7 @@ CSRF_EXEMPT_PATHS = {
     "/auth/microsoft/login",
     "/auth/logout",
 }
+ADDIN_PATH_PREFIX = "/outlook-addin"
 CONTENT_SECURITY_POLICY = "; ".join(
     [
         "default-src 'self'",
@@ -179,6 +180,140 @@ client = AteraClient()
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+_ADDIN_MANIFEST_GUID = "1f11aa55-fde1-4152-a0c3-3d5988eb5177"
+_ADDIN_CSP = "; ".join([
+    "default-src 'self'",
+    "base-uri 'self'",
+    "script-src 'self' https://appsforoffice.microsoft.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "font-src 'self'",
+    "object-src 'none'",
+    "frame-ancestors https://outlook.office.com https://outlook.office365.com https://*.outlook.live.com https://outlook.live.com",
+])
+
+
+def _build_addin_manifest(base_url: str) -> str:
+    b = base_url
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xsi:type="MailApp">
+
+  <Id>{_ADDIN_MANIFEST_GUID}</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>TicketGal</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Create Ticket"/>
+  <Description DefaultValue="Create an Atera support ticket from this email"/>
+  <IconUrl DefaultValue="{b}/outlook-addin/icon-80.png"/>
+  <HighResolutionIconUrl DefaultValue="{b}/outlook-addin/icon-80.png"/>
+  <SupportUrl DefaultValue="{b}"/>
+
+  <Hosts>
+    <Host Name="Mailbox"/>
+  </Hosts>
+
+  <Requirements>
+    <Sets>
+      <Set Name="Mailbox" MinVersion="1.1"/>
+    </Sets>
+  </Requirements>
+
+  <FormSettings>
+    <Form xsi:type="ItemRead">
+      <DesktopSettings>
+        <SourceLocation DefaultValue="{b}/outlook-addin/taskpane.html"/>
+        <RequestedHeight>450</RequestedHeight>
+      </DesktopSettings>
+    </Form>
+  </FormSettings>
+
+  <Permissions>ReadItem</Permissions>
+
+  <Rule xsi:type="RuleCollection" Mode="Or">
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
+  </Rule>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides"
+                    xsi:type="VersionOverridesV1_0">
+    <Requirements>
+      <bt:Sets DefaultMinVersion="1.3">
+        <bt:Set Name="Mailbox"/>
+      </bt:Sets>
+    </Requirements>
+
+    <Hosts>
+      <Host xsi:type="MailHost">
+        <DesktopFormFactor>
+          <FunctionFile resid="Taskpane.Url"/>
+          <ExtensionPoint xsi:type="MessageReadCommandSurface">
+            <OfficeTab id="TabDefault">
+              <Group id="ticketgal.group1">
+                <Label resid="GroupLabel"/>
+                <Control xsi:type="Button" id="ticketgal.createTicketButton">
+                  <Label resid="CreateTicket.Label"/>
+                  <Supertip>
+                    <Title resid="CreateTicket.Label"/>
+                    <Description resid="CreateTicket.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16"/>
+                    <bt:Image size="32" resid="Icon.32x32"/>
+                    <bt:Image size="80" resid="Icon.80x80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>CreateTicketPane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16x16" DefaultValue="{b}/outlook-addin/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="{b}/outlook-addin/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="{b}/outlook-addin/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="{b}/outlook-addin/taskpane.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="GroupLabel" DefaultValue="TicketGal"/>
+        <bt:String id="CreateTicket.Label" DefaultValue="Create Ticket"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="CreateTicket.Tooltip" DefaultValue="Create an Atera support ticket from this email"/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>"""
+
+
+addin_static_dir = Path(__file__).parent / "static" / "outlook-addin"
+addin_static_dir.mkdir(exist_ok=True)
+
+
+@app.get("/outlook-addin/manifest.xml", include_in_schema=False)
+async def addin_manifest(request: Request) -> Response:
+    base_url = settings.ticketgal_base_url or settings.public_base_url or _get_public_base_url(request)
+    return Response(
+        content=_build_addin_manifest(base_url),
+        media_type="application/xml",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+app.mount("/outlook-addin", StaticFiles(directory=str(addin_static_dir)), name="outlook-addin")
+
 
 @app.middleware("http")
 async def csrf_protect(request: Request, call_next: Any) -> Response:
@@ -199,8 +334,16 @@ async def csrf_protect(request: Request, call_next: Any) -> Response:
 @app.middleware("http")
 async def security_headers(request: Request, call_next: Any) -> Response:
     response = await call_next(request)
-    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
-    response.headers["X-Frame-Options"] = "DENY"
+    is_addin = request.url.path.startswith(ADDIN_PATH_PREFIX)
+    if is_addin:
+        response.headers["Content-Security-Policy"] = _ADDIN_CSP
+        # Office.js loads the task pane in an iframe — omit DENY so Outlook can frame it.
+        # frame-ancestors in the CSP above restricts to known Outlook origins.
+        if "X-Frame-Options" in response.headers:
+            del response.headers["X-Frame-Options"]
+    else:
+        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
