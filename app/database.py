@@ -2246,6 +2246,8 @@ def get_login_rate_limits_snapshot(limit: int = 100) -> Dict[str, Any]:
 def seed_admin(email: str, password_hash: str) -> None:
     existing = get_user_by_email(email)
     if existing:
+        if not existing.get("password_hash"):
+            reset_user_password(int(existing["id"]), password_hash)
         return
     create_user(email=email, role="admin", password_hash=password_hash, approved=True)
 
