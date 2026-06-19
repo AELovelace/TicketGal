@@ -110,8 +110,13 @@ function startEmailRead() {
   setLoadingMsg("Reading email…");
   showView("loading");
 
-  var item = Office.context.mailbox.item;
-  if (!item) { showView("login"); return; }
+  var item = null;
+  try { item = Office.context.mailbox.item; } catch (e) {}
+  if (!item) {
+    showFormError("No email is open. Please open a message in Outlook and try again.");
+    showView("form");
+    return;
+  }
 
   var subject = item.subject || "";
   var from = item.from || {};
@@ -246,9 +251,15 @@ function handleNewTicket() { checkAuth(); }
 
 // ---- init ----------------------------------------------------------------
 
-Office.onReady(function() {
+// Attach form listeners immediately — don't wait for Office.onReady so that
+// the login form is interactive even if Office.js initialisation is slow.
+document.addEventListener("DOMContentLoaded", function() {
   document.getElementById("login-form").addEventListener("submit", handleLogin);
   document.getElementById("ticket-form").addEventListener("submit", handleSubmit);
   document.getElementById("new-ticket-btn").addEventListener("click", handleNewTicket);
+});
+
+// checkAuth needs the mailbox, so it still waits for Office to be ready.
+Office.onReady(function() {
   checkAuth();
 });
