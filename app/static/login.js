@@ -217,7 +217,9 @@ async function submitPasswordLogin(event) {
       throw new Error(detail);
     }
 
-    window.location.assign("/");
+    const _nextParam = new URLSearchParams(window.location.search).get("next") || "";
+    const _safeDest = (_nextParam.startsWith("/") && !_nextParam.startsWith("//")) ? _nextParam : "/";
+    window.location.assign(_safeDest);
   } catch (error) {
     if (loginStatus) loginStatus.textContent = `Login failed: ${safeText(error?.message || "Unknown error")}`;
   }

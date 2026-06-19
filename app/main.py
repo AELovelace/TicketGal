@@ -156,7 +156,7 @@ CSRF_EXEMPT_PATHS = {
     "/auth/microsoft/login",
     "/auth/logout",
 }
-ADDIN_PATH_PREFIX = "/outlook-addin"
+ADDIN_PATH_PREFIXES = ("/outlook-addin", "/addin")
 CONTENT_SECURITY_POLICY = "; ".join(
     [
         "default-src 'self'",
@@ -226,7 +226,7 @@ def _build_addin_manifest(base_url: str) -> str:
   <FormSettings>
     <Form xsi:type="ItemRead">
       <DesktopSettings>
-        <SourceLocation DefaultValue="{b}/outlook-addin/taskpane.html"/>
+        <SourceLocation DefaultValue="{b}/addin/new-ticket"/>
         <RequestedHeight>450</RequestedHeight>
       </DesktopSettings>
     </Form>
@@ -284,7 +284,7 @@ def _build_addin_manifest(base_url: str) -> str:
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Commands.Url" DefaultValue="{b}/outlook-addin/commands.html"/>
-        <bt:Url id="Taskpane.Url" DefaultValue="{b}/outlook-addin/taskpane.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="{b}/addin/new-ticket"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GroupLabel" DefaultValue="TicketGal"/>
@@ -315,6 +315,149 @@ async def addin_manifest(request: Request) -> Response:
 app.mount("/outlook-addin", StaticFiles(directory=str(addin_static_dir)), name="outlook-addin")
 
 
+@app.get("/addin/new-ticket", include_in_schema=False)
+async def addin_new_ticket_page(request: Request) -> Response:
+    token = request.cookies.get(settings.session_cookie_name)
+    session = get_session(token) if token else None
+    if not session:
+        return RedirectResponse(url="/login?next=/addin/new-ticket", status_code=302)
+    user = get_user_by_id(int(session["user_id"]))
+    if not user or not bool(user.get("is_active")) or not bool(user.get("approved")):
+        return RedirectResponse(url="/login?next=/addin/new-ticket", status_code=302)
+    return Response(content=_ADDIN_NEW_TICKET_HTML, media_type="text/html")
+
+
+_ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New Ticket — TicketGal</title>
+  <link rel="stylesheet" href="/outlook-addin/taskpane.css">
+</head>
+<body>
+  <div id="view-form" class="view">
+    <div class="brand">New Ticket</div>
+    <div id="form-error" class="error-msg" hidden></div>
+    <div id="form-success" class="ai-badge" style="color:#1a5c2e;background:#edf7f0;border-color:#8ecfaa" hidden></div>
+
+    <label for="field-title">Title *</label>
+    <input id="field-title" type="text" maxlength="160" placeholder="Brief summary of the issue">
+
+    <label for="field-description">Description *</label>
+    <textarea id="field-description" rows="5" maxlength="4000" placeholder="Describe the issue in detail"></textarea>
+
+    <div class="row2">
+      <div>
+        <label for="field-priority">Priority</label>
+        <select id="field-priority">
+          <option value="">&#8212; select &#8212;</option>
+          <option value="Low">Low</option>
+          <option value="Medium">Medium</option>
+          <option value="High">High</option>
+          <option value="Critical">Critical</option>
+        </select>
+      </div>
+      <div>
+        <label for="field-type">Type</label>
+        <select id="field-type">
+          <option value="">&#8212; select &#8212;</option>
+          <option value="Incident">Incident</option>
+          <option value="Problem">Problem</option>
+          <option value="Request">Request</option>
+          <option value="Change">Change</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="field-user-email">Requester Email</label>
+    <input id="field-user-email" type="email" maxlength="254" placeholder="user@example.com">
+
+    <div class="row2">
+      <div>
+        <label for="field-first-name">First Name</label>
+        <input id="field-first-name" type="text" maxlength="80">
+      </div>
+      <div>
+        <label for="field-last-name">Last Name</label>
+        <input id="field-last-name" type="text" maxlength="80">
+      </div>
+    </div>
+
+    <button type="button" id="submit-btn" onclick="submitTicket()">Create Ticket</button>
+  </div>
+
+  <script>
+  function getCsrf() {
+    var match = document.cookie.match(/(?:^|; )ticketgal_csrf=([^;]*)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function submitTicket() {
+    var btn = document.getElementById("submit-btn");
+    var errEl = document.getElementById("form-error");
+    var okEl = document.getElementById("form-success");
+    errEl.hidden = true;
+    okEl.hidden = true;
+
+    var title = document.getElementById("field-title").value.trim();
+    var desc  = document.getElementById("field-description").value.trim();
+    if (!title) { errEl.textContent = "Title is required."; errEl.hidden = false; return; }
+    if (!desc)  { errEl.textContent = "Description is required."; errEl.hidden = false; return; }
+
+    var payload = { ticket_title: title, description: desc };
+    var priority  = document.getElementById("field-priority").value;
+    var type      = document.getElementById("field-type").value;
+    var email     = document.getElementById("field-user-email").value.trim();
+    var firstName = document.getElementById("field-first-name").value.trim();
+    var lastName  = document.getElementById("field-last-name").value.trim();
+    if (priority)  payload.ticket_priority       = priority;
+    if (type)      payload.ticket_type           = type;
+    if (email)     payload.end_user_email        = email;
+    if (firstName) payload.end_user_first_name   = firstName;
+    if (lastName)  payload.end_user_last_name    = lastName;
+
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+
+    fetch("/api/tickets", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "x-csrf-token": getCsrf() },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, status: r.status, data: d }; }); })
+    .then(function(r) {
+      if (r.ok || r.status === 202) {
+        var id = r.data && (r.data.ticket_id || (r.data.transaction && r.data.transaction.id ? "queued #" + r.data.transaction.id : null));
+        okEl.textContent = "Ticket created!" + (id ? " ID: " + id : "");
+        okEl.hidden = false;
+        document.getElementById("field-title").value = "";
+        document.getElementById("field-description").value = "";
+        document.getElementById("field-user-email").value = "";
+        document.getElementById("field-first-name").value = "";
+        document.getElementById("field-last-name").value = "";
+        btn.textContent = "Create Another";
+      } else {
+        errEl.textContent = (r.data && r.data.detail) ? r.data.detail : "Failed to create ticket.";
+        errEl.hidden = false;
+        btn.textContent = "Create Ticket";
+      }
+      btn.disabled = false;
+    })
+    .catch(function(e) {
+      errEl.textContent = "Network error. Is TicketGal reachable?";
+      errEl.hidden = false;
+      btn.disabled = false;
+      btn.textContent = "Create Ticket";
+    });
+  }
+  </script>
+</body>
+</html>"""
+
+
 @app.middleware("http")
 async def csrf_protect(request: Request, call_next: Any) -> Response:
     if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
@@ -334,7 +477,7 @@ async def csrf_protect(request: Request, call_next: Any) -> Response:
 @app.middleware("http")
 async def security_headers(request: Request, call_next: Any) -> Response:
     response = await call_next(request)
-    is_addin = request.url.path.startswith(ADDIN_PATH_PREFIX)
+    is_addin = request.url.path.startswith(ADDIN_PATH_PREFIXES)
     if is_addin:
         response.headers["Content-Security-Policy"] = _ADDIN_CSP
         # Office.js loads the task pane in an iframe — omit DENY so Outlook can frame it.
@@ -730,6 +873,9 @@ def _get_page_user_or_login_redirect(request: Request) -> Dict[str, Any] | Redir
 
 @app.get("/login")
 async def login_page(request: Request) -> Response:
+    next_url = request.query_params.get("next", "").strip()
+    if not (next_url.startswith("/") and not next_url.startswith("//")):
+        next_url = ""
     token = request.cookies.get(settings.session_cookie_name)
     if token:
         session = get_session(token)
@@ -737,7 +883,7 @@ async def login_page(request: Request) -> Response:
             user = get_user_by_id(int(session["user_id"]))
             if user and bool(user.get("is_active")) and bool(user.get("approved")):
                 return RedirectResponse(
-                    url="/admin" if user.get("role") == "admin" else "/portal",
+                    url=next_url or ("/admin" if user.get("role") == "admin" else "/portal"),
                     status_code=303,
                 )
     return _render_shell_html("login.html")
