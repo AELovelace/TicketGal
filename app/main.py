@@ -335,10 +335,33 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>New Ticket — TicketGal</title>
   <link rel="stylesheet" href="/outlook-addin/taskpane.css">
+  <style>
+    .drop-zone {
+      border: 1px dashed #c8a84b;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+      background: linear-gradient(180deg, #fffcf5, #f8f1e1);
+      color: #4a3b1f;
+      font-size: 12px;
+      cursor: default;
+      transition: background 120ms ease, border-color 120ms ease;
+      margin-bottom: 4px;
+    }
+    .drop-zone.dragover {
+      background: linear-gradient(180deg, #fff8e8, #f4e5bf);
+      border-color: #9f7b2d;
+    }
+  </style>
 </head>
 <body>
-  <div id="view-form" class="view">
+  <div class="view">
     <div class="brand">New Ticket</div>
+
+    <div id="drop-zone" class="drop-zone">
+      Drop an Outlook email or .eml/.msg file to auto-fill
+    </div>
+
     <div id="form-error" class="error-msg" hidden></div>
     <div id="form-success" class="ai-badge" style="color:#1a5c2e;background:#edf7f0;border-color:#8ecfaa" hidden></div>
 
@@ -389,17 +412,188 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+  // ---- utilities -----------------------------------------------------------
+
+  function safeText(v) { return (v === null || v === undefined) ? "" : String(v); }
+
   function getCsrf() {
-    var match = document.cookie.match(/(?:^|; )ticketgal_csrf=([^;]*)/);
-    return match ? decodeURIComponent(match[1]) : "";
+    var m = document.cookie.match(/(?:^|; )ticketgal_csrf=([^;]*)/);
+    return m ? decodeURIComponent(m[1]) : "";
   }
 
+  // ---- email parsing (ported from app.js) ----------------------------------
+
+  function stripAteraCssNoise(text) {
+    text = safeText(text).trim();
+    var cssBlock = /^(?:[.#a-zA-Z0-9_\\-\\s,>:+*\\[\\]="'()]+)\\{[^{}]{0,5000}\\}\\s*/;
+    for (var i = 0; i < 5; i++) { if (!cssBlock.test(text)) break; text = text.replace(cssBlock, "").trim(); }
+    text = text.replace(/^((?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\\s*,\\s*)+(?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\\s*\\{[^{}]{0,5000}\\}\\s*/i, "").trim();
+    text = text.replace(/^(?:[a-z-]+\\s*:\\s*[^;\\n]+;\\s*){2,}/i, "").trim();
+    return text;
+  }
+
+  function htmlToReadableText(value) {
+    var raw = safeText(value);
+    if (!raw) return "";
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(raw, "text/html");
+    doc.querySelectorAll("script, style, link").forEach(function(el) { el.remove(); });
+    var text = (doc.body ? doc.body.textContent : raw)
+      .replace(/\\r\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").replace(/[ \\t]{2,}/g, " ").trim();
+    return stripAteraCssNoise(text);
+  }
+
+  function isLikelyBinaryText(text) {
+    var v = safeText(text); if (!v) return false;
+    if ((v.match(/\\u0000/g) || []).length > 0) return true;
+    if ((v.match(/\\uFFFD/g) || []).length / v.length > 0.02) return true;
+    if ((v.match(/[\\u0001-\\u0008\\u000B\\u000C\\u000E-\\u001F]/g) || []).length / v.length > 0.01) return true;
+    return false;
+  }
+
+  function normalizeDroppedBody(text) {
+    var v = safeText(text).replace(/\\r\\n/g, "\\n");
+    if (!v || isLikelyBinaryText(v)) return "";
+    return v.replace(/[\\u0001-\\u0008\\u000B\\u000C\\u000E-\\u001F]/g, "").replace(/\\n{3,}/g, "\\n\\n").trim();
+  }
+
+  function parseEml(text) {
+    var subjectM = text.match(/^Subject:\\s*(.*)$/im);
+    var fromM    = text.match(/^From:\\s*(.*)$/im);
+    var parts    = text.split(/\\r?\\n\\r?\\n/);
+    var body     = parts.length > 1 ? parts.slice(1).join("\\n\\n") : text;
+    var email    = "";
+    if (fromM) {
+      var bracket = fromM[1].match(/<([^>]+)>/);
+      if (bracket) { email = bracket[1].trim(); }
+      else { var plain = fromM[1].match(/[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}/i); email = plain ? plain[0] : ""; }
+    }
+    return { subject: subjectM ? subjectM[1].trim() : "", from: email, body: body.trim() };
+  }
+
+  function hasParsedEmailContent(p) { return Boolean(p && (p.subject || p.body || p.from)); }
+
+  function parseDroppedText(text) {
+    var parsed = parseEml(text);
+    parsed.body = normalizeDroppedBody(parsed.body);
+    if (hasParsedEmailContent(parsed)) return parsed;
+    var norm = safeText(text).replace(/\\r\\n/g, "\\n").trim();
+    if (!norm) return { subject: "", from: "", body: "" };
+    var lines = norm.split("\\n");
+    var subjectLine = lines.find(function(l) { return /^subject\\s*:/i.test(l); });
+    var fromLine    = lines.find(function(l) { return /^from\\s*:/i.test(l); });
+    var subject = subjectLine ? subjectLine.replace(/^subject\\s*:/i, "").trim() : "";
+    var from = "";
+    if (fromLine) { var me = fromLine.match(/[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}/i); from = me ? me[0] : ""; }
+    return { subject: subject, from: from, body: normalizeDroppedBody(norm) };
+  }
+
+  function getDataTransferText(dataTransfer, type) {
+    if (!dataTransfer) return Promise.resolve("");
+    var sync = dataTransfer.getData(type);
+    if (sync) return Promise.resolve(sync);
+    var items = Array.from(dataTransfer.items || []);
+    var item = items.find(function(c) { return c.kind === "string" && safeText(c.type).toLowerCase() === type.toLowerCase(); });
+    if (!item) return Promise.resolve("");
+    return new Promise(function(resolve) { item.getAsString(function(v) { resolve(v || ""); }); });
+  }
+
+  function parseDroppedDataTransfer(dataTransfer) {
+    if (!dataTransfer) return Promise.resolve(null);
+    return getDataTransferText(dataTransfer, "text/plain").then(function(plain) {
+      var parsedPlain = plain ? parseDroppedText(plain) : null;
+      return getDataTransferText(dataTransfer, "text/html").then(function(html) {
+        var parsedHtml = null;
+        if (html) {
+          var textBody = htmlToReadableText(html);
+          parsedHtml = parseDroppedText(textBody);
+          if (!hasParsedEmailContent(parsedHtml) && textBody) {
+            parsedHtml = { subject: "", from: "", body: normalizeDroppedBody(textBody) };
+          }
+        }
+        var merged = {
+          subject: (parsedPlain && parsedPlain.subject) || (parsedHtml && parsedHtml.subject) || "",
+          from:    (parsedPlain && parsedPlain.from)    || (parsedHtml && parsedHtml.from)    || "",
+          body:    (parsedHtml  && parsedHtml.body)     || (parsedPlain && parsedPlain.body)   || "",
+        };
+        return hasParsedEmailContent(merged) ? merged : null;
+      });
+    });
+  }
+
+  function parseDroppedFileViaApi(file) {
+    var formData = new FormData();
+    formData.append("file", file);
+    var headers = new Headers();
+    var csrf = getCsrf();
+    if (csrf) headers.set("x-csrf-token", csrf);
+    return fetch("/api/emails/parse-drop", { method: "POST", body: formData, credentials: "include", headers: headers })
+      .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t || ("HTTP " + r.status)); });
+        return r.json();
+      })
+      .then(function(d) { return { subject: safeText(d && d.subject), from: safeText(d && d.from), body: safeText(d && d.body) }; });
+  }
+
+  function applyToForm(parsed) {
+    if (parsed.subject) document.getElementById("field-title").value = parsed.subject;
+    if (parsed.body)    document.getElementById("field-description").value = parsed.body.slice(0, 4000);
+    if (parsed.from)    document.getElementById("field-user-email").value  = parsed.from;
+  }
+
+  // ---- drop zone -----------------------------------------------------------
+
+  var dropZone = document.getElementById("drop-zone");
+
+  ["dragenter", "dragover"].forEach(function(evt) {
+    dropZone.addEventListener(evt, function(e) { e.preventDefault(); dropZone.classList.add("dragover"); });
+  });
+  ["dragleave", "drop"].forEach(function(evt) {
+    dropZone.addEventListener(evt, function(e) { e.preventDefault(); dropZone.classList.remove("dragover"); });
+  });
+
+  dropZone.addEventListener("drop", function(e) {
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length > 0) {
+      var file = files[0];
+      var name = safeText(file.name).toLowerCase();
+      if (name.endsWith(".eml") || name.endsWith(".msg") || file.type.startsWith("text/")) {
+        parseDroppedFileViaApi(file).catch(function() { return null; }).then(function(fromFile) {
+          return parseDroppedDataTransfer(e.dataTransfer).then(function(fromTransfer) {
+            var merged = {
+              subject: (fromFile && fromFile.subject) || (fromTransfer && fromTransfer.subject) || "",
+              from:    (fromFile && fromFile.from)    || (fromTransfer && fromTransfer.from)    || "",
+              body:    (fromTransfer && fromTransfer.body) || (fromFile && fromFile.body) || "",
+            };
+            if (hasParsedEmailContent(merged)) {
+              applyToForm(merged);
+              dropZone.textContent = "Loaded " + file.name + ". Review and create ticket.";
+              return;
+            }
+            dropZone.textContent = "Drop an Outlook email or .eml/.msg file to auto-fill";
+          });
+        });
+        return;
+      }
+    }
+    parseDroppedDataTransfer(e.dataTransfer).then(function(parsed) {
+      if (parsed && hasParsedEmailContent(parsed)) {
+        applyToForm(parsed);
+        dropZone.textContent = "Loaded email. Review and create ticket.";
+      } else {
+        dropZone.textContent = "Drop an Outlook email or .eml/.msg file to auto-fill";
+      }
+    });
+  });
+
+  // ---- ticket submission ---------------------------------------------------
+
   function submitTicket() {
-    var btn = document.getElementById("submit-btn");
+    var btn   = document.getElementById("submit-btn");
     var errEl = document.getElementById("form-error");
-    var okEl = document.getElementById("form-success");
+    var okEl  = document.getElementById("form-success");
     errEl.hidden = true;
-    okEl.hidden = true;
+    okEl.hidden  = true;
 
     var title = document.getElementById("field-title").value.trim();
     var desc  = document.getElementById("field-description").value.trim();
@@ -412,11 +606,11 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
     var email     = document.getElementById("field-user-email").value.trim();
     var firstName = document.getElementById("field-first-name").value.trim();
     var lastName  = document.getElementById("field-last-name").value.trim();
-    if (priority)  payload.ticket_priority       = priority;
-    if (type)      payload.ticket_type           = type;
-    if (email)     payload.end_user_email        = email;
-    if (firstName) payload.end_user_first_name   = firstName;
-    if (lastName)  payload.end_user_last_name    = lastName;
+    if (priority)  payload.ticket_priority     = priority;
+    if (type)      payload.ticket_type         = type;
+    if (email)     payload.end_user_email      = email;
+    if (firstName) payload.end_user_first_name = firstName;
+    if (lastName)  payload.end_user_last_name  = lastName;
 
     btn.disabled = true;
     btn.textContent = "Creating…";
@@ -433,11 +627,10 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
         var id = r.data && (r.data.ticket_id || (r.data.transaction && r.data.transaction.id ? "queued #" + r.data.transaction.id : null));
         okEl.textContent = "Ticket created!" + (id ? " ID: " + id : "");
         okEl.hidden = false;
-        document.getElementById("field-title").value = "";
-        document.getElementById("field-description").value = "";
-        document.getElementById("field-user-email").value = "";
-        document.getElementById("field-first-name").value = "";
-        document.getElementById("field-last-name").value = "";
+        ["field-title","field-description","field-user-email","field-first-name","field-last-name"].forEach(function(id) {
+          document.getElementById(id).value = "";
+        });
+        dropZone.textContent = "Drop an Outlook email or .eml/.msg file to auto-fill";
         btn.textContent = "Create Another";
       } else {
         errEl.textContent = (r.data && r.data.detail) ? r.data.detail : "Failed to create ticket.";
@@ -446,7 +639,7 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
       }
       btn.disabled = false;
     })
-    .catch(function(e) {
+    .catch(function() {
       errEl.textContent = "Network error. Is TicketGal reachable?";
       errEl.hidden = false;
       btn.disabled = false;
