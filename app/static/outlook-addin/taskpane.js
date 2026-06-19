@@ -251,15 +251,12 @@ function handleNewTicket() { checkAuth(); }
 
 // ---- init ----------------------------------------------------------------
 
-// Attach form listeners immediately — don't wait for Office.onReady so that
-// the login form is interactive even if Office.js initialisation is slow.
-document.addEventListener("DOMContentLoaded", function() {
-  document.getElementById("login-form").addEventListener("submit", handleLogin);
-  document.getElementById("ticket-form").addEventListener("submit", handleSubmit);
-  document.getElementById("new-ticket-btn").addEventListener("click", handleNewTicket);
-});
+// Script is at end of <body> so DOM is already ready — attach listeners directly.
+document.getElementById("login-form").addEventListener("submit", handleLogin);
+document.getElementById("ticket-form").addEventListener("submit", handleSubmit);
+document.getElementById("new-ticket-btn").addEventListener("click", handleNewTicket);
 
-// checkAuth needs the mailbox, so it still waits for Office to be ready.
+// checkAuth needs the mailbox context, so it waits for Office to be ready.
 Office.onReady(function() {
   checkAuth();
 });
