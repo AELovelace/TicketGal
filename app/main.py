@@ -359,7 +359,13 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
     <div class="brand">New Ticket</div>
 
     <div id="drop-zone" class="drop-zone">
-      Drop an Outlook email or .eml/.msg file to auto-fill
+      Drop an Outlook email here to auto-fill
+    </div>
+    <div style="text-align:center;margin-bottom:8px">
+      <label for="file-pick-input" style="font-size:11px;color:#6b5a2e;cursor:pointer;text-decoration:underline">
+        or click to browse for an .eml / .msg file
+      </label>
+      <input id="file-pick-input" type="file" accept=".eml,.msg,message/rfc822,application/vnd.ms-outlook" style="display:none">
     </div>
 
     <div id="form-error" class="error-msg" hidden></div>
@@ -544,54 +550,68 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
   // ---- drop zone (entire window is the target) ----------------------------
 
   var dropZone = document.getElementById("drop-zone");
-  var HINT_DEFAULT = "Drop an Outlook email or .eml/.msg file to auto-fill";
+  var HINT_DEFAULT = "Drop an Outlook email here to auto-fill";
   var HINT_ACTIVE  = "Release to load email…";
 
-  document.addEventListener("dragenter", function(e) { e.preventDefault(); dropZone.classList.add("dragover"); dropZone.textContent = HINT_ACTIVE; });
-  document.addEventListener("dragover",  function(e) { e.preventDefault(); dropZone.classList.add("dragover"); });
+  function handleFile(file) {
+    dropZone.textContent = "Parsing…";
+    parseDroppedFileViaApi(file)
+      .then(function(parsed) {
+        if (parsed && hasParsedEmailContent(parsed)) {
+          applyToForm(parsed);
+          dropZone.textContent = "Email loaded — review and submit.";
+        } else {
+          dropZone.textContent = HINT_DEFAULT;
+        }
+      })
+      .catch(function() { dropZone.textContent = HINT_DEFAULT; });
+  }
+
+  document.addEventListener("dragenter", function(e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropZone.classList.add("dragover"); dropZone.textContent = HINT_ACTIVE; });
+  document.addEventListener("dragover",  function(e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropZone.classList.add("dragover"); });
   document.addEventListener("dragleave", function(e) {
     if (e.relatedTarget === null) { dropZone.classList.remove("dragover"); dropZone.textContent = HINT_DEFAULT; }
   });
 
   document.addEventListener("drop", function(e) {
     e.preventDefault();
+    e.stopPropagation();
     dropZone.classList.remove("dragover");
-    dropZone.textContent = HINT_DEFAULT;
 
-    var dt    = e.dataTransfer;
-    var files = dt && dt.files;
-    if (files && files.length > 0) {
-      var file = files[0];
-      var name = safeText(file.name).toLowerCase();
-      if (name.endsWith(".eml") || name.endsWith(".msg") || file.type.startsWith("text/")) {
-        dropZone.textContent = "Parsing…";
-        parseDroppedFileViaApi(file).catch(function() { return null; }).then(function(fromFile) {
-          return parseDroppedDataTransfer(dt).then(function(fromTransfer) {
-            var merged = {
-              subject: (fromFile && fromFile.subject) || (fromTransfer && fromTransfer.subject) || "",
-              from:    (fromFile && fromFile.from)    || (fromTransfer && fromTransfer.from)    || "",
-              body:    (fromTransfer && fromTransfer.body) || (fromFile && fromFile.body) || "",
-            };
-            if (hasParsedEmailContent(merged)) {
-              applyToForm(merged);
-              dropZone.textContent = "Loaded " + file.name + " - review and submit.";
-            } else {
-              dropZone.textContent = HINT_DEFAULT;
-            }
-          });
-        });
-        return;
-      }
-    }
+    var dt = e.dataTransfer;
+
+    // Try DataTransfer text content first — avoids touching the file object,
+    // which is what triggers WebView2's native file-download interception.
+    dropZone.textContent = "Parsing…";
     parseDroppedDataTransfer(dt).then(function(parsed) {
       if (parsed && hasParsedEmailContent(parsed)) {
         applyToForm(parsed);
         dropZone.textContent = "Email loaded — review and submit.";
-      } else {
-        dropZone.textContent = HINT_DEFAULT;
+        return;
       }
+      // DataTransfer had no usable text — fall back to file (user may have dropped an .eml)
+      var files = dt && dt.files;
+      if (files && files.length > 0) {
+        var file = files[0];
+        var name = safeText(file.name).toLowerCase();
+        if (name.endsWith(".eml") || name.endsWith(".msg") || file.type.startsWith("text/")) {
+          handleFile(file);
+          return;
+        }
+      }
+      dropZone.textContent = HINT_DEFAULT;
     });
   });
+
+  // File picker (reliable fallback when drag triggers native download)
+  var fileInput = document.getElementById("file-pick-input");
+  if (fileInput) {
+    fileInput.addEventListener("change", function() {
+      var file = fileInput.files && fileInput.files[0];
+      if (file) { handleFile(file); }
+      fileInput.value = "";
+    });
+  }
 
   // ---- ticket submission ---------------------------------------------------
 
