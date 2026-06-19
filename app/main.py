@@ -543,6 +543,11 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
 
   // ---- drop zone -----------------------------------------------------------
 
+  // Prevent the WebView from opening dropped emails/files if the cursor drifts
+  // outside the drop zone element. Without this the browser navigates away.
+  document.addEventListener("dragover", function(e) { e.preventDefault(); });
+  document.addEventListener("drop",     function(e) { e.preventDefault(); });
+
   var dropZone = document.getElementById("drop-zone");
 
   ["dragenter", "dragover"].forEach(function(evt) {
