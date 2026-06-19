@@ -333,40 +333,37 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=Edge">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>New Ticket — TicketGal</title>
+  <title>New Ticket &#8212; TicketGal</title>
   <link rel="stylesheet" href="/outlook-addin/taskpane.css">
   <style>
-    .drop-zone {
-      border: 1px dashed #c8a84b;
-      border-radius: 8px;
-      padding: 12px;
-      text-align: center;
-      background: linear-gradient(180deg, #fffcf5, #f8f1e1);
-      color: #4a3b1f;
-      font-size: 12px;
-      cursor: default;
-      transition: background 120ms ease, border-color 120ms ease;
-      margin-bottom: 4px;
+    .ai-btn {
+      width: 100%;
+      background: linear-gradient(135deg, #5b3e9e, #7b5fc7);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 10px;
     }
-    .drop-zone.dragover {
-      background: linear-gradient(180deg, #fff8e8, #f4e5bf);
-      border-color: #9f7b2d;
+    .ai-btn:disabled { opacity: 0.55; cursor: default; }
+    #ai-note {
+      font-size: 11px;
+      color: #4a3b6e;
+      background: #ece8f8;
+      border: 1px solid #b8a8e8;
+      border-radius: 4px;
+      padding: 4px 8px;
+      margin-bottom: 8px;
+      display: none;
     }
   </style>
 </head>
 <body>
   <div class="view">
     <div class="brand">New Ticket</div>
-
-    <div id="drop-zone" class="drop-zone">
-      Drop an Outlook email here to auto-fill
-    </div>
-    <div style="text-align:center;margin-bottom:8px">
-      <label for="file-pick-input" style="font-size:11px;color:#6b5a2e;cursor:pointer;text-decoration:underline">
-        or click to browse for an .eml / .msg file
-      </label>
-      <input id="file-pick-input" type="file" accept=".eml,.msg,message/rfc822,application/vnd.ms-outlook" style="display:none">
-    </div>
 
     <div id="form-error" class="error-msg" hidden></div>
     <div id="form-success" class="ai-badge" style="color:#1a5c2e;background:#edf7f0;border-color:#8ecfaa" hidden></div>
@@ -375,7 +372,10 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
     <input id="field-title" type="text" maxlength="160" placeholder="Brief summary of the issue">
 
     <label for="field-description">Description *</label>
-    <textarea id="field-description" rows="5" maxlength="4000" placeholder="Describe the issue in detail"></textarea>
+    <textarea id="field-description" rows="6" maxlength="4000" placeholder="Paste or type the issue description"></textarea>
+
+    <button type="button" id="ai-btn" class="ai-btn" onclick="runAiCompose()">&#10024; AI Compose</button>
+    <div id="ai-note">AI rewrote the title and description.</div>
 
     <div class="row2">
       <div>
@@ -414,202 +414,88 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <label for="field-company">Company</label>
+    <select id="field-company">
+      <option value="">&#8212; select &#8212;</option>
+    </select>
+
     <button type="button" id="submit-btn" onclick="submitTicket()">Create Ticket</button>
   </div>
 
   <script>
-  // ---- utilities -----------------------------------------------------------
-
-  function safeText(v) { return (v === null || v === undefined) ? "" : String(v); }
-
   function getCsrf() {
     var m = document.cookie.match(/(?:^|; )ticketgal_csrf=([^;]*)/);
     return m ? decodeURIComponent(m[1]) : "";
   }
 
-  // ---- email parsing (ported from app.js) ----------------------------------
+  // ---- load companies -------------------------------------------------------
 
-  function stripAteraCssNoise(text) {
-    text = safeText(text).trim();
-    var cssBlock = /^(?:[.#a-zA-Z0-9_\\-\\s,>:+*\\[\\]="'()]+)\\{[^{}]{0,5000}\\}\\s*/;
-    for (var i = 0; i < 5; i++) { if (!cssBlock.test(text)) break; text = text.replace(cssBlock, "").trim(); }
-    text = text.replace(/^((?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\\s*,\\s*)+(?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)\\s*\\{[^{}]{0,5000}\\}\\s*/i, "").trim();
-    text = text.replace(/^(?:[a-z-]+\\s*:\\s*[^;\\n]+;\\s*){2,}/i, "").trim();
-    return text;
+  function loadCompanies() {
+    fetch("/api/admin/properties", { credentials: "include" })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data || !data.items) return;
+        var sel = document.getElementById("field-company");
+        var items = data.items.slice().sort(function(a, b) {
+          return (a.customer_name || "").localeCompare(b.customer_name || "");
+        });
+        items.forEach(function(item) {
+          var opt = document.createElement("option");
+          opt.value = item.customer_id;
+          opt.textContent = item.customer_name || ("Company " + item.customer_id);
+          sel.appendChild(opt);
+        });
+      })
+      .catch(function() {});
   }
 
-  function htmlToReadableText(value) {
-    var raw = safeText(value);
-    if (!raw) return "";
-    var parser = new DOMParser();
-    var doc = parser.parseFromString(raw, "text/html");
-    doc.querySelectorAll("script, style, link").forEach(function(el) { el.remove(); });
-    var text = (doc.body ? doc.body.textContent : raw)
-      .replace(/\\r\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").replace(/[ \\t]{2,}/g, " ").trim();
-    return stripAteraCssNoise(text);
-  }
+  // ---- AI Compose -----------------------------------------------------------
 
-  function isLikelyBinaryText(text) {
-    var v = safeText(text); if (!v) return false;
-    if ((v.match(/\\u0000/g) || []).length > 0) return true;
-    if ((v.match(/\\uFFFD/g) || []).length / v.length > 0.02) return true;
-    if ((v.match(/[\\u0001-\\u0008\\u000B\\u000C\\u000E-\\u001F]/g) || []).length / v.length > 0.01) return true;
-    return false;
-  }
-
-  function normalizeDroppedBody(text) {
-    var v = safeText(text).replace(/\\r\\n/g, "\\n");
-    if (!v || isLikelyBinaryText(v)) return "";
-    return v.replace(/[\\u0001-\\u0008\\u000B\\u000C\\u000E-\\u001F]/g, "").replace(/\\n{3,}/g, "\\n\\n").trim();
-  }
-
-  function parseEml(text) {
-    var subjectM = text.match(/^Subject:\\s*(.*)$/im);
-    var fromM    = text.match(/^From:\\s*(.*)$/im);
-    var parts    = text.split(/\\r?\\n\\r?\\n/);
-    var body     = parts.length > 1 ? parts.slice(1).join("\\n\\n") : text;
-    var email    = "";
-    if (fromM) {
-      var bracket = fromM[1].match(/<([^>]+)>/);
-      if (bracket) { email = bracket[1].trim(); }
-      else { var plain = fromM[1].match(/[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}/i); email = plain ? plain[0] : ""; }
+  function runAiCompose() {
+    var title = document.getElementById("field-title").value.trim();
+    var desc  = document.getElementById("field-description").value.trim();
+    var errEl = document.getElementById("form-error");
+    errEl.hidden = true;
+    if (!desc && !title) {
+      errEl.textContent = "Enter a title or description first.";
+      errEl.hidden = false;
+      return;
     }
-    return { subject: subjectM ? subjectM[1].trim() : "", from: email, body: body.trim() };
-  }
+    var btn  = document.getElementById("ai-btn");
+    var note = document.getElementById("ai-note");
+    btn.disabled = true;
+    btn.textContent = "Thinking...";
+    note.style.display = "none";
 
-  function hasParsedEmailContent(p) { return Boolean(p && (p.subject || p.body || p.from)); }
+    var payload = { description: desc || title };
+    if (title) payload.ticket_title = title;
 
-  function parseDroppedText(text) {
-    var parsed = parseEml(text);
-    parsed.body = normalizeDroppedBody(parsed.body);
-    if (hasParsedEmailContent(parsed)) return parsed;
-    var norm = safeText(text).replace(/\\r\\n/g, "\\n").trim();
-    if (!norm) return { subject: "", from: "", body: "" };
-    var lines = norm.split("\\n");
-    var subjectLine = lines.find(function(l) { return /^subject\\s*:/i.test(l); });
-    var fromLine    = lines.find(function(l) { return /^from\\s*:/i.test(l); });
-    var subject = subjectLine ? subjectLine.replace(/^subject\\s*:/i, "").trim() : "";
-    var from = "";
-    if (fromLine) { var me = fromLine.match(/[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}/i); from = me ? me[0] : ""; }
-    return { subject: subject, from: from, body: normalizeDroppedBody(norm) };
-  }
-
-  function getDataTransferText(dataTransfer, type) {
-    if (!dataTransfer) return Promise.resolve("");
-    var sync = dataTransfer.getData(type);
-    if (sync) return Promise.resolve(sync);
-    var items = Array.from(dataTransfer.items || []);
-    var item = items.find(function(c) { return c.kind === "string" && safeText(c.type).toLowerCase() === type.toLowerCase(); });
-    if (!item) return Promise.resolve("");
-    return new Promise(function(resolve) { item.getAsString(function(v) { resolve(v || ""); }); });
-  }
-
-  function parseDroppedDataTransfer(dataTransfer) {
-    if (!dataTransfer) return Promise.resolve(null);
-    return getDataTransferText(dataTransfer, "text/plain").then(function(plain) {
-      var parsedPlain = plain ? parseDroppedText(plain) : null;
-      return getDataTransferText(dataTransfer, "text/html").then(function(html) {
-        var parsedHtml = null;
-        if (html) {
-          var textBody = htmlToReadableText(html);
-          parsedHtml = parseDroppedText(textBody);
-          if (!hasParsedEmailContent(parsedHtml) && textBody) {
-            parsedHtml = { subject: "", from: "", body: normalizeDroppedBody(textBody) };
-          }
-        }
-        var merged = {
-          subject: (parsedPlain && parsedPlain.subject) || (parsedHtml && parsedHtml.subject) || "",
-          from:    (parsedPlain && parsedPlain.from)    || (parsedHtml && parsedHtml.from)    || "",
-          body:    (parsedHtml  && parsedHtml.body)     || (parsedPlain && parsedPlain.body)   || "",
-        };
-        return hasParsedEmailContent(merged) ? merged : null;
-      });
-    });
-  }
-
-  function parseDroppedFileViaApi(file) {
-    var formData = new FormData();
-    formData.append("file", file);
-    var headers = new Headers();
-    var csrf = getCsrf();
-    if (csrf) headers.set("x-csrf-token", csrf);
-    return fetch("/api/emails/parse-drop", { method: "POST", body: formData, credentials: "include", headers: headers })
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { throw new Error(t || ("HTTP " + r.status)); });
-        return r.json();
-      })
-      .then(function(d) { return { subject: safeText(d && d.subject), from: safeText(d && d.from), body: safeText(d && d.body) }; });
-  }
-
-  function applyToForm(parsed) {
-    if (parsed.subject) document.getElementById("field-title").value = parsed.subject;
-    if (parsed.body)    document.getElementById("field-description").value = parsed.body.slice(0, 4000);
-    if (parsed.from)    document.getElementById("field-user-email").value  = parsed.from;
-  }
-
-  // ---- drop zone (entire window is the target) ----------------------------
-
-  var dropZone = document.getElementById("drop-zone");
-  var HINT_DEFAULT = "Drop an Outlook email here to auto-fill";
-  var HINT_ACTIVE  = "Release to load email…";
-
-  function handleFile(file) {
-    dropZone.textContent = "Parsing…";
-    parseDroppedFileViaApi(file)
-      .then(function(parsed) {
-        if (parsed && hasParsedEmailContent(parsed)) {
-          applyToForm(parsed);
-          dropZone.textContent = "Email loaded — review and submit.";
-        } else {
-          dropZone.textContent = HINT_DEFAULT;
-        }
-      })
-      .catch(function() { dropZone.textContent = HINT_DEFAULT; });
-  }
-
-  document.addEventListener("dragenter", function(e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropZone.classList.add("dragover"); dropZone.textContent = HINT_ACTIVE; });
-  document.addEventListener("dragover",  function(e) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropZone.classList.add("dragover"); });
-  document.addEventListener("dragleave", function(e) {
-    if (e.relatedTarget === null) { dropZone.classList.remove("dragover"); dropZone.textContent = HINT_DEFAULT; }
-  });
-
-  document.addEventListener("drop", function(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    dropZone.classList.remove("dragover");
-
-    var dt = e.dataTransfer;
-
-    // Try DataTransfer text content first — avoids touching the file object,
-    // which is what triggers WebView2's native file-download interception.
-    dropZone.textContent = "Parsing…";
-    parseDroppedDataTransfer(dt).then(function(parsed) {
-      if (parsed && hasParsedEmailContent(parsed)) {
-        applyToForm(parsed);
-        dropZone.textContent = "Email loaded — review and submit.";
-        return;
+    fetch("/api/tickets/ai-assist", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "x-csrf-token": getCsrf() },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+    .then(function(r) {
+      if (r.ok && r.data) {
+        if (r.data.ticket_title)    document.getElementById("field-title").value       = r.data.ticket_title;
+        if (r.data.description)     document.getElementById("field-description").value = r.data.description;
+        if (r.data.ticket_priority) document.getElementById("field-priority").value    = r.data.ticket_priority;
+        if (r.data.ticket_type)     document.getElementById("field-type").value        = r.data.ticket_type;
+        note.style.display = "";
+      } else {
+        errEl.textContent = (r.data && r.data.detail) ? r.data.detail : "AI Compose failed.";
+        errEl.hidden = false;
       }
-      // DataTransfer had no usable text — fall back to file (user may have dropped an .eml)
-      var files = dt && dt.files;
-      if (files && files.length > 0) {
-        var file = files[0];
-        var name = safeText(file.name).toLowerCase();
-        if (name.endsWith(".eml") || name.endsWith(".msg") || file.type.startsWith("text/")) {
-          handleFile(file);
-          return;
-        }
-      }
-      dropZone.textContent = HINT_DEFAULT;
-    });
-  });
-
-  // File picker (reliable fallback when drag triggers native download)
-  var fileInput = document.getElementById("file-pick-input");
-  if (fileInput) {
-    fileInput.addEventListener("change", function() {
-      var file = fileInput.files && fileInput.files[0];
-      if (file) { handleFile(file); }
-      fileInput.value = "";
+    })
+    .catch(function() {
+      errEl.textContent = "Network error during AI Compose.";
+      errEl.hidden = false;
+    })
+    .then(function() {
+      btn.disabled = false;
+      btn.textContent = "\\u2728 AI Compose";
     });
   }
 
@@ -627,20 +513,24 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
     if (!title) { errEl.textContent = "Title is required."; errEl.hidden = false; return; }
     if (!desc)  { errEl.textContent = "Description is required."; errEl.hidden = false; return; }
 
-    var payload = { ticket_title: title, description: desc };
-    var priority  = document.getElementById("field-priority").value;
-    var type      = document.getElementById("field-type").value;
-    var email     = document.getElementById("field-user-email").value.trim();
-    var firstName = document.getElementById("field-first-name").value.trim();
-    var lastName  = document.getElementById("field-last-name").value.trim();
-    if (priority)  payload.ticket_priority     = priority;
-    if (type)      payload.ticket_type         = type;
-    if (email)     payload.end_user_email      = email;
-    if (firstName) payload.end_user_first_name = firstName;
-    if (lastName)  payload.end_user_last_name  = lastName;
+    var payload      = { ticket_title: title, description: desc };
+    var priority     = document.getElementById("field-priority").value;
+    var type         = document.getElementById("field-type").value;
+    var email        = document.getElementById("field-user-email").value.trim();
+    var firstName    = document.getElementById("field-first-name").value.trim();
+    var lastName     = document.getElementById("field-last-name").value.trim();
+    var companyVal   = document.getElementById("field-company").value;
+    var customerId   = companyVal ? parseInt(companyVal, 10) : 0;
+
+    if (priority)   payload.ticket_priority     = priority;
+    if (type)       payload.ticket_type         = type;
+    if (email)      payload.end_user_email      = email;
+    if (firstName)  payload.end_user_first_name = firstName;
+    if (lastName)   payload.end_user_last_name  = lastName;
+    if (customerId) payload.customer_id         = customerId;
 
     btn.disabled = true;
-    btn.textContent = "Creating…";
+    btn.textContent = "Creating...";
 
     fetch("/api/tickets", {
       method: "POST",
@@ -651,13 +541,16 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
     .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, status: r.status, data: d }; }); })
     .then(function(r) {
       if (r.ok || r.status === 202) {
-        var id = r.data && (r.data.ticket_id || (r.data.transaction && r.data.transaction.id ? "queued #" + r.data.transaction.id : null));
-        okEl.textContent = "Ticket created!" + (id ? " ID: " + id : "");
+        var tid = r.data && (r.data.ticket_id || (r.data.transaction && r.data.transaction.id ? "queued #" + r.data.transaction.id : null));
+        okEl.textContent = "Ticket created!" + (tid ? " ID: " + tid : "");
         okEl.hidden = false;
-        ["field-title","field-description","field-user-email","field-first-name","field-last-name"].forEach(function(id) {
-          document.getElementById(id).value = "";
+        ["field-title","field-description","field-user-email","field-first-name","field-last-name"].forEach(function(fid) {
+          document.getElementById(fid).value = "";
         });
-        dropZone.textContent = HINT_DEFAULT;
+        document.getElementById("field-priority").value = "";
+        document.getElementById("field-type").value     = "";
+        document.getElementById("field-company").value  = "";
+        document.getElementById("ai-note").style.display = "none";
         btn.textContent = "Create Another";
       } else {
         errEl.textContent = (r.data && r.data.detail) ? r.data.detail : "Failed to create ticket.";
@@ -673,6 +566,8 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
       btn.textContent = "Create Ticket";
     });
   }
+
+  loadCompanies();
   </script>
 </body>
 </html>"""
