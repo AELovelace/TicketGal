@@ -541,30 +541,32 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
     if (parsed.from)    document.getElementById("field-user-email").value  = parsed.from;
   }
 
-  // ---- drop zone -----------------------------------------------------------
-
-  // Prevent the WebView from opening dropped emails/files if the cursor drifts
-  // outside the drop zone element. Without this the browser navigates away.
-  document.addEventListener("dragover", function(e) { e.preventDefault(); });
-  document.addEventListener("drop",     function(e) { e.preventDefault(); });
+  // ---- drop zone (entire window is the target) ----------------------------
 
   var dropZone = document.getElementById("drop-zone");
+  var HINT_DEFAULT = "Drop an Outlook email or .eml/.msg file to auto-fill";
+  var HINT_ACTIVE  = "Release to load email…";
 
-  ["dragenter", "dragover"].forEach(function(evt) {
-    dropZone.addEventListener(evt, function(e) { e.preventDefault(); dropZone.classList.add("dragover"); });
-  });
-  ["dragleave", "drop"].forEach(function(evt) {
-    dropZone.addEventListener(evt, function(e) { e.preventDefault(); dropZone.classList.remove("dragover"); });
+  document.addEventListener("dragenter", function(e) { e.preventDefault(); dropZone.classList.add("dragover"); dropZone.textContent = HINT_ACTIVE; });
+  document.addEventListener("dragover",  function(e) { e.preventDefault(); dropZone.classList.add("dragover"); });
+  document.addEventListener("dragleave", function(e) {
+    if (e.relatedTarget === null) { dropZone.classList.remove("dragover"); dropZone.textContent = HINT_DEFAULT; }
   });
 
-  dropZone.addEventListener("drop", function(e) {
-    var files = e.dataTransfer && e.dataTransfer.files;
+  document.addEventListener("drop", function(e) {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+    dropZone.textContent = HINT_DEFAULT;
+
+    var dt    = e.dataTransfer;
+    var files = dt && dt.files;
     if (files && files.length > 0) {
       var file = files[0];
       var name = safeText(file.name).toLowerCase();
       if (name.endsWith(".eml") || name.endsWith(".msg") || file.type.startsWith("text/")) {
+        dropZone.textContent = "Parsing…";
         parseDroppedFileViaApi(file).catch(function() { return null; }).then(function(fromFile) {
-          return parseDroppedDataTransfer(e.dataTransfer).then(function(fromTransfer) {
+          return parseDroppedDataTransfer(dt).then(function(fromTransfer) {
             var merged = {
               subject: (fromFile && fromFile.subject) || (fromTransfer && fromTransfer.subject) || "",
               from:    (fromFile && fromFile.from)    || (fromTransfer && fromTransfer.from)    || "",
@@ -572,21 +574,21 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
             };
             if (hasParsedEmailContent(merged)) {
               applyToForm(merged);
-              dropZone.textContent = "Loaded " + file.name + ". Review and create ticket.";
-              return;
+              dropZone.textContent = "Loaded " + file.name + " - review and submit.";
+            } else {
+              dropZone.textContent = HINT_DEFAULT;
             }
-            dropZone.textContent = "Drop an Outlook email or .eml/.msg file to auto-fill";
           });
         });
         return;
       }
     }
-    parseDroppedDataTransfer(e.dataTransfer).then(function(parsed) {
+    parseDroppedDataTransfer(dt).then(function(parsed) {
       if (parsed && hasParsedEmailContent(parsed)) {
         applyToForm(parsed);
-        dropZone.textContent = "Loaded email. Review and create ticket.";
+        dropZone.textContent = "Email loaded — review and submit.";
       } else {
-        dropZone.textContent = "Drop an Outlook email or .eml/.msg file to auto-fill";
+        dropZone.textContent = HINT_DEFAULT;
       }
     });
   });
@@ -635,7 +637,7 @@ _ADDIN_NEW_TICKET_HTML = """<!DOCTYPE html>
         ["field-title","field-description","field-user-email","field-first-name","field-last-name"].forEach(function(id) {
           document.getElementById(id).value = "";
         });
-        dropZone.textContent = "Drop an Outlook email or .eml/.msg file to auto-fill";
+        dropZone.textContent = HINT_DEFAULT;
         btn.textContent = "Create Another";
       } else {
         errEl.textContent = (r.data && r.data.detail) ? r.data.detail : "Failed to create ticket.";
