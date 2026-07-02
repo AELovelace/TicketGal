@@ -147,6 +147,8 @@ USER_PASSWORD_AUTH_ENABLED=0
 # ── OpenAI (optional) ─────────────────────────────────────────
 # OPENAI_API_KEY=
 # OPENAI_MODEL=gpt-4o-mini
+# OPENAI_REPORT_MODEL=server-1
+# OPENAI_REWRITE_MODEL=server-2
 # OPENAI_BASE_URL=https://api.openai.com/v1
 # OPENAI_TIMEOUT_SECONDS=300
 

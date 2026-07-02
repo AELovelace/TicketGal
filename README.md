@@ -171,7 +171,11 @@ Relevant settings:
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
+- `OPENAI_REPORT_MODEL`
+- `OPENAI_REWRITE_MODEL`
 - `OPENAI_TIMEOUT_SECONDS`
+
+`OPENAI_MODEL` remains the shared fallback. If you set `OPENAI_REPORT_MODEL`, report summary jobs use that model. If you set `OPENAI_REWRITE_MODEL`, ticket AI assist, comment recompose, and knowledgebase rewrites use that model.
 
 If the configured provider needs a key and no key is set, the app falls back to deterministic local rewriting instead of failing hard.
 

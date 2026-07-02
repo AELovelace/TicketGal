@@ -2433,6 +2433,12 @@ def _get_ollama_native_endpoint(base_url: str) -> str:
     return f"{normalized}/api/chat"
 
 
+def _get_ai_model(purpose: str) -> str:
+    if purpose == "report":
+        return settings.openai_report_model
+    return settings.openai_rewrite_model
+
+
 def _sanitize_professional_language(text: str) -> str:
     cleaned = _normalize_parsed_text(text)
     replacements = [
@@ -2654,8 +2660,10 @@ async def ai_assist_ticket(
         {"role": "user", "content": user_prompt},
     ]
 
+    rewrite_model = _get_ai_model("rewrite")
+
     payload: Dict[str, Any] = {
-        "model": settings.openai_model,
+        "model": rewrite_model,
         "messages": messages,
         "temperature": 0.2,
         "stream": False,
@@ -2672,7 +2680,7 @@ async def ai_assist_ticket(
         async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
             if _looks_like_ollama_base_url(settings.openai_base_url):
                 native_payload: Dict[str, Any] = {
-                    "model": settings.openai_model,
+                    "model": rewrite_model,
                     "messages": messages,
                     "stream": False,
                     "format": "json",
@@ -3548,6 +3556,8 @@ async def get_reports_summary(
         return result
 
     try:
+        report_model = _get_ai_model("report")
+
         def _strip_css_noise(text: str) -> str:
             value = str(text or "")
             value = re.sub(
@@ -3698,7 +3708,7 @@ async def get_reports_summary(
         async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
             if _looks_like_ollama_base_url(settings.openai_base_url):
                 native_payload: Dict[str, Any] = {
-                    "model": settings.openai_model,
+                    "model": report_model,
                     "messages": messages,
                     "stream": False,
                     "think": False,
@@ -3714,7 +3724,7 @@ async def get_reports_summary(
                 )
             else:
                 payload: Dict[str, Any] = {
-                    "model": settings.openai_model,
+                    "model": report_model,
                     "messages": messages,
                     "temperature": 0.4,
                     "stream": False,
@@ -3768,7 +3778,7 @@ async def get_reports_summary(
 
                 if _looks_like_ollama_base_url(settings.openai_base_url):
                     pending_payload: Dict[str, Any] = {
-                        "model": settings.openai_model,
+                        "model": report_model,
                         "messages": pending_messages,
                         "stream": False,
                         "think": False,
@@ -3784,7 +3794,7 @@ async def get_reports_summary(
                     )
                 else:
                     pending_payload = {
-                        "model": settings.openai_model,
+                        "model": report_model,
                         "messages": pending_messages,
                         "temperature": 0.25,
                         "stream": False,
@@ -3823,7 +3833,7 @@ async def get_reports_summary(
 
                         if _looks_like_ollama_base_url(settings.openai_base_url):
                             rewrite_payload: Dict[str, Any] = {
-                                "model": settings.openai_model,
+                                "model": report_model,
                                 "messages": rewrite_messages,
                                 "stream": False,
                                 "think": False,
@@ -3836,7 +3846,7 @@ async def get_reports_summary(
                             )
                         else:
                             rewrite_payload = {
-                                "model": settings.openai_model,
+                                "model": report_model,
                                 "messages": rewrite_messages,
                                 "temperature": 0.2,
                                 "stream": False,
@@ -3888,7 +3898,7 @@ async def get_reports_summary(
 
                 if _looks_like_ollama_base_url(settings.openai_base_url):
                     open_payload: Dict[str, Any] = {
-                        "model": settings.openai_model,
+                        "model": report_model,
                         "messages": open_messages,
                         "stream": False,
                         "think": False,
@@ -3904,7 +3914,7 @@ async def get_reports_summary(
                     )
                 else:
                     open_payload = {
-                        "model": settings.openai_model,
+                        "model": report_model,
                         "messages": open_messages,
                         "temperature": 0.25,
                         "stream": False,
@@ -3953,7 +3963,7 @@ async def get_reports_summary(
 
                 if _looks_like_ollama_base_url(settings.openai_base_url):
                     resolved_payload: Dict[str, Any] = {
-                        "model": settings.openai_model,
+                        "model": report_model,
                         "messages": resolved_messages,
                         "stream": False,
                         "think": False,
@@ -3969,7 +3979,7 @@ async def get_reports_summary(
                     )
                 else:
                     resolved_payload = {
-                        "model": settings.openai_model,
+                        "model": report_model,
                         "messages": resolved_messages,
                         "temperature": 0.2,
                         "stream": False,
@@ -4111,8 +4121,9 @@ async def rewrite_kb_selection_endpoint(
         return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
     async def _request_rewrite(messages: List[Dict[str, str]], temperature: float = 0.2) -> str:
+        rewrite_model = _get_ai_model("rewrite")
         payload: Dict[str, Any] = {
-            "model": settings.openai_model,
+            "model": rewrite_model,
             "messages": messages,
             "temperature": temperature,
             "stream": False,
@@ -4129,7 +4140,7 @@ async def rewrite_kb_selection_endpoint(
             async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
                 if _looks_like_ollama_base_url(settings.openai_base_url):
                     native_payload: Dict[str, Any] = {
-                        "model": settings.openai_model,
+                        "model": rewrite_model,
                         "messages": messages,
                         "stream": False,
                         "think": False,

@@ -125,7 +125,9 @@ class Settings:
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+        self.openai_report_model = os.getenv("OPENAI_REPORT_MODEL", self.openai_model).strip() or self.openai_model
+        self.openai_rewrite_model = os.getenv("OPENAI_REWRITE_MODEL", self.openai_model).strip() or self.openai_model
         self.openai_timeout_seconds = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "300"))
         self.microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID", "")
         self.microsoft_client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "")
