@@ -259,37 +259,53 @@ def _create_transactions_schema() -> None:
             ON transaction_queue(ticket_id)
             """
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS report_jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                requested_by_user_id INTEGER,
-                period TEXT NOT NULL CHECK(period IN ('week','month','year','custom')),
-                custom_start TEXT,
-                custom_end TEXT,
-                status TEXT NOT NULL CHECK(status IN ('pending','in_progress','failed','completed')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                started_at TEXT,
-                completed_at TEXT,
-                last_error TEXT,
-                result_json TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_report_jobs_status_id
-            ON report_jobs(status, id)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_report_jobs_requested_by_status
-            ON report_jobs(requested_by_user_id, status, id)
-            """
-        )
+        _ensure_report_jobs_schema(conn)
         conn.commit()
+
+
+def _ensure_report_jobs_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requested_by_user_id INTEGER,
+            ai_mode TEXT NOT NULL DEFAULT 'standard' CHECK(ai_mode IN ('standard','fast')),
+            period TEXT NOT NULL CHECK(period IN ('week','month','year','custom')),
+            custom_start TEXT,
+            custom_end TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending','in_progress','failed','completed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            last_error TEXT,
+            result_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_report_jobs_status_id
+        ON report_jobs(status, id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_report_jobs_requested_by_status
+        ON report_jobs(requested_by_user_id, status, id)
+        """
+    )
+    columns = {
+        str(row["name"] or "").strip().lower()
+        for row in conn.execute("PRAGMA table_info(report_jobs)").fetchall()
+    }
+    if "ai_mode" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE report_jobs
+            ADD COLUMN ai_mode TEXT NOT NULL DEFAULT 'standard'
+            """
+        )
 
 
 def _recover_in_progress_transactions() -> None:
@@ -310,6 +326,7 @@ def _recover_in_progress_transactions() -> None:
 def _recover_in_progress_report_jobs() -> None:
     now_iso = _utc_now_iso()
     with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
         conn.execute(
             """
             UPDATE report_jobs
@@ -1583,17 +1600,21 @@ def create_report_job(
     custom_start: Optional[str] = None,
     custom_end: Optional[str] = None,
     requested_by_user_id: Optional[int] = None,
+    ai_mode: str = "standard",
 ) -> Dict[str, Any]:
     now_iso = _utc_now_iso()
     normalized_start = str(custom_start or "").strip() or None
     normalized_end = str(custom_end or "").strip() or None
+    normalized_ai_mode = "fast" if str(ai_mode or "").strip().lower() == "fast" else "standard"
 
     with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
         existing = conn.execute(
             """
             SELECT *
             FROM report_jobs
             WHERE requested_by_user_id IS ?
+              AND ai_mode = ?
               AND period = ?
               AND COALESCE(custom_start, '') = ?
               AND COALESCE(custom_end, '') = ?
@@ -1603,6 +1624,7 @@ def create_report_job(
             """,
             (
                 requested_by_user_id,
+                normalized_ai_mode,
                 period,
                 normalized_start or "",
                 normalized_end or "",
@@ -1617,6 +1639,7 @@ def create_report_job(
             """
             INSERT INTO report_jobs(
                 requested_by_user_id,
+                ai_mode,
                 period,
                 custom_start,
                 custom_end,
@@ -1624,10 +1647,11 @@ def create_report_job(
                 created_at,
                 updated_at
             )
-            VALUES(?, ?, ?, ?, 'pending', ?, ?)
+            VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 requested_by_user_id,
+                normalized_ai_mode,
                 period,
                 normalized_start,
                 normalized_end,
@@ -1648,6 +1672,7 @@ def claim_next_report_job() -> Optional[Dict[str, Any]]:
     now_iso = _utc_now_iso()
 
     with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
 
         active = conn.execute(
@@ -1697,6 +1722,7 @@ def mark_report_job_completed(job_id: int, result: Dict[str, Any]) -> None:
     now_iso = _utc_now_iso()
     result_json = json.dumps(result, separators=(",", ":"), ensure_ascii=True)
     with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
         conn.execute(
             """
             UPDATE report_jobs
@@ -1712,9 +1738,44 @@ def mark_report_job_completed(job_id: int, result: Dict[str, Any]) -> None:
         conn.commit()
 
 
+def update_report_job_progress(job_id: int, partial_result: Dict[str, Any]) -> None:
+    if not partial_result:
+        return
+
+    now_iso = _utc_now_iso()
+    with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
+        row = conn.execute("SELECT result_json FROM report_jobs WHERE id = ?", (int(job_id),)).fetchone()
+
+        merged: Dict[str, Any] = {}
+        if row is not None:
+            raw_result = str(row["result_json"] or "").strip()
+            if raw_result:
+                try:
+                    parsed = json.loads(raw_result)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    merged.update(parsed)
+
+        merged.update(partial_result)
+        result_json = json.dumps(merged, separators=(",", ":"), ensure_ascii=True)
+        conn.execute(
+            """
+            UPDATE report_jobs
+            SET updated_at = ?,
+                result_json = ?
+            WHERE id = ?
+            """,
+            (now_iso, result_json, int(job_id)),
+        )
+        conn.commit()
+
+
 def mark_report_job_failed(job_id: int, error_message: str) -> None:
     now_iso = _utc_now_iso()
     with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
         conn.execute(
             """
             UPDATE report_jobs
@@ -1732,6 +1793,7 @@ def mark_report_job_failed(job_id: int, error_message: str) -> None:
 
 def get_report_job(job_id: int) -> Optional[Dict[str, Any]]:
     with get_transactions_conn() as conn:
+        _ensure_report_jobs_schema(conn)
         row = conn.execute("SELECT * FROM report_jobs WHERE id = ?", (int(job_id),)).fetchone()
     return _decode_report_job_row(row)
 

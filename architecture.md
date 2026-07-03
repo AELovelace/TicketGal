@@ -200,8 +200,9 @@ This supports degraded reads and reporting even when Atera is unavailable.
 Configured by `TICKET_TRANSACTIONS_DB_PATH`, this stores:
 
 - `transaction_queue`
+- `report_jobs`
 
-This is the retryable write queue used during upstream outages.
+This is the retryable write queue used during upstream outages, plus the background AI report jobs that the UI polls while long report summaries run off-request.
 
 Splitting the data by responsibility is a sensible design choice here. It reduces contention between app state, read cache, and queued writes, while keeping each SQLite file conceptually focused.
 

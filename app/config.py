@@ -128,7 +128,21 @@ class Settings:
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
         self.openai_report_model = os.getenv("OPENAI_REPORT_MODEL", self.openai_model).strip() or self.openai_model
         self.openai_rewrite_model = os.getenv("OPENAI_REWRITE_MODEL", self.openai_model).strip() or self.openai_model
-        self.openai_timeout_seconds = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "300"))
+        self.openai_timeout_seconds = max(1, int(os.getenv("OPENAI_TIMEOUT_SECONDS", "300")))
+        self.openai_report_timeout_seconds = max(
+            1,
+            int(os.getenv("OPENAI_REPORT_TIMEOUT_SECONDS", str(self.openai_timeout_seconds))),
+        )
+        self.fast_openai_api_key = os.getenv("FAST_OPENAI_API_KEY", "").strip()
+        self.fast_openai_base_url = os.getenv("FAST_OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        self.fast_openai_model = os.getenv("FAST_OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+        self.fast_openai_report_model = (
+            os.getenv("FAST_OPENAI_REPORT_MODEL", self.fast_openai_model).strip() or self.fast_openai_model
+        )
+        self.fast_openai_report_timeout_seconds = max(
+            1,
+            int(os.getenv("FAST_OPENAI_REPORT_TIMEOUT_SECONDS", "180")),
+        )
         self.microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID", "")
         self.microsoft_client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "")
         self.microsoft_tenant_id = os.getenv("MICROSOFT_TENANT_ID", "common").strip() or "common"

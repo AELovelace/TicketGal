@@ -1247,7 +1247,11 @@ async function api(path, options = {}) {
     } else {
       detail = await response.text();
     }
-    throw new Error(detail || `HTTP ${response.status}`);
+    const error = new Error(formatApiErrorDetail(detail, response.status));
+    error.status = response.status;
+    error.rawDetail = detail;
+    error.isTransientProxy = [502, 503, 504].includes(response.status);
+    throw error;
   }
 
   const contentType = response.headers.get("content-type") || "";
@@ -1256,6 +1260,63 @@ async function api(path, options = {}) {
   }
 
   return response.json();
+}
+
+function looksLikeHtmlErrorDocument(detail) {
+  const text = safeText(detail).trim();
+  return /^<!doctype html/i.test(text) || /^<html[\s>]/i.test(text);
+}
+
+function formatApiErrorDetail(detail, status) {
+  const text = safeText(detail).trim();
+  if (!text) {
+    return `HTTP ${status}`;
+  }
+  if (looksLikeHtmlErrorDocument(text)) {
+    if ([502, 503, 504].includes(Number(status || 0))) {
+      return `Temporary upstream proxy error (HTTP ${status})`;
+    }
+    return `Unexpected HTML error response (HTTP ${status})`;
+  }
+  return text;
+}
+
+function isTransientReportJobError(error) {
+  if (!error) return false;
+  if (error.isTransientProxy) return true;
+  if (safeText(error.name) === "TypeError") return true;
+  const status = Number(error.status || 0);
+  if ([502, 503, 504].includes(status)) return true;
+  return /bad gateway|gateway timeout|service unavailable|networkerror|failed to fetch/i.test(safeText(error.message));
+}
+
+function setReportAiLoadingMessage(aiLoadingEl, message) {
+  if (!aiLoadingEl) return;
+  const label = aiLoadingEl.querySelector("span:last-child");
+  if (!label) return;
+  label.textContent = safeText(message) || "Generating workload analysis...";
+}
+
+async function apiWithTransientRetry(path, options = {}, retryOptions = {}) {
+  const maxAttempts = Math.max(1, Number(retryOptions.maxAttempts || 1));
+  const baseDelayMs = Math.max(250, Number(retryOptions.baseDelayMs || 1500));
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await api(path, options);
+    } catch (error) {
+      const shouldRetry = attempt < maxAttempts && isTransientReportJobError(error);
+      if (!shouldRetry) {
+        throw error;
+      }
+      if (typeof retryOptions.onRetry === "function") {
+        retryOptions.onRetry(attempt, maxAttempts, error);
+      }
+      await delay(Math.min(8000, baseDelayMs * attempt));
+    }
+  }
+
+  return null;
 }
 
 function setAdminPage(pageId) {
@@ -3719,6 +3780,8 @@ async function loadReport(period, customStart = null, customEnd = null) {
   const aiSummaryEl = document.getElementById("report-ai-summary");
   const aiLoadingEl = document.getElementById("report-ai-loading");
   const customControls = document.getElementById("report-custom-controls");
+  const fastModeCheckbox = document.getElementById("report-fast-mode");
+  const fastModeEnabled = fastModeCheckbox instanceof HTMLInputElement && fastModeCheckbox.checked;
 
   document.querySelectorAll(".period-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.period === period);
@@ -3738,6 +3801,7 @@ async function loadReport(period, customStart = null, customEnd = null) {
     const params = new URLSearchParams();
     params.set("period", period);
     params.set("include_ai", "0");
+    params.set("fast_mode", fastModeEnabled ? "1" : "0");
     if (period === "custom") {
       if (!customStart || !customEnd) {
         throw new Error("Select both start and end dates for custom range.");
@@ -3790,6 +3854,10 @@ async function loadReport(period, customStart = null, customEnd = null) {
     }
     if (aiLoadingEl) {
       aiLoadingEl.classList.remove("hidden");
+      setReportAiLoadingMessage(
+        aiLoadingEl,
+        fastModeEnabled ? "Generating workload analysis in Fast Mode..." : "Generating workload analysis...",
+      );
     }
 
     reportLoadedPeriod = period === "custom"
@@ -3800,20 +3868,71 @@ async function loadReport(period, customStart = null, customEnd = null) {
     const aiParams = new URLSearchParams(params);
     aiParams.delete("include_ai");
     try {
-      const aiJob = await api(`/api/reports/summary/jobs?${aiParams.toString()}`, {
-        method: "POST",
-      });
+      const aiJob = await apiWithTransientRetry(
+        `/api/reports/summary/jobs?${aiParams.toString()}`,
+        {
+          method: "POST",
+        },
+        {
+          maxAttempts: 4,
+          baseDelayMs: 1500,
+          onRetry: (attempt, maxAttempts) => {
+            setReportAiLoadingMessage(
+              aiLoadingEl,
+              `Report worker is retrying after a temporary proxy hiccup (${attempt}/${maxAttempts - 1})...`,
+            );
+          },
+        },
+      );
       if (requestId !== reportRequestSeq || !aiJob?.job_id) {
         return;
       }
 
       let aiResult = aiJob;
+      if (aiSummaryEl && aiSection && (
+        aiResult?.ai_summary ||
+        aiResult?.open_request_context ||
+        aiResult?.pending_request_context ||
+        aiResult?.resolved_request_context ||
+        aiResult?.ai_error
+      )) {
+        renderReportAiSummary(aiResult || {}, aiSummaryEl, aiSection);
+      }
+      if (aiLoadingEl && aiResult?.progress_message) {
+        setReportAiLoadingMessage(aiLoadingEl, aiResult.progress_message);
+      }
       while (requestId === reportRequestSeq && aiResult?.status !== "completed" && aiResult?.status !== "failed") {
         await delay(2000);
         if (requestId !== reportRequestSeq) {
           return;
         }
-        aiResult = await api(`/api/reports/summary/jobs/${encodeURIComponent(aiJob.job_id)}`);
+        aiResult = await apiWithTransientRetry(
+          `/api/reports/summary/jobs/${encodeURIComponent(aiJob.job_id)}`,
+          {},
+          {
+            maxAttempts: 8,
+            baseDelayMs: 1500,
+            onRetry: (attempt, maxAttempts) => {
+              setReportAiLoadingMessage(
+                aiLoadingEl,
+                `Workload analysis is still running. Retrying after temporary proxy error (${attempt}/${maxAttempts - 1})...`,
+              );
+            },
+          },
+        );
+        if (aiSummaryEl && aiSection && (
+          aiResult?.ai_summary ||
+          aiResult?.open_request_context ||
+          aiResult?.pending_request_context ||
+          aiResult?.resolved_request_context ||
+          aiResult?.ai_error
+        )) {
+          renderReportAiSummary(aiResult || {}, aiSummaryEl, aiSection);
+        }
+        setReportAiLoadingMessage(
+          aiLoadingEl,
+          safeText(aiResult?.progress_message).trim() || "Generating workload analysis...",
+        );
       }
 
       if (requestId !== reportRequestSeq) {
@@ -3829,11 +3948,12 @@ async function loadReport(period, customStart = null, customEnd = null) {
       }
       if (aiSummaryEl && aiSection) {
         aiSummaryEl.className = "report-ai-error";
-        renderAiSummaryWithTicketLinks(aiSummaryEl, `AI summary unavailable: ${error.message}`);
+        renderAiSummaryWithTicketLinks(aiSummaryEl, `AI summary unavailable: ${safeText(error?.message || error)}`);
         aiSection.classList.remove("hidden");
       }
     } finally {
       if (requestId === reportRequestSeq && aiLoadingEl) {
+        setReportAiLoadingMessage(aiLoadingEl, "Generating workload analysis...");
         aiLoadingEl.classList.add("hidden");
       }
     }

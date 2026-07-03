@@ -102,6 +102,7 @@ At minimum, configure these in `.env`:
 - `HOST`
 - `PORT`
 - `ALLOWED_EMAIL_DOMAINS`
+- `WEB_CONCURRENCY`
 
 Recommended for first boot:
 
@@ -116,6 +117,10 @@ Important storage settings:
 - `TICKET_CACHE_DB_PATH`
 - `TICKET_TRANSACTIONS_DB_PATH`
 - `DATA_ENCRYPTION_KEY`
+- `OPENAI_TIMEOUT_SECONDS`
+- `OPENAI_REPORT_TIMEOUT_SECONDS`
+
+`OPENAI_REPORT_TIMEOUT_SECONDS` lets long-running AI report jobs keep working in the background without forcing quick rewrite calls to wait just as long. On slower local models, a higher report timeout is usually the right fix for year summaries.
 
 ## Authentication Modes
 
@@ -174,8 +179,15 @@ Relevant settings:
 - `OPENAI_REPORT_MODEL`
 - `OPENAI_REWRITE_MODEL`
 - `OPENAI_TIMEOUT_SECONDS`
+- `FAST_OPENAI_API_KEY`
+- `FAST_OPENAI_BASE_URL`
+- `FAST_OPENAI_MODEL`
+- `FAST_OPENAI_REPORT_MODEL`
+- `FAST_OPENAI_REPORT_TIMEOUT_SECONDS`
 
 `OPENAI_MODEL` remains the shared fallback. If you set `OPENAI_REPORT_MODEL`, report summary jobs use that model. If you set `OPENAI_REWRITE_MODEL`, ticket AI assist, comment recompose, and knowledgebase rewrites use that model.
+
+The Reports page also supports a per-run Fast Mode toggle. Fast Mode uses the dedicated `FAST_OPENAI_*` settings, which lets you keep standard report jobs on the local provider while sending selected runs through a ChatGPT/OpenAI API key.
 
 If the configured provider needs a key and no key is set, the app falls back to deterministic local rewriting instead of failing hard.
 

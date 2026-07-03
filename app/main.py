@@ -13,6 +13,7 @@ from email.utils import parseaddr
 from html import unescape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from collections.abc import Callable
 
 import httpx
 import msal
@@ -79,6 +80,7 @@ from .database import (
     log_kb_access_event,
     mark_report_job_completed,
     mark_report_job_failed,
+    update_report_job_progress,
     replace_cached_ticket_comments,
     replace_ticket_cache_snapshot,
     reset_user_password,
@@ -1482,14 +1484,16 @@ async def _process_report_job(job: Dict[str, Any]) -> None:
     period = str(job.get("period") or "week")
     custom_start = str(job.get("custom_start") or "").strip() or None
     custom_end = str(job.get("custom_end") or "").strip() or None
+    ai_mode = _normalize_report_ai_mode(str(job.get("ai_mode") or "standard"))
 
     try:
-        result = await get_reports_summary(
+        result = await _generate_reports_summary(
             period=period,
             custom_start=custom_start,
             custom_end=custom_end,
             include_ai=True,
-            user={"role": "admin"},
+            ai_mode=ai_mode,
+            progress_callback=lambda partial_result: update_report_job_progress(job_id, partial_result),
         )
         mark_report_job_completed(job_id, result)
     except HTTPException as exc:
@@ -2433,10 +2437,149 @@ def _get_ollama_native_endpoint(base_url: str) -> str:
     return f"{normalized}/api/chat"
 
 
+async def _post_ollama_chat_collect_text(
+    http_client: httpx.AsyncClient,
+    headers: Dict[str, str],
+    base_url: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    num_ctx: int,
+    think: bool = False,
+) -> tuple[int, Optional[str], Optional[str]]:
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "think": think,
+        "options": {
+            "temperature": temperature,
+            "num_ctx": num_ctx,
+        },
+    }
+
+    chunks: List[str] = []
+    last_event: Dict[str, Any] = {}
+
+    async with http_client.stream(
+        "POST",
+        _get_ollama_native_endpoint(base_url),
+        headers=headers,
+        json=payload,
+    ) as response:
+        if response.status_code >= 400:
+            error_bytes = await response.aread()
+            error_text = error_bytes.decode("utf-8", errors="replace").strip()
+            return response.status_code, None, error_text or None
+
+        async for raw_line in response.aiter_lines():
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+
+            last_event = event
+            message = event.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if content:
+                    chunks.append(str(content))
+                elif event.get("done"):
+                    thinking = message.get("thinking")
+                    if thinking:
+                        chunks.append(str(thinking))
+            elif event.get("response") is not None:
+                chunks.append(str(event.get("response")))
+
+    combined = "".join(chunks).strip()
+    if combined:
+        return 200, combined, None
+
+    fallback = _extract_ai_message_content(last_event).strip()
+    return 200, (fallback or None), None
+
+
 def _get_ai_model(purpose: str) -> str:
     if purpose == "report":
         return settings.openai_report_model
     return settings.openai_rewrite_model
+
+
+def _get_ai_timeout_seconds(purpose: str) -> int:
+    if purpose == "report":
+        return settings.openai_report_timeout_seconds
+    return settings.openai_timeout_seconds
+
+
+def _normalize_report_ai_mode(ai_mode: str) -> str:
+    return "fast" if str(ai_mode or "").strip().lower() == "fast" else "standard"
+
+
+def _get_report_ai_provider(ai_mode: str) -> Dict[str, Any]:
+    normalized_mode = _normalize_report_ai_mode(ai_mode)
+    if normalized_mode == "fast":
+        return {
+            "ai_mode": "fast",
+            "api_key": settings.fast_openai_api_key,
+            "base_url": settings.fast_openai_base_url,
+            "model": settings.fast_openai_report_model,
+            "timeout_seconds": settings.fast_openai_report_timeout_seconds,
+        }
+    return {
+        "ai_mode": "standard",
+        "api_key": settings.openai_api_key,
+        "base_url": settings.openai_base_url,
+        "model": settings.openai_report_model,
+        "timeout_seconds": settings.openai_report_timeout_seconds,
+    }
+
+
+async def _request_report_chat_text(
+    http_client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str],
+    model: str,
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    num_ctx: int,
+) -> tuple[int, Optional[str], Optional[str]]:
+    if _looks_like_ollama_base_url(base_url):
+        return await _post_ollama_chat_collect_text(
+            http_client,
+            headers,
+            base_url,
+            model,
+            messages,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            think=False,
+        )
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    response = await http_client.post(
+        f"{base_url}/chat/completions",
+        headers=headers,
+        json=payload,
+    )
+    if response.status_code >= 400:
+        error_text = response.text.strip() if response.text else None
+        return response.status_code, None, error_text
+
+    body = response.json() if response.content else {}
+    content = _extract_ai_message_content(body).strip()
+    return response.status_code, (content or None), None
 
 
 def _sanitize_professional_language(text: str) -> str:
@@ -2677,7 +2820,7 @@ async def ai_assist_ticket(
     body: Dict[str, Any] = {}
 
     try:
-        async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
+        async with httpx.AsyncClient(timeout=_get_ai_timeout_seconds("rewrite")) as http_client:
             if _looks_like_ollama_base_url(settings.openai_base_url):
                 native_payload: Dict[str, Any] = {
                     "model": rewrite_model,
@@ -3404,9 +3547,12 @@ def _resolve_report_period(
 
 
 def _format_report_job_response(job: Dict[str, Any]) -> Dict[str, Any]:
+    ai_mode = _normalize_report_ai_mode(str(job.get("ai_mode") or "standard"))
     response: Dict[str, Any] = {
         "job_id": int(job.get("id") or 0),
         "status": str(job.get("status") or "pending"),
+        "ai_mode": ai_mode,
+        "fast_mode": ai_mode == "fast",
         "period": str(job.get("period") or ""),
         "custom_start": str(job.get("custom_start") or ""),
         "custom_end": str(job.get("custom_end") or ""),
@@ -3430,16 +3576,22 @@ async def create_reports_summary_job(
     period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
     custom_start: Optional[str] = Query(default=None),
     custom_end: Optional[str] = Query(default=None),
+    fast_mode: bool = Query(default=False),
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     require_admin(user)
     _resolve_report_period(period, custom_start, custom_end)
+    ai_mode = "fast" if fast_mode else "standard"
+    provider = _get_report_ai_provider(ai_mode)
+    if _provider_requires_api_key(str(provider["base_url"])) and not str(provider["api_key"] or "").strip():
+        raise HTTPException(status_code=400, detail="Fast mode API key is not configured.")
 
     job = create_report_job(
         period=period,
         custom_start=custom_start,
         custom_end=custom_end,
         requested_by_user_id=int(user["id"]),
+        ai_mode=ai_mode,
     )
     payload = _format_report_job_response(job)
     payload["reused"] = bool(job.get("reused"))
@@ -3460,16 +3612,14 @@ async def get_reports_summary_job(
     return _format_report_job_response(job)
 
 
-@app.get("/api/reports/summary")
-async def get_reports_summary(
-    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
-    custom_start: Optional[str] = Query(default=None),
-    custom_end: Optional[str] = Query(default=None),
-    include_ai: bool = Query(default=False),
-    user: Dict[str, Any] = Depends(get_current_user),
+async def _generate_reports_summary(
+    period: str,
+    custom_start: Optional[str] = None,
+    custom_end: Optional[str] = None,
+    include_ai: bool = False,
+    ai_mode: str = "standard",
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
-    require_admin(user)
-
     period_start, period_end, period_label = _resolve_report_period(
         period=period,
         custom_start=custom_start,
@@ -3528,9 +3678,16 @@ async def get_reports_summary(
         {"role": "user", "content": "\n".join(prompt_lines)},
     ]
 
+    provider = _get_report_ai_provider(ai_mode)
+    normalized_ai_mode = str(provider["ai_mode"])
+    base_url = str(provider["base_url"])
+    report_model = str(provider["model"])
+    timeout_seconds = int(provider["timeout_seconds"])
+    api_key = str(provider["api_key"] or "").strip()
+
     headers = {"Content-Type": "application/json"}
-    if settings.openai_api_key:
-        headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     ai_summary: Optional[str] = None
     pending_request_context: Optional[str] = None
@@ -3540,6 +3697,8 @@ async def get_reports_summary(
 
     if not include_ai:
         result: Dict[str, Any] = {
+            "ai_mode": normalized_ai_mode,
+            "fast_mode": normalized_ai_mode == "fast",
             "period": period,
             "period_start": period_start,
             **stats,
@@ -3555,8 +3714,14 @@ async def get_reports_summary(
             result["pending_appendix"] = "Pending watchlist (net-neutral): " + " | ".join(pending_parts)
         return result
 
+    def _publish_progress(partial_result: Dict[str, Any]) -> None:
+        if progress_callback is None or not partial_result:
+            return
+        progress_callback(partial_result)
+
     try:
-        report_model = _get_ai_model("report")
+        if _provider_requires_api_key(base_url) and not api_key:
+            raise RuntimeError("Fast mode API key is not configured.")
 
         def _strip_css_noise(text: str) -> str:
             value = str(text or "")
@@ -3705,48 +3870,29 @@ async def get_reports_summary(
                 f"Messages: {messages_blob}"
             )
 
-        async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
-            if _looks_like_ollama_base_url(settings.openai_base_url):
-                native_payload: Dict[str, Any] = {
-                    "model": report_model,
-                    "messages": messages,
-                    "stream": False,
-                    "think": False,
-                    "options": {
-                        "temperature": 0.4,
-                        "num_ctx": 8192,
-                    },
-                }
-                response = await http_client.post(
-                    _get_ollama_native_endpoint(settings.openai_base_url),
-                    headers=headers,
-                    json=native_payload,
-                )
+        async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
+            summary_status, summary_text, _summary_error_detail = await _request_report_chat_text(
+                http_client,
+                base_url,
+                headers,
+                report_model,
+                messages,
+                temperature=0.4,
+                num_ctx=8192,
+            )
+            if summary_status >= 400:
+                ai_error = f"AI service returned HTTP {summary_status}."
             else:
-                payload: Dict[str, Any] = {
-                    "model": report_model,
-                    "messages": messages,
-                    "temperature": 0.4,
-                    "stream": False,
-                }
-                response = await http_client.post(
-                    f"{settings.openai_base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
+                ai_summary = summary_text or None
+                _publish_progress(
+                    {
+                        "period": period,
+                        "period_start": period_start,
+                        "period_end": period_end or "",
+                        "ai_summary": ai_summary or "",
+                        "progress_message": "Summary ready. Building ticket sections...",
+                    }
                 )
-
-            if response.status_code >= 400:
-                ai_error = f"AI service returned HTTP {response.status_code}."
-            else:
-                body = response.json() if response.content else {}
-                if _looks_like_ollama_base_url(settings.openai_base_url):
-                    ai_summary = ((body.get("message") or {}).get("content") or "").strip() or None
-                else:
-                    choices = body.get("choices") or []
-                    ai_summary = (
-                        ((choices[0].get("message") or {}).get("content") or "").strip()
-                        if choices else None
-                    )
 
             if pending_lines:
                 pending_messages = [
@@ -3776,47 +3922,37 @@ async def get_reports_summary(
                     },
                 ]
 
-                if _looks_like_ollama_base_url(settings.openai_base_url):
-                    pending_payload: Dict[str, Any] = {
-                        "model": report_model,
-                        "messages": pending_messages,
-                        "stream": False,
-                        "think": False,
-                        "options": {
-                            "temperature": 0.25,
-                            "num_ctx": 32768,
-                        },
-                    }
-                    pending_response = await http_client.post(
-                        _get_ollama_native_endpoint(settings.openai_base_url),
-                        headers=headers,
-                        json=pending_payload,
+                pending_status, pending_text, _pending_error_detail = await _request_report_chat_text(
+                    http_client,
+                    base_url,
+                    headers,
+                    report_model,
+                    pending_messages,
+                    temperature=0.25,
+                    num_ctx=32768,
+                )
+                if pending_status < 400:
+                    pending_request_context = pending_text or None
+                    _publish_progress(
+                        {
+                            "period": period,
+                            "period_start": period_start,
+                            "period_end": period_end or "",
+                            "ai_summary": ai_summary or "",
+                            "pending_request_context": pending_request_context or "",
+                            "pending_appendix": "Pending watchlist (net-neutral): " + " | ".join(
+                                [
+                                    part
+                                    for part in [
+                                        ("By property: " + "; ".join(pending_by_customer)) if pending_by_customer else "",
+                                        ("Recent pending examples: " + "; ".join(pending_sample_titles[:5])) if pending_sample_titles else "",
+                                    ]
+                                    if part
+                                ]
+                            ) if (pending_by_customer or pending_sample_titles) else "",
+                            "progress_message": "Pending breakdown ready. Building open-ticket summary...",
+                        }
                     )
-                else:
-                    pending_payload = {
-                        "model": report_model,
-                        "messages": pending_messages,
-                        "temperature": 0.25,
-                        "stream": False,
-                    }
-                    pending_response = await http_client.post(
-                        f"{settings.openai_base_url}/chat/completions",
-                        headers=headers,
-                        json=pending_payload,
-                    )
-
-                if pending_response.status_code < 400:
-                    pending_body = pending_response.json() if pending_response.content else {}
-                    if _looks_like_ollama_base_url(settings.openai_base_url):
-                        pending_request_context = (
-                            ((pending_body.get("message") or {}).get("content") or "").strip() or None
-                        )
-                    else:
-                        pending_choices = pending_body.get("choices") or []
-                        pending_request_context = (
-                            ((pending_choices[0].get("message") or {}).get("content") or "").strip()
-                            if pending_choices else None
-                        ) or None
 
                     if pending_request_context and pending_request_context.count(" | ") >= 3:
                         rewrite_messages = [
@@ -3831,44 +3967,28 @@ async def get_reports_summary(
                             {"role": "user", "content": pending_request_context},
                         ]
 
-                        if _looks_like_ollama_base_url(settings.openai_base_url):
-                            rewrite_payload: Dict[str, Any] = {
-                                "model": report_model,
-                                "messages": rewrite_messages,
-                                "stream": False,
-                                "think": False,
-                                "options": {"temperature": 0.2, "num_ctx": 8192},
-                            }
-                            rewrite_response = await http_client.post(
-                                _get_ollama_native_endpoint(settings.openai_base_url),
-                                headers=headers,
-                                json=rewrite_payload,
-                            )
-                        else:
-                            rewrite_payload = {
-                                "model": report_model,
-                                "messages": rewrite_messages,
-                                "temperature": 0.2,
-                                "stream": False,
-                            }
-                            rewrite_response = await http_client.post(
-                                f"{settings.openai_base_url}/chat/completions",
-                                headers=headers,
-                                json=rewrite_payload,
-                            )
-
-                        if rewrite_response.status_code < 400:
-                            rewrite_body = rewrite_response.json() if rewrite_response.content else {}
-                            if _looks_like_ollama_base_url(settings.openai_base_url):
-                                rewritten = ((rewrite_body.get("message") or {}).get("content") or "").strip()
-                            else:
-                                rewrite_choices = rewrite_body.get("choices") or []
-                                rewritten = (
-                                    ((rewrite_choices[0].get("message") or {}).get("content") or "").strip()
-                                    if rewrite_choices else ""
-                                )
+                        rewrite_status, rewritten, _rewrite_error_detail = await _request_report_chat_text(
+                            http_client,
+                            base_url,
+                            headers,
+                            report_model,
+                            rewrite_messages,
+                            temperature=0.2,
+                            num_ctx=8192,
+                        )
+                        if rewrite_status < 400:
                             if rewritten:
                                 pending_request_context = rewritten
+                                _publish_progress(
+                                    {
+                                        "period": period,
+                                        "period_start": period_start,
+                                        "period_end": period_end or "",
+                                        "ai_summary": ai_summary or "",
+                                        "pending_request_context": pending_request_context,
+                                        "progress_message": "Pending breakdown refined. Building open-ticket summary...",
+                                    }
+                                )
 
             open_lines = await _build_ticket_lines(open_request_tickets, "Open")
             if open_lines:
@@ -3896,47 +4016,28 @@ async def get_reports_summary(
                     },
                 ]
 
-                if _looks_like_ollama_base_url(settings.openai_base_url):
-                    open_payload: Dict[str, Any] = {
-                        "model": report_model,
-                        "messages": open_messages,
-                        "stream": False,
-                        "think": False,
-                        "options": {
-                            "temperature": 0.25,
-                            "num_ctx": 32768,
-                        },
-                    }
-                    open_response = await http_client.post(
-                        _get_ollama_native_endpoint(settings.openai_base_url),
-                        headers=headers,
-                        json=open_payload,
+                open_status, open_text, _open_error_detail = await _request_report_chat_text(
+                    http_client,
+                    base_url,
+                    headers,
+                    report_model,
+                    open_messages,
+                    temperature=0.25,
+                    num_ctx=32768,
+                )
+                if open_status < 400:
+                    open_request_context = open_text or None
+                    _publish_progress(
+                        {
+                            "period": period,
+                            "period_start": period_start,
+                            "period_end": period_end or "",
+                            "ai_summary": ai_summary or "",
+                            "pending_request_context": pending_request_context or "",
+                            "open_request_context": open_request_context or "",
+                            "progress_message": "Open-ticket summary ready. Building resolved highlights...",
+                        }
                     )
-                else:
-                    open_payload = {
-                        "model": report_model,
-                        "messages": open_messages,
-                        "temperature": 0.25,
-                        "stream": False,
-                    }
-                    open_response = await http_client.post(
-                        f"{settings.openai_base_url}/chat/completions",
-                        headers=headers,
-                        json=open_payload,
-                    )
-
-                if open_response.status_code < 400:
-                    open_body = open_response.json() if open_response.content else {}
-                    if _looks_like_ollama_base_url(settings.openai_base_url):
-                        open_request_context = (
-                            ((open_body.get("message") or {}).get("content") or "").strip() or None
-                        )
-                    else:
-                        open_choices = open_body.get("choices") or []
-                        open_request_context = (
-                            ((open_choices[0].get("message") or {}).get("content") or "").strip()
-                            if open_choices else None
-                        ) or None
 
             resolved_lines = await _build_ticket_lines(resolved_request_tickets, "Resolved/Closed")
             if resolved_lines:
@@ -3961,51 +4062,35 @@ async def get_reports_summary(
                     },
                 ]
 
-                if _looks_like_ollama_base_url(settings.openai_base_url):
-                    resolved_payload: Dict[str, Any] = {
-                        "model": report_model,
-                        "messages": resolved_messages,
-                        "stream": False,
-                        "think": False,
-                        "options": {
-                            "temperature": 0.2,
-                            "num_ctx": 32768,
-                        },
-                    }
-                    resolved_response = await http_client.post(
-                        _get_ollama_native_endpoint(settings.openai_base_url),
-                        headers=headers,
-                        json=resolved_payload,
+                resolved_status, resolved_text, _resolved_error_detail = await _request_report_chat_text(
+                    http_client,
+                    base_url,
+                    headers,
+                    report_model,
+                    resolved_messages,
+                    temperature=0.2,
+                    num_ctx=32768,
+                )
+                if resolved_status < 400:
+                    resolved_request_context = resolved_text or None
+                    _publish_progress(
+                        {
+                            "period": period,
+                            "period_start": period_start,
+                            "period_end": period_end or "",
+                            "ai_summary": ai_summary or "",
+                            "pending_request_context": pending_request_context or "",
+                            "open_request_context": open_request_context or "",
+                            "resolved_request_context": resolved_request_context or "",
+                            "progress_message": "Resolved highlights ready. Finalizing report...",
+                        }
                     )
-                else:
-                    resolved_payload = {
-                        "model": report_model,
-                        "messages": resolved_messages,
-                        "temperature": 0.2,
-                        "stream": False,
-                    }
-                    resolved_response = await http_client.post(
-                        f"{settings.openai_base_url}/chat/completions",
-                        headers=headers,
-                        json=resolved_payload,
-                    )
-
-                if resolved_response.status_code < 400:
-                    resolved_body = resolved_response.json() if resolved_response.content else {}
-                    if _looks_like_ollama_base_url(settings.openai_base_url):
-                        resolved_request_context = (
-                            ((resolved_body.get("message") or {}).get("content") or "").strip() or None
-                        )
-                    else:
-                        resolved_choices = resolved_body.get("choices") or []
-                        resolved_request_context = (
-                            ((resolved_choices[0].get("message") or {}).get("content") or "").strip()
-                            if resolved_choices else None
-                        ) or None
     except Exception as exc:  # noqa: BLE001
         ai_error = f"AI summary unavailable: {exc}"
 
     result: Dict[str, Any] = {
+        "ai_mode": normalized_ai_mode,
+        "fast_mode": normalized_ai_mode == "fast",
         "period": period,
         "period_start": period_start,
         **stats,
@@ -4029,7 +4114,28 @@ async def get_reports_summary(
         result["ai_summary"] = ai_summary
     if ai_error:
         result["ai_error"] = ai_error
+    else:
+        result["progress_message"] = "Workload analysis complete."
     return result
+
+
+@app.get("/api/reports/summary")
+async def get_reports_summary(
+    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
+    custom_start: Optional[str] = Query(default=None),
+    custom_end: Optional[str] = Query(default=None),
+    include_ai: bool = Query(default=False),
+    fast_mode: bool = Query(default=False),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    return await _generate_reports_summary(
+        period=period,
+        custom_start=custom_start,
+        custom_end=custom_end,
+        include_ai=include_ai,
+        ai_mode="fast" if fast_mode else "standard",
+    )
 
 
 # ========================
@@ -4137,7 +4243,7 @@ async def rewrite_kb_selection_endpoint(
         body: Dict[str, Any] = {}
 
         try:
-            async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as http_client:
+            async with httpx.AsyncClient(timeout=_get_ai_timeout_seconds("rewrite")) as http_client:
                 if _looks_like_ollama_base_url(settings.openai_base_url):
                     native_payload: Dict[str, Any] = {
                         "model": rewrite_model,
