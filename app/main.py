@@ -2589,6 +2589,56 @@ async def _request_report_chat_text(
     return response.status_code, (content or None), None
 
 
+_TRANSIENT_PROXY_STATUS_CODES = {502, 503, 504}
+
+
+async def _request_report_chat_text_with_retry(
+    http_client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str],
+    model: str,
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    num_ctx: int,
+    max_attempts: int = 3,
+    backoff_seconds: float = 3.0,
+) -> tuple[int, Optional[str], Optional[str]]:
+    """Retry a report chat request on dropped/timed-out proxy connections.
+
+    A local-agent request that runs long enough can get its connection cut by an
+    intermediary nginx (idle read timeout, 502/503/504), well before the model
+    itself failed. Retrying with a fresh connection recovers most of those instead
+    of failing the whole section on one transient hiccup.
+    """
+    last_status = 599
+    last_text: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            status, text, error_text = await _request_report_chat_text(
+                http_client,
+                base_url,
+                headers,
+                model,
+                messages,
+                temperature=temperature,
+                num_ctx=num_ctx,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_status = 599
+            last_text = str(exc)
+        else:
+            if status not in _TRANSIENT_PROXY_STATUS_CODES:
+                return status, text, error_text
+            last_status = status
+            last_text = error_text
+
+        if attempt < max_attempts:
+            await asyncio.sleep(backoff_seconds * attempt)
+
+    return last_status, None, last_text or "Local agent connection was dropped after retries."
+
+
 def _sanitize_professional_language(text: str) -> str:
     cleaned = _normalize_parsed_text(text)
     replacements = [
@@ -3702,6 +3752,7 @@ async def _generate_reports_summary(
     open_request_context: Optional[str] = None
     resolved_request_context: Optional[str] = None
     ai_error: Optional[str] = None
+    section_errors: Dict[str, str] = {}
 
     if not include_ai:
         result: Dict[str, Any] = {
@@ -3912,26 +3963,34 @@ async def _generate_reports_summary(
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
             async def _run_summary_section() -> tuple[str, Optional[str]]:
-                nonlocal ai_error
-
-                summary_status, summary_text, _summary_error_detail = await _request_report_chat_text(
-                    http_client,
-                    base_url,
-                    headers,
-                    report_model,
-                    messages,
-                    temperature=0.4,
-                    num_ctx=8192,
-                )
-                if summary_status >= 400:
-                    ai_error = f"AI service returned HTTP {summary_status}."
+                try:
+                    summary_status, summary_text, summary_error_detail = await _request_report_chat_text_with_retry(
+                        http_client,
+                        base_url,
+                        headers,
+                        report_model,
+                        messages,
+                        temperature=0.4,
+                        num_ctx=8192,
+                    )
+                    if summary_status >= 400:
+                        section_errors["summary"] = summary_error_detail or f"HTTP {summary_status}"
+                        return "summary", None
+                    return "summary", summary_text or None
+                except Exception as exc:  # noqa: BLE001
+                    section_errors["summary"] = str(exc)
                     return "summary", None
-                return "summary", summary_text or None
 
             async def _run_pending_section() -> tuple[str, Optional[str]]:
                 if not pending_lines:
                     return "pending", None
+                try:
+                    return await _run_pending_section_inner()
+                except Exception as exc:  # noqa: BLE001
+                    section_errors["pending"] = str(exc)
+                    return "pending", None
 
+            async def _run_pending_section_inner() -> tuple[str, Optional[str]]:
                 pending_messages = [
                     {
                         "role": "system",
@@ -3959,7 +4018,7 @@ async def _generate_reports_summary(
                     },
                 ]
 
-                pending_status, pending_text, _pending_error_detail = await _request_report_chat_text(
+                pending_status, pending_text, pending_error_detail = await _request_report_chat_text_with_retry(
                     http_client,
                     base_url,
                     headers,
@@ -3969,6 +4028,7 @@ async def _generate_reports_summary(
                     num_ctx=32768,
                 )
                 if pending_status >= 400:
+                    section_errors["pending"] = pending_error_detail or f"HTTP {pending_status}"
                     return "pending", None
 
                 pending_result = pending_text or None
@@ -3985,7 +4045,7 @@ async def _generate_reports_summary(
                         {"role": "user", "content": pending_result},
                     ]
 
-                    rewrite_status, rewritten, _rewrite_error_detail = await _request_report_chat_text(
+                    rewrite_status, rewritten, _rewrite_error_detail = await _request_report_chat_text_with_retry(
                         http_client,
                         base_url,
                         headers,
@@ -4002,7 +4062,13 @@ async def _generate_reports_summary(
             async def _run_open_section() -> tuple[str, Optional[str]]:
                 if not open_lines:
                     return "open", None
+                try:
+                    return await _run_open_section_inner()
+                except Exception as exc:  # noqa: BLE001
+                    section_errors["open"] = str(exc)
+                    return "open", None
 
+            async def _run_open_section_inner() -> tuple[str, Optional[str]]:
                 open_messages = [
                     {
                         "role": "system",
@@ -4027,7 +4093,7 @@ async def _generate_reports_summary(
                     },
                 ]
 
-                open_status, open_text, _open_error_detail = await _request_report_chat_text(
+                open_status, open_text, open_error_detail = await _request_report_chat_text_with_retry(
                     http_client,
                     base_url,
                     headers,
@@ -4037,13 +4103,20 @@ async def _generate_reports_summary(
                     num_ctx=32768,
                 )
                 if open_status >= 400:
+                    section_errors["open"] = open_error_detail or f"HTTP {open_status}"
                     return "open", None
                 return "open", open_text or None
 
             async def _run_resolved_section() -> tuple[str, Optional[str]]:
                 if not resolved_lines:
                     return "resolved", None
+                try:
+                    return await _run_resolved_section_inner()
+                except Exception as exc:  # noqa: BLE001
+                    section_errors["resolved"] = str(exc)
+                    return "resolved", None
 
+            async def _run_resolved_section_inner() -> tuple[str, Optional[str]]:
                 resolved_messages = [
                     {
                         "role": "system",
@@ -4065,7 +4138,7 @@ async def _generate_reports_summary(
                     },
                 ]
 
-                resolved_status, resolved_text, _resolved_error_detail = await _request_report_chat_text(
+                resolved_status, resolved_text, resolved_error_detail = await _request_report_chat_text_with_retry(
                     http_client,
                     base_url,
                     headers,
@@ -4075,6 +4148,7 @@ async def _generate_reports_summary(
                     num_ctx=32768,
                 )
                 if resolved_status >= 400:
+                    section_errors["resolved"] = resolved_error_detail or f"HTTP {resolved_status}"
                     return "resolved", None
                 return "resolved", resolved_text or None
 
@@ -4167,10 +4241,29 @@ async def _generate_reports_summary(
         result["resolved_request_context"] = resolved_request_context
     if ai_summary:
         result["ai_summary"] = ai_summary
+
+    any_section_succeeded = bool(
+        ai_summary or pending_request_context or open_request_context or resolved_request_context
+    )
+    if not ai_error and section_errors and not any_section_succeeded:
+        # Every section that ran failed (likely a dropped/timed-out local-agent
+        # connection) even though no single exception bubbled up to the top level.
+        ai_error = "AI summary unavailable: " + "; ".join(
+            f"{name} - {detail}" for name, detail in section_errors.items()
+        )
+
     if ai_error:
         result["ai_error"] = ai_error
     else:
-        result["progress_message"] = "Workload analysis complete."
+        if section_errors:
+            failed_names = ", ".join(sorted(section_errors))
+            result["progress_message"] = (
+                f"Workload analysis complete. ({failed_names} section(s) failed after retries "
+                "and were skipped.)"
+            )
+            result["section_errors"] = section_errors
+        else:
+            result["progress_message"] = "Workload analysis complete."
     return result
 
 
