@@ -4086,7 +4086,15 @@ async def _generate_reports_summary(
             ]
 
             if normalized_ai_mode == "standard":
-                section_tasks = [asyncio.create_task(runner()) for runner in section_runners]
+                section_concurrency = asyncio.Semaphore(2)
+
+                async def _run_with_limit(
+                    runner: Callable[[], Any]
+                ) -> tuple[str, Optional[str]]:
+                    async with section_concurrency:
+                        return await runner()
+
+                section_tasks = [asyncio.create_task(_run_with_limit(runner)) for runner in section_runners]
                 total_sections = len(section_tasks)
                 completed_sections = 0
                 for completed_task in asyncio.as_completed(section_tasks):
