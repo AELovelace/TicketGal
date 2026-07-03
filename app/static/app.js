@@ -3801,7 +3801,8 @@ async function loadReport(period, customStart = null, customEnd = null) {
     const params = new URLSearchParams();
     params.set("period", period);
     params.set("include_ai", "0");
-    params.set("fast_mode", fastModeEnabled ? "1" : "0");
+    params.set("ai_mode", fastModeEnabled ? "fast" : "standard");
+    params.set("fast_mode", fastModeEnabled ? "true" : "false");
     if (period === "custom") {
       if (!customStart || !customEnd) {
         throw new Error("Select both start and end dates for custom range.");

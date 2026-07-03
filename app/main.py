@@ -2521,6 +2521,13 @@ def _normalize_report_ai_mode(ai_mode: str) -> str:
     return "fast" if str(ai_mode or "").strip().lower() == "fast" else "standard"
 
 
+def _resolve_report_ai_mode_query(ai_mode: Optional[str], fast_mode: bool = False) -> str:
+    normalized = str(ai_mode or "").strip().lower()
+    if normalized in {"fast", "standard"}:
+        return normalized
+    return "fast" if fast_mode else "standard"
+
+
 def _get_report_ai_provider(ai_mode: str) -> Dict[str, Any]:
     normalized_mode = _normalize_report_ai_mode(ai_mode)
     if normalized_mode == "fast":
@@ -3576,12 +3583,13 @@ async def create_reports_summary_job(
     period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
     custom_start: Optional[str] = Query(default=None),
     custom_end: Optional[str] = Query(default=None),
+    ai_mode: Optional[str] = Query(default=None, pattern="^(standard|fast)?$"),
     fast_mode: bool = Query(default=False),
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     require_admin(user)
     _resolve_report_period(period, custom_start, custom_end)
-    ai_mode = "fast" if fast_mode else "standard"
+    ai_mode = _resolve_report_ai_mode_query(ai_mode, fast_mode)
     provider = _get_report_ai_provider(ai_mode)
     if _provider_requires_api_key(str(provider["base_url"])) and not str(provider["api_key"] or "").strip():
         raise HTTPException(status_code=400, detail="Fast mode API key is not configured.")
@@ -4125,6 +4133,7 @@ async def get_reports_summary(
     custom_start: Optional[str] = Query(default=None),
     custom_end: Optional[str] = Query(default=None),
     include_ai: bool = Query(default=False),
+    ai_mode: Optional[str] = Query(default=None, pattern="^(standard|fast)?$"),
     fast_mode: bool = Query(default=False),
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -4134,7 +4143,7 @@ async def get_reports_summary(
         custom_start=custom_start,
         custom_end=custom_end,
         include_ai=include_ai,
-        ai_mode="fast" if fast_mode else "standard",
+        ai_mode=_resolve_report_ai_mode_query(ai_mode, fast_mode),
     )
 
 
