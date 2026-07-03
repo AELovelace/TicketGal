@@ -4159,61 +4159,20 @@ async def _generate_reports_summary(
                 _run_resolved_section,
             ]
 
-            if normalized_ai_mode == "standard":
-                section_concurrency = asyncio.Semaphore(2)
-
-                async def _run_with_limit(
-                    runner: Callable[[], Any]
-                ) -> tuple[str, Optional[str]]:
-                    async with section_concurrency:
-                        return await runner()
-
-                section_tasks = [asyncio.create_task(_run_with_limit(runner)) for runner in section_runners]
-                total_sections = len(section_tasks)
-                completed_sections = 0
-                for completed_task in asyncio.as_completed(section_tasks):
-                    section_name, section_text = await completed_task
-                    if section_name == "summary" and section_text:
-                        ai_summary = section_text
-                    elif section_name == "pending" and section_text:
-                        pending_request_context = section_text
-                    elif section_name == "open" and section_text:
-                        open_request_context = section_text
-                    elif section_name == "resolved" and section_text:
-                        resolved_request_context = section_text
-
-                    completed_sections += 1
-                    if section_name == "summary" and section_text:
-                        _publish_section_progress(
-                            f"Summary ready. {completed_sections}/{total_sections} tasks finished..."
-                        )
-                    elif section_name == "pending" and section_text:
-                        _publish_section_progress(
-                            f"Pending breakdown ready. {completed_sections}/{total_sections} tasks finished..."
-                        )
-                    elif section_name == "open" and section_text:
-                        _publish_section_progress(
-                            f"Open-ticket summary ready. {completed_sections}/{total_sections} tasks finished..."
-                        )
-                    elif section_name == "resolved" and section_text:
-                        _publish_section_progress(
-                            f"Resolved highlights ready. {completed_sections}/{total_sections} tasks finished..."
-                        )
-            else:
-                for runner in section_runners:
-                    section_name, section_text = await runner()
-                    if section_name == "summary" and section_text:
-                        ai_summary = section_text
-                        _publish_section_progress("Summary ready. Building ticket sections...")
-                    elif section_name == "pending" and section_text:
-                        pending_request_context = section_text
-                        _publish_section_progress("Pending breakdown ready. Building open-ticket summary...")
-                    elif section_name == "open" and section_text:
-                        open_request_context = section_text
-                        _publish_section_progress("Open-ticket summary ready. Building resolved highlights...")
-                    elif section_name == "resolved" and section_text:
-                        resolved_request_context = section_text
-                        _publish_section_progress("Resolved highlights ready. Finalizing report...")
+            for runner in section_runners:
+                section_name, section_text = await runner()
+                if section_name == "summary" and section_text:
+                    ai_summary = section_text
+                    _publish_section_progress("Summary ready. Building ticket sections...")
+                elif section_name == "pending" and section_text:
+                    pending_request_context = section_text
+                    _publish_section_progress("Pending breakdown ready. Building open-ticket summary...")
+                elif section_name == "open" and section_text:
+                    open_request_context = section_text
+                    _publish_section_progress("Open-ticket summary ready. Building resolved highlights...")
+                elif section_name == "resolved" and section_text:
+                    resolved_request_context = section_text
+                    _publish_section_progress("Resolved highlights ready. Finalizing report...")
     except Exception as exc:  # noqa: BLE001
         ai_error = f"AI summary unavailable: {exc}"
 
