@@ -3878,31 +3878,60 @@ async def _generate_reports_summary(
                 f"Messages: {messages_blob}"
             )
 
-        async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
-            summary_status, summary_text, _summary_error_detail = await _request_report_chat_text(
-                http_client,
-                base_url,
-                headers,
-                report_model,
-                messages,
-                temperature=0.4,
-                num_ctx=8192,
-            )
-            if summary_status >= 400:
-                ai_error = f"AI service returned HTTP {summary_status}."
-            else:
-                ai_summary = summary_text or None
-                _publish_progress(
-                    {
-                        "period": period,
-                        "period_start": period_start,
-                        "period_end": period_end or "",
-                        "ai_summary": ai_summary or "",
-                        "progress_message": "Summary ready. Building ticket sections...",
-                    }
-                )
+        open_lines, resolved_lines = await asyncio.gather(
+            _build_ticket_lines(open_request_tickets, "Open"),
+            _build_ticket_lines(resolved_request_tickets, "Resolved/Closed"),
+        )
 
-            if pending_lines:
+        pending_appendix_text = ""
+        if pending_by_customer or pending_sample_titles:
+            pending_parts = []
+            if pending_by_customer:
+                pending_parts.append("By property: " + "; ".join(pending_by_customer))
+            if pending_sample_titles:
+                pending_parts.append("Recent pending examples: " + "; ".join(pending_sample_titles[:5]))
+            pending_appendix_text = "Pending watchlist (net-neutral): " + " | ".join(pending_parts)
+
+        def _publish_section_progress(message: str) -> None:
+            partial_result: Dict[str, Any] = {
+                "period": period,
+                "period_start": period_start,
+                "period_end": period_end or "",
+                "ai_summary": ai_summary or "",
+                "progress_message": message,
+            }
+            if pending_request_context:
+                partial_result["pending_request_context"] = pending_request_context
+            if open_request_context:
+                partial_result["open_request_context"] = open_request_context
+            if resolved_request_context:
+                partial_result["resolved_request_context"] = resolved_request_context
+            if pending_appendix_text:
+                partial_result["pending_appendix"] = pending_appendix_text
+            _publish_progress(partial_result)
+
+        async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
+            async def _run_summary_section() -> tuple[str, Optional[str]]:
+                nonlocal ai_error
+
+                summary_status, summary_text, _summary_error_detail = await _request_report_chat_text(
+                    http_client,
+                    base_url,
+                    headers,
+                    report_model,
+                    messages,
+                    temperature=0.4,
+                    num_ctx=8192,
+                )
+                if summary_status >= 400:
+                    ai_error = f"AI service returned HTTP {summary_status}."
+                    return "summary", None
+                return "summary", summary_text or None
+
+            async def _run_pending_section() -> tuple[str, Optional[str]]:
+                if not pending_lines:
+                    return "pending", None
+
                 pending_messages = [
                     {
                         "role": "system",
@@ -3939,67 +3968,41 @@ async def _generate_reports_summary(
                     temperature=0.25,
                     num_ctx=32768,
                 )
-                if pending_status < 400:
-                    pending_request_context = pending_text or None
-                    _publish_progress(
+                if pending_status >= 400:
+                    return "pending", None
+
+                pending_result = pending_text or None
+                if pending_result and pending_result.count(" | ") >= 3:
+                    rewrite_messages = [
                         {
-                            "period": period,
-                            "period_start": period_start,
-                            "period_end": period_end or "",
-                            "ai_summary": ai_summary or "",
-                            "pending_request_context": pending_request_context or "",
-                            "pending_appendix": "Pending watchlist (net-neutral): " + " | ".join(
-                                [
-                                    part
-                                    for part in [
-                                        ("By property: " + "; ".join(pending_by_customer)) if pending_by_customer else "",
-                                        ("Recent pending examples: " + "; ".join(pending_sample_titles[:5])) if pending_sample_titles else "",
-                                    ]
-                                    if part
-                                ]
-                            ) if (pending_by_customer or pending_sample_titles) else "",
-                            "progress_message": "Pending breakdown ready. Building open-ticket summary...",
-                        }
+                            "role": "system",
+                            "content": (
+                                "Rewrite pending ticket analysis into concise business lines only. "
+                                "Keep one line per ticket using: '#<id> - <context>. Next action: <action>."
+                                " Do not include metadata fields, delimiters, timestamps, or raw message dumps."
+                            ),
+                        },
+                        {"role": "user", "content": pending_result},
+                    ]
+
+                    rewrite_status, rewritten, _rewrite_error_detail = await _request_report_chat_text(
+                        http_client,
+                        base_url,
+                        headers,
+                        report_model,
+                        rewrite_messages,
+                        temperature=0.2,
+                        num_ctx=8192,
                     )
+                    if rewrite_status < 400 and rewritten:
+                        pending_result = rewritten
 
-                    if pending_request_context and pending_request_context.count(" | ") >= 3:
-                        rewrite_messages = [
-                            {
-                                "role": "system",
-                                "content": (
-                                    "Rewrite pending ticket analysis into concise business lines only. "
-                                    "Keep one line per ticket using: '#<id> - <context>. Next action: <action>." 
-                                    "Do not include metadata fields, delimiters, timestamps, or raw message dumps."
-                                ),
-                            },
-                            {"role": "user", "content": pending_request_context},
-                        ]
+                return "pending", pending_result
 
-                        rewrite_status, rewritten, _rewrite_error_detail = await _request_report_chat_text(
-                            http_client,
-                            base_url,
-                            headers,
-                            report_model,
-                            rewrite_messages,
-                            temperature=0.2,
-                            num_ctx=8192,
-                        )
-                        if rewrite_status < 400:
-                            if rewritten:
-                                pending_request_context = rewritten
-                                _publish_progress(
-                                    {
-                                        "period": period,
-                                        "period_start": period_start,
-                                        "period_end": period_end or "",
-                                        "ai_summary": ai_summary or "",
-                                        "pending_request_context": pending_request_context,
-                                        "progress_message": "Pending breakdown refined. Building open-ticket summary...",
-                                    }
-                                )
+            async def _run_open_section() -> tuple[str, Optional[str]]:
+                if not open_lines:
+                    return "open", None
 
-            open_lines = await _build_ticket_lines(open_request_tickets, "Open")
-            if open_lines:
                 open_messages = [
                     {
                         "role": "system",
@@ -4033,22 +4036,14 @@ async def _generate_reports_summary(
                     temperature=0.25,
                     num_ctx=32768,
                 )
-                if open_status < 400:
-                    open_request_context = open_text or None
-                    _publish_progress(
-                        {
-                            "period": period,
-                            "period_start": period_start,
-                            "period_end": period_end or "",
-                            "ai_summary": ai_summary or "",
-                            "pending_request_context": pending_request_context or "",
-                            "open_request_context": open_request_context or "",
-                            "progress_message": "Open-ticket summary ready. Building resolved highlights...",
-                        }
-                    )
+                if open_status >= 400:
+                    return "open", None
+                return "open", open_text or None
 
-            resolved_lines = await _build_ticket_lines(resolved_request_tickets, "Resolved/Closed")
-            if resolved_lines:
+            async def _run_resolved_section() -> tuple[str, Optional[str]]:
+                if not resolved_lines:
+                    return "resolved", None
+
                 resolved_messages = [
                     {
                         "role": "system",
@@ -4079,20 +4074,64 @@ async def _generate_reports_summary(
                     temperature=0.2,
                     num_ctx=32768,
                 )
-                if resolved_status < 400:
-                    resolved_request_context = resolved_text or None
-                    _publish_progress(
-                        {
-                            "period": period,
-                            "period_start": period_start,
-                            "period_end": period_end or "",
-                            "ai_summary": ai_summary or "",
-                            "pending_request_context": pending_request_context or "",
-                            "open_request_context": open_request_context or "",
-                            "resolved_request_context": resolved_request_context or "",
-                            "progress_message": "Resolved highlights ready. Finalizing report...",
-                        }
-                    )
+                if resolved_status >= 400:
+                    return "resolved", None
+                return "resolved", resolved_text or None
+
+            section_runners = [
+                _run_summary_section,
+                _run_pending_section,
+                _run_open_section,
+                _run_resolved_section,
+            ]
+
+            if normalized_ai_mode == "standard":
+                section_tasks = [asyncio.create_task(runner()) for runner in section_runners]
+                total_sections = len(section_tasks)
+                completed_sections = 0
+                for completed_task in asyncio.as_completed(section_tasks):
+                    section_name, section_text = await completed_task
+                    if section_name == "summary" and section_text:
+                        ai_summary = section_text
+                    elif section_name == "pending" and section_text:
+                        pending_request_context = section_text
+                    elif section_name == "open" and section_text:
+                        open_request_context = section_text
+                    elif section_name == "resolved" and section_text:
+                        resolved_request_context = section_text
+
+                    completed_sections += 1
+                    if section_name == "summary" and section_text:
+                        _publish_section_progress(
+                            f"Summary ready. {completed_sections}/{total_sections} tasks finished..."
+                        )
+                    elif section_name == "pending" and section_text:
+                        _publish_section_progress(
+                            f"Pending breakdown ready. {completed_sections}/{total_sections} tasks finished..."
+                        )
+                    elif section_name == "open" and section_text:
+                        _publish_section_progress(
+                            f"Open-ticket summary ready. {completed_sections}/{total_sections} tasks finished..."
+                        )
+                    elif section_name == "resolved" and section_text:
+                        _publish_section_progress(
+                            f"Resolved highlights ready. {completed_sections}/{total_sections} tasks finished..."
+                        )
+            else:
+                for runner in section_runners:
+                    section_name, section_text = await runner()
+                    if section_name == "summary" and section_text:
+                        ai_summary = section_text
+                        _publish_section_progress("Summary ready. Building ticket sections...")
+                    elif section_name == "pending" and section_text:
+                        pending_request_context = section_text
+                        _publish_section_progress("Pending breakdown ready. Building open-ticket summary...")
+                    elif section_name == "open" and section_text:
+                        open_request_context = section_text
+                        _publish_section_progress("Open-ticket summary ready. Building resolved highlights...")
+                    elif section_name == "resolved" and section_text:
+                        resolved_request_context = section_text
+                        _publish_section_progress("Resolved highlights ready. Finalizing report...")
     except Exception as exc:  # noqa: BLE001
         ai_error = f"AI summary unavailable: {exc}"
 
