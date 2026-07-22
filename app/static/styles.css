@@ -223,6 +223,38 @@ h3 {
   gap: 0.65rem;
 }
 
+.approval-card {
+  text-align: center;
+  gap: 0.85rem;
+}
+
+.approval-message {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.approval-email {
+  margin: 0;
+  font-weight: 600;
+  color: var(--navy-800);
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.approval-link {
+  color: var(--navy-700);
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.approval-link:hover {
+  color: var(--navy-900);
+}
+
 .auth-alt {
   display: grid;
   gap: 0.65rem;

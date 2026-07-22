@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TicketGal &mdash; Awaiting Approval</title>
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div id="brand-strip" class="brand-strip">
+    <span id="brand-top-left" class="brand-strip-slot">YOUR REGION</span>
+    <span id="brand-top-separator" class="dot">|</span>
+    <span id="brand-top-right" class="brand-strip-slot">YOUR ORGANIZATION</span>
+  </div>
+
+  <main class="shell">
+    <section class="auth-shell">
+      <p id="brand-auth-eyebrow" class="eyebrow">SERVICE OPERATIONS</p>
+      <h1 id="brand-auth-title">TicketGal Service Portal</h1>
+      <p id="pending-approval-description" class="muted">Your registration is complete. Please wait for an administrator to approve your account before signing in.</p>
+
+      <div class="auth-single">
+        <section class="card auth-card approval-card" aria-labelledby="approval-card-title">
+          <p class="card-kicker">ACCOUNT STATUS</p>
+          <h2 id="approval-card-title">Registration Complete</h2>
+          <p class="approval-message">Your account has been created and is waiting for admin approval.</p>
+          <p id="pending-approval-email" class="approval-email hidden"></p>
+          <p class="muted">Once approval is complete, you can come back here and sign in normally.</p>
+          <div class="approval-actions">
+            <a id="pending-approval-login-link" class="approval-link" href="/login">Back to Sign In</a>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/pending-approval.js"></script>
+
+  <footer class="app-footer">
+    <div id="footer-help" class="app-footer-help hidden">
+      <span id="footer-help-text"></span>
+      <a id="footer-help-email" href="#"></a>
+    </div>
+    <p id="footer-copyright" class="hidden"></p>
+  </footer>
+</body>
+</html>

@@ -319,13 +319,13 @@ app.mount("/outlook-addin", StaticFiles(directory=str(addin_static_dir)), name="
 
 @app.get("/addin/new-ticket", include_in_schema=False)
 async def addin_new_ticket_page(request: Request) -> Response:
-    token = request.cookies.get(settings.session_cookie_name)
-    session = get_session(token) if token else None
+    session, user = _get_session_user(request)
     if not session:
         return RedirectResponse(url="/login?next=/addin/new-ticket", status_code=302)
-    user = get_user_by_id(int(session["user_id"]))
-    if not user or not bool(user.get("is_active")) or not bool(user.get("approved")):
+    if not user or not bool(user.get("is_active")):
         return RedirectResponse(url="/login?next=/addin/new-ticket", status_code=302)
+    if not bool(user.get("approved")):
+        return _build_pending_approval_redirect(email=user.get("email"), next_url="/addin/new-ticket")
     return Response(content=_ADDIN_NEW_TICKET_HTML, media_type="text/html")
 
 
@@ -722,6 +722,62 @@ def _build_auth_redirect(message: Optional[str] = None, success: Optional[str] =
     return response
 
 
+def _normalize_next_url(next_url: Optional[str]) -> str:
+    candidate = (next_url or "").strip()
+    if candidate.startswith("/") and not candidate.startswith("//"):
+        return candidate
+    return ""
+
+
+def _get_request_next_url(request: Request) -> str:
+    path = request.url.path or "/"
+    query = request.url.query
+    return f"{path}?{query}" if query else path
+
+
+def _get_session_user(request: Request) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    token = request.cookies.get(settings.session_cookie_name)
+    if not token:
+        return None, None
+
+    session = get_session(token)
+    if not session or not session.get("user_id"):
+        return session, None
+
+    return session, get_user_by_id(int(session["user_id"]))
+
+
+def _build_pending_approval_url(email: Optional[str] = None, next_url: Optional[str] = None) -> str:
+    query: Dict[str, str] = {}
+    normalized_email = normalize_email(email) if email else ""
+    safe_next_url = _normalize_next_url(next_url)
+
+    if normalized_email:
+        query["email"] = normalized_email
+    if safe_next_url:
+        query["next"] = safe_next_url
+
+    return f"/pending-approval?{urlencode(query)}" if query else "/pending-approval"
+
+
+def _build_pending_approval_redirect(
+    email: Optional[str] = None,
+    next_url: Optional[str] = None,
+) -> RedirectResponse:
+    response = RedirectResponse(
+        url=_build_pending_approval_url(email=email, next_url=next_url),
+        status_code=303,
+    )
+    _clear_microsoft_oauth_cookies(response)
+    return response
+
+
+def _build_login_redirect(next_url: Optional[str] = None) -> RedirectResponse:
+    safe_next_url = _normalize_next_url(next_url)
+    url = f"/login?{urlencode({'next': safe_next_url})}" if safe_next_url else "/login"
+    return RedirectResponse(url=url, status_code=303)
+
+
 def _kb_title_from_markdown(path: Path) -> str:
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -950,17 +1006,13 @@ async def theme_css() -> Response:
 
 @app.get("/")
 async def index(request: Request) -> RedirectResponse:
-    token = request.cookies.get(settings.session_cookie_name)
-    if not token:
-        return RedirectResponse(url="/login", status_code=303)
-
-    session = get_session(token)
+    session, user = _get_session_user(request)
     if not session:
         return RedirectResponse(url="/login", status_code=303)
-
-    user = get_user_by_id(int(session["user_id"]))
-    if not user or not bool(user.get("is_active")) or not bool(user.get("approved")):
+    if not user or not bool(user.get("is_active")):
         return RedirectResponse(url="/login", status_code=303)
+    if not bool(user.get("approved")):
+        return _build_pending_approval_redirect(email=user.get("email"))
 
     return RedirectResponse(url="/admin" if user.get("role") == "admin" else "/portal", status_code=303)
 
@@ -984,25 +1036,27 @@ def _get_page_user_or_login_redirect(request: Request) -> Dict[str, Any] | Redir
         return get_current_user(request)
     except HTTPException as exc:
         if exc.status_code == 401:
-            return RedirectResponse(url="/login", status_code=303)
+            return _build_login_redirect(next_url=_get_request_next_url(request))
+        if exc.status_code == 403 and str(exc.detail) == "Account pending admin approval":
+            _, user = _get_session_user(request)
+            return _build_pending_approval_redirect(
+                email=user.get("email") if user else None,
+                next_url=_get_request_next_url(request),
+            )
         raise
 
 
 @app.get("/login")
 async def login_page(request: Request) -> Response:
-    next_url = request.query_params.get("next", "").strip()
-    if not (next_url.startswith("/") and not next_url.startswith("//")):
-        next_url = ""
-    token = request.cookies.get(settings.session_cookie_name)
-    if token:
-        session = get_session(token)
-        if session:
-            user = get_user_by_id(int(session["user_id"]))
-            if user and bool(user.get("is_active")) and bool(user.get("approved")):
-                return RedirectResponse(
-                    url=next_url or ("/admin" if user.get("role") == "admin" else "/portal"),
-                    status_code=303,
-                )
+    next_url = _normalize_next_url(request.query_params.get("next"))
+    session, user = _get_session_user(request)
+    if session and user and bool(user.get("is_active")):
+        if bool(user.get("approved")):
+            return RedirectResponse(
+                url=next_url or ("/admin" if user.get("role") == "admin" else "/portal"),
+                status_code=303,
+            )
+        return _build_pending_approval_redirect(email=user.get("email"), next_url=next_url)
     return _render_shell_html("login.html")
 
 
@@ -1028,8 +1082,29 @@ async def portal_shell_page(request: Request) -> Response:
 
 
 @app.get("/register")
-async def register_page() -> FileResponse:
+async def register_page(request: Request) -> Response:
+    next_url = _normalize_next_url(request.query_params.get("next"))
+    session, user = _get_session_user(request)
+    if session and user and bool(user.get("is_active")):
+        if bool(user.get("approved")):
+            return RedirectResponse(
+                url=next_url or ("/admin" if user.get("role") == "admin" else "/portal"),
+                status_code=303,
+            )
+        return _build_pending_approval_redirect(email=user.get("email"), next_url=next_url)
     return FileResponse(static_dir / "register.html")
+
+
+@app.get("/pending-approval")
+async def pending_approval_page(request: Request) -> Response:
+    next_url = _normalize_next_url(request.query_params.get("next"))
+    _, user = _get_session_user(request)
+    if user and bool(user.get("is_active")) and bool(user.get("approved")):
+        return RedirectResponse(
+            url=next_url or ("/admin" if user.get("role") == "admin" else "/portal"),
+            status_code=303,
+        )
+    return FileResponse(static_dir / "pending-approval.html")
 
 
 @app.get("/kb-editor")
@@ -1902,7 +1977,7 @@ def microsoft_callback(
         return _build_auth_redirect(message="Account is inactive")
 
     if not bool(user.get("approved")):
-        return _build_auth_redirect(message="Account pending admin approval")
+        return _build_pending_approval_redirect(email=user.get("email"))
 
     # Enforce MFA when configured
     if settings.microsoft_require_mfa:

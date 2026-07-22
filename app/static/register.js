@@ -45,6 +45,16 @@ function applyBrandStripSlot(slotEl, fallbackText, imageSrc, imageAlt) {
   return false;
 }
 
+function buildPendingApprovalUrl(email) {
+  const params = new URLSearchParams();
+  const normalizedEmail = safeText(email).trim().toLowerCase();
+  if (normalizedEmail) {
+    params.set("email", normalizedEmail);
+  }
+  const query = params.toString();
+  return query ? `/pending-approval?${query}` : "/pending-approval";
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "include", ...options });
   if (!response.ok) {
@@ -186,18 +196,19 @@ async function loadBranding() {
 registerForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   registerStatus.textContent = "Submitting registration...";
+  const email = document.getElementById("register-email").value.trim();
 
   try {
     const result = await api("/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: document.getElementById("register-email").value.trim(),
+        email,
         password: document.getElementById("register-password").value,
       }),
     });
     registerStatus.textContent = result?.message || "Registration submitted.";
-    registerForm.reset();
+    window.location.assign(buildPendingApprovalUrl(result?.user?.email || email));
   } catch (error) {
     registerStatus.textContent = `Registration failed: ${error.message}`;
   }

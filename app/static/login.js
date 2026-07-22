@@ -88,6 +88,28 @@ function readAuthRedirectState() {
   return { error, success };
 }
 
+function normalizeNextUrl(value) {
+  const next = safeText(value).trim();
+  if (next.startsWith("/") && !next.startsWith("//")) {
+    return next;
+  }
+  return "";
+}
+
+function buildPendingApprovalUrl(email) {
+  const params = new URLSearchParams();
+  const normalizedEmail = safeText(email).trim().toLowerCase();
+  const next = normalizeNextUrl(new URLSearchParams(window.location.search).get("next"));
+  if (normalizedEmail) {
+    params.set("email", normalizedEmail);
+  }
+  if (next) {
+    params.set("next", next);
+  }
+  const query = params.toString();
+  return query ? `/pending-approval?${query}` : "/pending-approval";
+}
+
 async function loadBranding() {
   try {
     const result = await fetch("/api/branding", { credentials: "include" });
@@ -214,11 +236,15 @@ async function submitPasswordLogin(event) {
       } else {
         detail = safeText(await response.text() || detail);
       }
+      if (response.status === 403 && detail === "Account pending admin approval") {
+        window.location.assign(buildPendingApprovalUrl(loginEmail?.value || ""));
+        return;
+      }
       throw new Error(detail);
     }
 
-    const _nextParam = new URLSearchParams(window.location.search).get("next") || "";
-    const _safeDest = (_nextParam.startsWith("/") && !_nextParam.startsWith("//")) ? _nextParam : "/";
+    const _nextParam = normalizeNextUrl(new URLSearchParams(window.location.search).get("next"));
+    const _safeDest = _nextParam || "/";
     window.location.assign(_safeDest);
   } catch (error) {
     if (loginStatus) loginStatus.textContent = `Login failed: ${safeText(error?.message || "Unknown error")}`;
