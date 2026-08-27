@@ -2922,46 +2922,51 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
     }
 
 
-def get_ticket_individual_stats(period_start: str, period_end: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Rank requesters for tickets created during the requested period."""
-    where_sql = "created_at >= ?"
-    params: tuple = (period_start,)
-    if period_end:
-        where_sql += " AND created_at < ?"
-        params = (period_start, period_end)
+def _ticket_requester_identity(row: sqlite3.Row) -> tuple[str, str, str]:
+    payload: Dict[str, Any] = {}
+    try:
+        parsed = json.loads(row["raw_json"] or "{}")
+        if isinstance(parsed, dict):
+            payload = parsed
+    except Exception:
+        payload = {}
 
+    email = str(row["end_user_email"] or payload.get("EndUserEmail") or "").strip().lower()
+    first_name = str(payload.get("EndUserFirstName") or "").strip()
+    last_name = str(payload.get("EndUserLastName") or "").strip()
+    full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+
+    if email:
+        requester_key = f"email:{email}"
+    elif full_name:
+        requester_key = f"name:{full_name.casefold()}"
+    else:
+        requester_key = "unknown"
+
+    return requester_key, full_name or email or "Unknown requester", email
+
+
+def get_ticket_individual_stats() -> List[Dict[str, Any]]:
+    """Rank requesters across all tickets currently available in the cache."""
     with get_ticket_cache_conn() as conn:
         rows = conn.execute(
-            f"""
+            """
             SELECT end_user_email, ticket_status, raw_json
             FROM ticket_cache
-            WHERE {where_sql}
-            """,
-            params,
+            """
         ).fetchall()
 
     individuals: Dict[str, Dict[str, Any]] = {}
     counted_statuses = {"open", "pending", "closed", "resolved"}
 
     for row in rows:
-        payload: Dict[str, Any] = {}
-        try:
-            parsed = json.loads(row["raw_json"] or "{}")
-            if isinstance(parsed, dict):
-                payload = parsed
-        except Exception:
-            payload = {}
-
-        email = str(row["end_user_email"] or payload.get("EndUserEmail") or "").strip().lower()
-        first_name = str(payload.get("EndUserFirstName") or "").strip()
-        last_name = str(payload.get("EndUserLastName") or "").strip()
-        full_name = " ".join(part for part in (first_name, last_name) if part).strip()
-        identity_key = email or full_name.casefold() or "__unknown_requester__"
+        requester_key, display_name, email = _ticket_requester_identity(row)
 
         entry = individuals.setdefault(
-            identity_key,
+            requester_key,
             {
-                "display_name": full_name or email or "Unknown requester",
+                "requester_key": requester_key,
+                "display_name": display_name,
                 "email": email,
                 "created": 0,
                 "open": 0,
@@ -2970,8 +2975,8 @@ def get_ticket_individual_stats(period_start: str, period_end: Optional[str] = N
                 "resolved": 0,
             },
         )
-        if full_name and entry["display_name"] in {email, "Unknown requester"}:
-            entry["display_name"] = full_name
+        if display_name not in {email, "Unknown requester"}:
+            entry["display_name"] = display_name
         if email and not entry["email"]:
             entry["email"] = email
 
@@ -2988,6 +2993,53 @@ def get_ticket_individual_stats(period_start: str, period_end: Optional[str] = N
             str(item["display_name"]).casefold(),
         ),
     )
+
+
+def get_ticket_individual_tickets(requester_key: str) -> Dict[str, Any]:
+    """Return all cached tickets belonging to one requester leaderboard entry."""
+    normalized_key = str(requester_key or "").strip()
+    with get_ticket_cache_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                ticket_id,
+                ticket_status,
+                customer_name,
+                end_user_email,
+                ticket_title,
+                created_at,
+                raw_json
+            FROM ticket_cache
+            ORDER BY COALESCE(created_at, '') DESC, ticket_id DESC
+            """
+        ).fetchall()
+
+    display_name = "Unknown requester"
+    email = ""
+    tickets: List[Dict[str, Any]] = []
+    for row in rows:
+        row_key, row_display_name, row_email = _ticket_requester_identity(row)
+        if row_key != normalized_key:
+            continue
+        display_name = row_display_name
+        email = row_email
+        tickets.append(
+            {
+                "ticket_id": int(row["ticket_id"]),
+                "title": str(row["ticket_title"] or "Untitled ticket"),
+                "status": str(row["ticket_status"] or "Unknown"),
+                "customer_name": str(row["customer_name"] or "Unknown property"),
+                "created_at": str(row["created_at"] or ""),
+            }
+        )
+
+    return {
+        "requester_key": normalized_key,
+        "display_name": display_name,
+        "email": email,
+        "ticket_count": len(tickets),
+        "items": tickets,
+    }
 
 
 # ===========================

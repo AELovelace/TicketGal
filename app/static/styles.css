@@ -626,7 +626,7 @@ button:hover {
 }
 
 .individual-stats-table {
-  min-width: 760px;
+  min-width: 880px;
 }
 
 .individual-stats-table th:not(:nth-child(2)),
@@ -671,6 +671,51 @@ button:hover {
   background: #fff4d8;
   color: var(--navy-900);
   font-weight: 800;
+}
+
+.individual-drilldown-btn,
+.individual-ticket-open-btn {
+  white-space: nowrap;
+  padding: 0.4rem 0.65rem;
+}
+
+.individual-drilldown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.individual-drilldown-header h3,
+.individual-drilldown-header p {
+  margin: 0;
+}
+
+.individual-ticket-table {
+  min-width: 980px;
+}
+
+.individual-ticket-table th,
+.individual-ticket-table td {
+  vertical-align: middle;
+}
+
+.individual-ticket-table th:first-child,
+.individual-ticket-table td:first-child,
+.individual-ticket-table th:nth-child(2),
+.individual-ticket-table td:nth-child(2),
+.individual-ticket-table th:nth-child(3),
+.individual-ticket-table td:nth-child(3),
+.individual-ticket-table th:last-child,
+.individual-ticket-table td:last-child {
+  white-space: nowrap;
+}
+
+.individual-ticket-title {
+  min-width: 260px;
+  font-weight: 600;
+  color: var(--navy-900);
 }
 
 .list-header {

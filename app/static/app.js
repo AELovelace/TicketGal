@@ -141,6 +141,13 @@ const individualStatsPeriod = document.getElementById("individual-stats-period")
 const individualStatsStatus = document.getElementById("individual-stats-status");
 const individualStatsBody = document.getElementById("individual-stats-body");
 const individualStatsMetricButtons = Array.from(document.querySelectorAll("[data-individual-metric]"));
+const individualStatsLeaderboardView = document.getElementById("individual-stats-leaderboard-view");
+const individualStatsDrilldownView = document.getElementById("individual-stats-drilldown-view");
+const individualDrilldownTitle = document.getElementById("individual-drilldown-title");
+const individualDrilldownSummary = document.getElementById("individual-drilldown-summary");
+const individualDrilldownStatus = document.getElementById("individual-drilldown-status");
+const individualDrilldownBody = document.getElementById("individual-drilldown-body");
+const individualDrilldownBack = document.getElementById("individual-drilldown-back");
 
 let auditLogOffset = 0;
 const AUDIT_LOG_PAGE_SIZE = 50;
@@ -183,6 +190,7 @@ let reportLoadedPeriod = null;
 let reportRequestSeq = 0;
 let individualStatsRows = [];
 let individualStatsMetric = "created";
+let individualDrilldownRequestSeq = 0;
 const ticketViewerMeta = document.getElementById("ticket-viewer-meta");
 const ticketViewerUpdate = document.getElementById("ticket-viewer-update");
 const ticketViewerUpdateStatus = document.getElementById("ticket-viewer-update-status");
@@ -3779,28 +3787,6 @@ function renderReportAiSummary(result, aiSummaryEl, aiSection) {
   aiSection.classList.remove("hidden");
 }
 
-function getIndividualStatsRequestParams() {
-  const params = new URLSearchParams();
-  if (reportLoadedPeriod?.startsWith("custom:")) {
-    const [, customStart = "", customEnd = ""] = reportLoadedPeriod.split(":");
-    if (customStart && customEnd) {
-      params.set("period", "custom");
-      params.set("custom_start", customStart);
-      params.set("custom_end", customEnd);
-      return params;
-    }
-  }
-
-  const activePeriod = document.querySelector(".period-btn.active")?.dataset.period;
-  const selectedPeriod = ["week", "month", "year"].includes(activePeriod)
-    ? activePeriod
-    : (["week", "month", "year"].includes(reportLoadedPeriod)
-      ? reportLoadedPeriod
-      : "week");
-  params.set("period", selectedPeriod);
-  return params;
-}
-
 function renderIndividualStatsLeaderboard() {
   if (!individualStatsBody) return;
 
@@ -3862,13 +3848,113 @@ function renderIndividualStatsLeaderboard() {
       td.textContent = String(Number(row?.[metric] || 0));
       tr.appendChild(td);
     });
+
+    const ticketsTd = document.createElement("td");
+    const ticketsBtn = document.createElement("button");
+    ticketsBtn.type = "button";
+    ticketsBtn.className = "individual-drilldown-btn";
+    ticketsBtn.dataset.role = "individual-ticket-drilldown";
+    ticketsBtn.dataset.requesterKey = safeText(row?.requester_key);
+    ticketsBtn.dataset.requesterName = safeText(row?.display_name) || "Unknown requester";
+    ticketsBtn.textContent = `View ${Number(row?.created || 0)}`;
+    ticketsBtn.disabled = !ticketsBtn.dataset.requesterKey;
+    ticketsTd.appendChild(ticketsBtn);
+    tr.appendChild(ticketsTd);
     individualStatsBody.appendChild(tr);
   });
 
   if (individualStatsStatus) {
     individualStatsStatus.textContent = rows.length
       ? `${rows.length} individual${rows.length === 1 ? "" : "s"} ranked by tickets ${metricLabels[selectedMetric]}.`
-      : "No requester ticket activity was found for this period.";
+      : "No requester ticket activity was found in the available ticket history.";
+  }
+}
+
+function showIndividualStatsLeaderboard() {
+  individualDrilldownRequestSeq += 1;
+  if (individualStatsLeaderboardView) individualStatsLeaderboardView.classList.remove("hidden");
+  if (individualStatsDrilldownView) individualStatsDrilldownView.classList.add("hidden");
+}
+
+async function openIndividualStatsDrilldown(requesterKey, requesterName) {
+  if (!individualStatsDrilldownView || !requesterKey) return;
+
+  const requestId = ++individualDrilldownRequestSeq;
+  if (individualStatsLeaderboardView) individualStatsLeaderboardView.classList.add("hidden");
+  individualStatsDrilldownView.classList.remove("hidden");
+  if (individualDrilldownTitle) {
+    individualDrilldownTitle.textContent = `${requesterName || "Individual"} - Tickets Opened`;
+  }
+  if (individualDrilldownSummary) individualDrilldownSummary.textContent = "All-time ticket history";
+  if (individualDrilldownStatus) individualDrilldownStatus.textContent = "Loading tickets...";
+  if (individualDrilldownBody) individualDrilldownBody.textContent = "";
+
+  try {
+    const params = new URLSearchParams({ requester_key: requesterKey });
+    const result = await api(`/api/reports/individual-statistics/tickets?${params.toString()}`);
+    if (requestId !== individualDrilldownRequestSeq) return;
+
+    const tickets = Array.isArray(result?.items) ? result.items : [];
+    const displayName = safeText(result?.display_name).trim() || requesterName || "Individual";
+    const email = safeText(result?.email).trim();
+    if (individualDrilldownTitle) individualDrilldownTitle.textContent = `${displayName} - Tickets Opened`;
+    if (individualDrilldownSummary) {
+      individualDrilldownSummary.textContent = email
+        ? `${email} | ${tickets.length} all-time ticket${tickets.length === 1 ? "" : "s"}`
+        : `${tickets.length} all-time ticket${tickets.length === 1 ? "" : "s"}`;
+    }
+
+    if (individualDrilldownBody) {
+      tickets.forEach((ticket) => {
+        const tr = document.createElement("tr");
+
+        const idTd = document.createElement("td");
+        idTd.textContent = `#${Number(ticket?.ticket_id || 0)}`;
+        tr.appendChild(idTd);
+
+        const createdTd = document.createElement("td");
+        createdTd.textContent = formatUiDateTime(ticket?.created_at);
+        tr.appendChild(createdTd);
+
+        const statusTd = document.createElement("td");
+        const statusText = safeText(ticket?.status) || "Unknown";
+        statusTd.className = `status-${statusText.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+        statusTd.textContent = statusText;
+        tr.appendChild(statusTd);
+
+        const titleTd = document.createElement("td");
+        titleTd.className = "individual-ticket-title";
+        titleTd.textContent = safeText(ticket?.title) || "Untitled ticket";
+        tr.appendChild(titleTd);
+
+        const propertyTd = document.createElement("td");
+        propertyTd.textContent = safeText(ticket?.customer_name) || "Unknown property";
+        tr.appendChild(propertyTd);
+
+        const viewTd = document.createElement("td");
+        const viewBtn = document.createElement("button");
+        viewBtn.type = "button";
+        viewBtn.className = "individual-ticket-open-btn";
+        viewBtn.dataset.role = "open-individual-ticket";
+        viewBtn.dataset.ticketId = safeText(ticket?.ticket_id);
+        viewBtn.textContent = "Open";
+        viewTd.appendChild(viewBtn);
+        tr.appendChild(viewTd);
+
+        individualDrilldownBody.appendChild(tr);
+      });
+    }
+
+    if (individualDrilldownStatus) {
+      individualDrilldownStatus.textContent = tickets.length
+        ? "Select Open to view the full ticket and its history."
+        : "No tickets were found for this individual.";
+    }
+  } catch (error) {
+    if (requestId !== individualDrilldownRequestSeq) return;
+    if (individualDrilldownStatus) {
+      individualDrilldownStatus.textContent = `Unable to load tickets: ${safeText(error?.message || error)}`;
+    }
   }
 }
 
@@ -3877,20 +3963,20 @@ async function openIndividualStatsModal() {
 
   individualStatsModal.classList.remove("hidden");
   individualStatsModal.focus();
+  showIndividualStatsLeaderboard();
   individualStatsRows = [];
   if (individualStatsBody) individualStatsBody.textContent = "";
-  if (individualStatsPeriod) individualStatsPeriod.textContent = "Loading selected report period...";
+  if (individualStatsPeriod) individualStatsPeriod.textContent = "Loading all-time ticket history...";
   if (individualStatsStatus) individualStatsStatus.textContent = "Loading leaderboard...";
   if (individualStatsOpen) individualStatsOpen.disabled = true;
 
   try {
-    const params = getIndividualStatsRequestParams();
-    const result = await api(`/api/reports/individual-statistics?${params.toString()}`);
+    const result = await api("/api/reports/individual-statistics");
     individualStatsRows = Array.isArray(result?.items) ? result.items : [];
     if (individualStatsPeriod) {
-      const periodLabel = safeText(result?.period_label).trim() || "selected period";
+      const ticketCount = Number(result?.ticket_count || 0);
       individualStatsPeriod.textContent =
-        `Tickets created during the ${periodLabel}, grouped by requester and current cached status.`;
+        `All-time totals across ${ticketCount} cached ticket${ticketCount === 1 ? "" : "s"}, grouped by requester and current status.`;
     }
     renderIndividualStatsLeaderboard();
   } catch (error) {
@@ -3903,6 +3989,7 @@ async function openIndividualStatsModal() {
 }
 
 function closeIndividualStatsModal() {
+  individualDrilldownRequestSeq += 1;
   if (individualStatsModal) individualStatsModal.classList.add("hidden");
 }
 
@@ -4525,6 +4612,33 @@ if (individualStatsClose) {
 if (individualStatsModal) {
   individualStatsModal.addEventListener("click", (event) => {
     if (event.target === individualStatsModal) closeIndividualStatsModal();
+  });
+}
+if (individualDrilldownBack) {
+  individualDrilldownBack.addEventListener("click", showIndividualStatsLeaderboard);
+}
+if (individualStatsBody) {
+  individualStatsBody.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const drilldownBtn = target.closest("[data-role='individual-ticket-drilldown']");
+    if (!(drilldownBtn instanceof HTMLElement)) return;
+    openIndividualStatsDrilldown(
+      safeText(drilldownBtn.dataset.requesterKey),
+      safeText(drilldownBtn.dataset.requesterName),
+    );
+  });
+}
+if (individualDrilldownBody) {
+  individualDrilldownBody.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const openBtn = target.closest("[data-role='open-individual-ticket']");
+    if (!(openBtn instanceof HTMLElement)) return;
+    const ticketId = Number(openBtn.dataset.ticketId || 0);
+    if (Number.isFinite(ticketId) && ticketId > 0) {
+      await openTicketViewerByPreference(ticketId);
+    }
   });
 }
 individualStatsMetricButtons.forEach((button) => {
