@@ -581,6 +581,98 @@ button:hover {
   min-width: 170px;
 }
 
+.report-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.report-heading-row h2 {
+  margin: 0;
+}
+
+.ticket-viewer-panel.individual-stats-panel {
+  width: min(1180px, 97vw);
+}
+
+.individual-stats-panel .ticket-viewer-header h2,
+.individual-stats-panel .card-kicker {
+  margin-bottom: 0.2rem;
+}
+
+.individual-stats-metrics {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin: 0.85rem 0 0.35rem;
+}
+
+.individual-stats-metrics button {
+  border: 1px solid #c8baa0;
+  background: #fffaf0;
+  color: var(--navy-700);
+}
+
+.individual-stats-metrics button.active {
+  border-color: var(--navy-700);
+  background: var(--navy-700);
+  color: #fff;
+}
+
+.individual-stats-table-wrap {
+  overflow-x: auto;
+}
+
+.individual-stats-table {
+  min-width: 760px;
+}
+
+.individual-stats-table th:not(:nth-child(2)),
+.individual-stats-table td:not(:nth-child(2)) {
+  text-align: center;
+}
+
+.individual-stats-table th {
+  white-space: nowrap;
+}
+
+.individual-name {
+  font-weight: 700;
+  color: var(--navy-900);
+}
+
+.individual-email {
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.individual-rank {
+  width: 64px;
+  font-weight: 800;
+  color: var(--navy-700);
+}
+
+.individual-rank-1 {
+  color: #9a6a00;
+}
+
+.individual-rank-2 {
+  color: #66717d;
+}
+
+.individual-rank-3 {
+  color: #9a5b32;
+}
+
+.individual-metric-active {
+  background: #fff4d8;
+  color: var(--navy-900);
+  font-weight: 800;
+}
+
 .list-header {
   display: flex;
   justify-content: space-between;
@@ -1420,6 +1512,23 @@ body.theme-premium .report-ai-error {
   border-color: #d88f95;
   background: #f9e6e8;
   color: #7f2a30;
+}
+
+body.theme-premium .individual-stats-metrics button {
+  border-color: #d4a0a8;
+  background: #fff8f9;
+  color: #5c2e3e;
+}
+
+body.theme-premium .individual-stats-metrics button.active {
+  border-color: #7b3f50;
+  background: #7b3f50;
+  color: #fff;
+}
+
+body.theme-premium .individual-metric-active {
+  background: #f9e6e8;
+  color: #5c2e3e;
 }
 
 /* ─── Audit-log modal ─── */

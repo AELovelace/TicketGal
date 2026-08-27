@@ -2922,6 +2922,74 @@ def get_ticket_report_stats(period_start: str, period_end: Optional[str] = None)
     }
 
 
+def get_ticket_individual_stats(period_start: str, period_end: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Rank requesters for tickets created during the requested period."""
+    where_sql = "created_at >= ?"
+    params: tuple = (period_start,)
+    if period_end:
+        where_sql += " AND created_at < ?"
+        params = (period_start, period_end)
+
+    with get_ticket_cache_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT end_user_email, ticket_status, raw_json
+            FROM ticket_cache
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchall()
+
+    individuals: Dict[str, Dict[str, Any]] = {}
+    counted_statuses = {"open", "pending", "closed", "resolved"}
+
+    for row in rows:
+        payload: Dict[str, Any] = {}
+        try:
+            parsed = json.loads(row["raw_json"] or "{}")
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+
+        email = str(row["end_user_email"] or payload.get("EndUserEmail") or "").strip().lower()
+        first_name = str(payload.get("EndUserFirstName") or "").strip()
+        last_name = str(payload.get("EndUserLastName") or "").strip()
+        full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+        identity_key = email or full_name.casefold() or "__unknown_requester__"
+
+        entry = individuals.setdefault(
+            identity_key,
+            {
+                "display_name": full_name or email or "Unknown requester",
+                "email": email,
+                "created": 0,
+                "open": 0,
+                "pending": 0,
+                "closed": 0,
+                "resolved": 0,
+            },
+        )
+        if full_name and entry["display_name"] in {email, "Unknown requester"}:
+            entry["display_name"] = full_name
+        if email and not entry["email"]:
+            entry["email"] = email
+
+        entry["created"] += 1
+        normalized_status = str(row["ticket_status"] or "").strip().lower()
+        if normalized_status in counted_statuses:
+            entry[normalized_status] += 1
+
+    return sorted(
+        individuals.values(),
+        key=lambda item: (
+            -int(item["created"]),
+            -int(item["open"] + item["pending"]),
+            str(item["display_name"]).casefold(),
+        ),
+    )
+
+
 # ===========================
 # Knowledgebase CRUD Functions
 # ===========================

@@ -469,7 +469,10 @@
 
           <section id="admin-page-reports" class="admin-page card hidden">
             <p class="card-kicker">ANALYTICS</p>
-            <h2>Ticket Reports</h2>
+            <div class="report-heading-row">
+              <h2>Ticket Reports</h2>
+              <button id="report-individual-stats-open" type="button">Advanced Individualized Statistics</button>
+            </div>
 
             <div class="report-period-selector">
               <button type="button" class="period-btn" data-period="week">1 Week</button>
@@ -548,6 +551,43 @@
     </section>
 
   </main>
+
+  <div id="individual-stats-modal" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="individual-stats-title" tabindex="-1">
+    <div class="ticket-viewer-panel individual-stats-panel">
+      <div class="ticket-viewer-header">
+        <div>
+          <p class="card-kicker">REQUESTER LEADERBOARD</p>
+          <h2 id="individual-stats-title">Advanced Individualized Statistics</h2>
+        </div>
+        <button id="individual-stats-close" type="button">Close</button>
+      </div>
+      <p id="individual-stats-period" class="muted"></p>
+      <div class="individual-stats-metrics" role="group" aria-label="Rank leaderboard by ticket metric">
+        <button type="button" data-individual-metric="created" aria-pressed="true">Created</button>
+        <button type="button" data-individual-metric="open" aria-pressed="false">Open</button>
+        <button type="button" data-individual-metric="pending" aria-pressed="false">Pending</button>
+        <button type="button" data-individual-metric="closed" aria-pressed="false">Closed</button>
+        <button type="button" data-individual-metric="resolved" aria-pressed="false">Resolved</button>
+      </div>
+      <p id="individual-stats-status" class="muted" aria-live="polite"></p>
+      <div class="individual-stats-table-wrap">
+        <table class="individual-stats-table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Individual</th>
+              <th>Created</th>
+              <th>Open</th>
+              <th>Pending</th>
+              <th>Closed</th>
+              <th>Resolved</th>
+            </tr>
+          </thead>
+          <tbody id="individual-stats-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
   <div id="ticket-viewer" class="ticket-viewer hidden" role="dialog" aria-modal="true" aria-labelledby="ticket-viewer-title">
     <div class="ticket-viewer-panel">

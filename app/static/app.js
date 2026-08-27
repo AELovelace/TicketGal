@@ -134,6 +134,13 @@ const failedLoginLogExportBtn = document.getElementById("failed-login-log-export
 const failedLoginLogPrev = document.getElementById("failed-login-log-prev");
 const failedLoginLogNext = document.getElementById("failed-login-log-next");
 const failedLoginLogPageInfo = document.getElementById("failed-login-log-page-info");
+const individualStatsOpen = document.getElementById("report-individual-stats-open");
+const individualStatsModal = document.getElementById("individual-stats-modal");
+const individualStatsClose = document.getElementById("individual-stats-close");
+const individualStatsPeriod = document.getElementById("individual-stats-period");
+const individualStatsStatus = document.getElementById("individual-stats-status");
+const individualStatsBody = document.getElementById("individual-stats-body");
+const individualStatsMetricButtons = Array.from(document.querySelectorAll("[data-individual-metric]"));
 
 let auditLogOffset = 0;
 const AUDIT_LOG_PAGE_SIZE = 50;
@@ -174,6 +181,8 @@ const adminRescanKbStatus = document.getElementById("admin-rescan-kb-status");
 
 let reportLoadedPeriod = null;
 let reportRequestSeq = 0;
+let individualStatsRows = [];
+let individualStatsMetric = "created";
 const ticketViewerMeta = document.getElementById("ticket-viewer-meta");
 const ticketViewerUpdate = document.getElementById("ticket-viewer-update");
 const ticketViewerUpdateStatus = document.getElementById("ticket-viewer-update-status");
@@ -3770,6 +3779,133 @@ function renderReportAiSummary(result, aiSummaryEl, aiSection) {
   aiSection.classList.remove("hidden");
 }
 
+function getIndividualStatsRequestParams() {
+  const params = new URLSearchParams();
+  if (reportLoadedPeriod?.startsWith("custom:")) {
+    const [, customStart = "", customEnd = ""] = reportLoadedPeriod.split(":");
+    if (customStart && customEnd) {
+      params.set("period", "custom");
+      params.set("custom_start", customStart);
+      params.set("custom_end", customEnd);
+      return params;
+    }
+  }
+
+  const activePeriod = document.querySelector(".period-btn.active")?.dataset.period;
+  const selectedPeriod = ["week", "month", "year"].includes(activePeriod)
+    ? activePeriod
+    : (["week", "month", "year"].includes(reportLoadedPeriod)
+      ? reportLoadedPeriod
+      : "week");
+  params.set("period", selectedPeriod);
+  return params;
+}
+
+function renderIndividualStatsLeaderboard() {
+  if (!individualStatsBody) return;
+
+  const metricLabels = {
+    created: "created",
+    open: "open",
+    pending: "pending",
+    closed: "closed",
+    resolved: "resolved",
+  };
+  const selectedMetric = metricLabels[individualStatsMetric] ? individualStatsMetric : "created";
+  const rows = [...individualStatsRows].sort((left, right) => {
+    const metricDifference = Number(right?.[selectedMetric] || 0) - Number(left?.[selectedMetric] || 0);
+    if (metricDifference !== 0) return metricDifference;
+    const createdDifference = Number(right?.created || 0) - Number(left?.created || 0);
+    if (createdDifference !== 0) return createdDifference;
+    return safeText(left?.display_name).localeCompare(safeText(right?.display_name));
+  });
+
+  individualStatsMetricButtons.forEach((button) => {
+    const isActive = button.dataset.individualMetric === selectedMetric;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+
+  individualStatsBody.textContent = "";
+  let previousValue = null;
+  let displayedRank = 0;
+  rows.forEach((row, index) => {
+    const metricValue = Number(row?.[selectedMetric] || 0);
+    if (previousValue === null || metricValue !== previousValue) {
+      displayedRank = index + 1;
+      previousValue = metricValue;
+    }
+
+    const tr = document.createElement("tr");
+    const rankTd = document.createElement("td");
+    rankTd.className = `individual-rank individual-rank-${Math.min(displayedRank, 4)}`;
+    rankTd.textContent = `#${displayedRank}`;
+    tr.appendChild(rankTd);
+
+    const personTd = document.createElement("td");
+    const nameEl = document.createElement("div");
+    nameEl.className = "individual-name";
+    nameEl.textContent = safeText(row?.display_name) || "Unknown requester";
+    personTd.appendChild(nameEl);
+    const email = safeText(row?.email).trim();
+    if (email && email.toLowerCase() !== safeText(row?.display_name).trim().toLowerCase()) {
+      const emailEl = document.createElement("div");
+      emailEl.className = "individual-email";
+      emailEl.textContent = email;
+      personTd.appendChild(emailEl);
+    }
+    tr.appendChild(personTd);
+
+    ["created", "open", "pending", "closed", "resolved"].forEach((metric) => {
+      const td = document.createElement("td");
+      td.className = metric === selectedMetric ? "individual-metric-active" : "";
+      td.textContent = String(Number(row?.[metric] || 0));
+      tr.appendChild(td);
+    });
+    individualStatsBody.appendChild(tr);
+  });
+
+  if (individualStatsStatus) {
+    individualStatsStatus.textContent = rows.length
+      ? `${rows.length} individual${rows.length === 1 ? "" : "s"} ranked by tickets ${metricLabels[selectedMetric]}.`
+      : "No requester ticket activity was found for this period.";
+  }
+}
+
+async function openIndividualStatsModal() {
+  if (!individualStatsModal) return;
+
+  individualStatsModal.classList.remove("hidden");
+  individualStatsModal.focus();
+  individualStatsRows = [];
+  if (individualStatsBody) individualStatsBody.textContent = "";
+  if (individualStatsPeriod) individualStatsPeriod.textContent = "Loading selected report period...";
+  if (individualStatsStatus) individualStatsStatus.textContent = "Loading leaderboard...";
+  if (individualStatsOpen) individualStatsOpen.disabled = true;
+
+  try {
+    const params = getIndividualStatsRequestParams();
+    const result = await api(`/api/reports/individual-statistics?${params.toString()}`);
+    individualStatsRows = Array.isArray(result?.items) ? result.items : [];
+    if (individualStatsPeriod) {
+      const periodLabel = safeText(result?.period_label).trim() || "selected period";
+      individualStatsPeriod.textContent =
+        `Tickets created during the ${periodLabel}, grouped by requester and current cached status.`;
+    }
+    renderIndividualStatsLeaderboard();
+  } catch (error) {
+    if (individualStatsStatus) {
+      individualStatsStatus.textContent = `Unable to load individualized statistics: ${safeText(error?.message || error)}`;
+    }
+  } finally {
+    if (individualStatsOpen) individualStatsOpen.disabled = false;
+  }
+}
+
+function closeIndividualStatsModal() {
+  if (individualStatsModal) individualStatsModal.classList.add("hidden");
+}
+
 async function loadReport(period, customStart = null, customEnd = null) {
   const requestId = ++reportRequestSeq;
   const loading = document.getElementById("report-loading");
@@ -4380,6 +4516,26 @@ if (reportCustomRunBtn) {
   });
 }
 
+if (individualStatsOpen) {
+  individualStatsOpen.addEventListener("click", openIndividualStatsModal);
+}
+if (individualStatsClose) {
+  individualStatsClose.addEventListener("click", closeIndividualStatsModal);
+}
+if (individualStatsModal) {
+  individualStatsModal.addEventListener("click", (event) => {
+    if (event.target === individualStatsModal) closeIndividualStatsModal();
+  });
+}
+individualStatsMetricButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const metric = safeText(button.dataset.individualMetric).trim().toLowerCase();
+    if (!["created", "open", "pending", "closed", "resolved"].includes(metric)) return;
+    individualStatsMetric = metric;
+    renderIndividualStatsLeaderboard();
+  });
+});
+
 userTicketsBody.addEventListener("click", async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
@@ -4821,6 +4977,7 @@ document.addEventListener("keydown", (event) => {
     closeKBAccessLogModal();
     closeLoginAccessLogModal();
     closeFailedLoginLogModal();
+    closeIndividualStatsModal();
   }
 });
 

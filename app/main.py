@@ -62,6 +62,7 @@ from .database import (
     get_transaction_queue_summary,
     get_signups_enabled,
     get_login_rate_limits_snapshot,
+    get_ticket_individual_stats,
     get_ticket_report_stats,
     get_user_by_email,
     get_user_by_id,
@@ -4319,6 +4320,30 @@ async def get_reports_summary(
         include_ai=include_ai,
         ai_mode=_resolve_report_ai_mode_query(ai_mode, fast_mode),
     )
+
+
+@app.get("/api/reports/individual-statistics")
+async def get_reports_individual_statistics(
+    period: str = Query(default="week", pattern="^(week|month|year|custom)$"),
+    custom_start: Optional[str] = Query(default=None),
+    custom_end: Optional[str] = Query(default=None),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin(user)
+    period_start, period_end, period_label = _resolve_report_period(
+        period=period,
+        custom_start=custom_start,
+        custom_end=custom_end,
+    )
+    result: Dict[str, Any] = {
+        "period": period,
+        "period_label": period_label,
+        "period_start": period_start,
+        "items": get_ticket_individual_stats(period_start, period_end),
+    }
+    if period_end:
+        result["period_end"] = period_end
+    return result
 
 
 # ========================
