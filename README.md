@@ -264,6 +264,19 @@ Production-style on PowerShell:
 .\start-prod.ps1
 ```
 
+## Install On Android
+
+TicketGal is a Progressive Web App (PWA), so Android users can install the existing site directly from Chrome or Edge without a separate app-store package.
+
+1. Deploy TicketGal at its normal public HTTPS address.
+2. Open that address in Chrome or Edge on the Android phone and sign in.
+3. Tap **Install TicketGal** when the in-app install button appears, then confirm **Install**.
+4. If the button is not visible, open the browser menu and choose **Install app** or **Add to Home screen**.
+
+The installed app opens in its own window and uses the same TicketGal accounts, permissions, ticket data, and server deployment as the browser version. Ticket data and authenticated pages are intentionally not cached for offline access; when the phone is offline, the app shows a connection message instead.
+
+Android installation requires a valid HTTPS certificate in production. Plain HTTP is installable only on local development origins such as `localhost`.
+
 ## Health And Operations
 
 - `GET /health` gives a basic service health response
