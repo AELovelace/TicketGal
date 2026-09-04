@@ -198,7 +198,7 @@ const ticketViewerHistory = document.getElementById("ticket-viewer-history");
 
 const ADMIN_STATUSES = ["Open", "Pending", "Closed", "Resolved"];
 const USER_STATUSES = ["Open", "Resolved"];
-const USER_LOCKED_CURRENT = ["pending", "closed", "pending closed"];
+const USER_LOCKED_CURRENT = ["closed"];
 
 let currentUser = null;
 let currentAdminPage = "admin-page-create";

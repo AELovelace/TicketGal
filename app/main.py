@@ -126,7 +126,7 @@ from .schemas import (
 
 ADMIN_ALLOWED_STATUSES = {"Open", "Pending", "Closed", "Resolved"}
 USER_ALLOWED_STATUSES = {"Open", "Resolved"}
-USER_LOCKED_STATUSES = {"pending", "closed", "pending closed"}
+USER_LOCKED_STATUSES = {"closed"}
 OP_CREATE_TICKET = "create_ticket"
 OP_UPDATE_TICKET_STATUS = "update_ticket_status"
 OP_ADD_TICKET_COMMENT = "add_ticket_comment"
@@ -3556,7 +3556,7 @@ async def add_ticket_update(
         if current_status in USER_LOCKED_STATUSES:
             raise HTTPException(
                 status_code=403,
-                detail="Ticket status is locked for users when current status is Pending or Closed",
+                detail="Ticket status is locked for users when current status is Closed",
             )
         follow_up_status = "Resolved"
 
