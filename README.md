@@ -151,6 +151,17 @@ Behavior:
 - Existing local users can be linked by email
 - New SSO-created users still require approval unless already elevated as the bootstrap admin
 
+### Emergency password login (hidden by default)
+
+When Microsoft 365 is configured, the username/password form on `/login` is hidden. It only appears when:
+
+- Microsoft 365 sign-in is not configured, or
+- the server can't reach Microsoft's sign-in endpoint (`/auth/providers` probes `login.microsoftonline.com/<authority>/v2.0/.well-known/openid-configuration`, cached for 60 seconds per worker), or
+- the user was just sent back to `/login` with an error from the Microsoft flow (for example, an expired client secret), or
+- someone opens `/login?emergency=1` by hand (break-glass link for admins).
+
+Set `PASSWORD_LOGIN_FALLBACK_ONLY=0` to always show the form, as before. Hiding the form is only a UI change: `POST /auth/login` still works and is still rate-limited. When `USER_PASSWORD_AUTH_ENABLED=0`, only admins can sign in with a password.
+
 ## Branding
 
 Branding values are loaded from a separate file so deployments can be re-skinned without changing code.

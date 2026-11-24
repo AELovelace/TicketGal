@@ -1753,13 +1753,45 @@ async def admin_process_queue(
     return await _drain_queue(limit)
 
 
+# Cached result of the Microsoft 365 reachability probe: (checked_at_monotonic, healthy).
+# Per-worker cache is fine here — worst case each worker probes once a minute.
+_MICROSOFT_HEALTH_CACHE: Dict[str, Any] = {"checked_at": 0.0, "healthy": True}
+_MICROSOFT_HEALTH_TTL_SECONDS = 60.0  # how long one probe result is trusted before re-checking
+
+
+async def _microsoft_login_healthy() -> bool:
+    """Return True when Microsoft's sign-in metadata endpoint answers for our tenant/authority."""
+    if not settings.microsoft_enabled:
+        return False  # not configured at all = definitely "broken" from the login page's point of view
+    now = asyncio.get_running_loop().time()  # monotonic clock, immune to wall-clock changes
+    if now - float(_MICROSOFT_HEALTH_CACHE["checked_at"]) < _MICROSOFT_HEALTH_TTL_SECONDS:
+        return bool(_MICROSOFT_HEALTH_CACHE["healthy"])  # recent answer, reuse it
+    metadata_url = f"{_microsoft_authority()}/v2.0/.well-known/openid-configuration"  # same authority MSAL uses
+    healthy = False
+    try:
+        async with httpx.AsyncClient(timeout=settings.health_check_timeout_seconds) as client:
+            probe = await client.get(metadata_url)  # cheap, unauthenticated OIDC discovery document
+        healthy = probe.status_code == 200 and "authorization_endpoint" in probe.text
+    except httpx.HTTPError:
+        healthy = False  # DNS/TLS/timeout/outbound-firewall failures all count as broken
+    _MICROSOFT_HEALTH_CACHE["checked_at"] = now
+    _MICROSOFT_HEALTH_CACHE["healthy"] = healthy
+    return healthy
+
+
 @app.get("/auth/providers")
-def auth_providers() -> Dict[str, Any]:
+async def auth_providers() -> Dict[str, Any]:
+    microsoft_healthy = await _microsoft_login_healthy()  # cached probe of login.microsoftonline.com
+    # The password form is an emergency fallback: only show it when Microsoft 365 sign-in is unusable,
+    # unless PASSWORD_LOGIN_FALLBACK_ONLY=0 restores the old always-visible behaviour.
+    password_login_visible = (not settings.password_login_fallback_only) or not microsoft_healthy
     return {
         "microsoft_enabled": settings.microsoft_enabled,
+        "microsoft_healthy": microsoft_healthy,
         "microsoft_label": "Sign in with Microsoft 365",
         "user_password_auth_enabled": settings.user_password_auth_enabled,
         "password_login_admin_only": not settings.user_password_auth_enabled,
+        "password_login_visible": password_login_visible,
     }
 
 

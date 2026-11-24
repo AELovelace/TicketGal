@@ -178,6 +178,9 @@ class Settings:
         require_mfa_flag = os.getenv("MICROSOFT_REQUIRE_MFA", "0").strip().lower()
         self.microsoft_require_mfa = require_mfa_flag in {"1", "true", "yes"}
         self.microsoft_enabled = bool(self.microsoft_client_id and self.microsoft_client_secret)
+        # 1 (default) = hide the username/password form on /login unless Microsoft 365 sign-in is broken.
+        # 0 = always show it (old behaviour).
+        self.password_login_fallback_only = _flag("PASSWORD_LOGIN_FALLBACK_ONLY", "1")
 
         # Color theme — loaded from .env.coloring
         self.color_navy_900 = os.getenv("COLOR_NAVY_900", "#0e1c2f")

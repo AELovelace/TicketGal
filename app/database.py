@@ -885,15 +885,18 @@ def init_db() -> None:
         )
 
         # Migrate any plaintext or legacy session token storage to hashed tokens.
-        session_rows = conn.execute("SELECT rowid, token, token_hash FROM sessions").fetchall()
+        # Only legacy rows (token_hash IS NULL, token = plaintext) need hashing. Rows written by
+        # create_session already store the hash in BOTH columns; re-hashing those (the old behaviour)
+        # silently logged every user out on each restart and each Atera sync.
+        session_rows = conn.execute(
+            "SELECT rowid, token FROM sessions WHERE token_hash IS NULL OR token_hash = ''"
+        ).fetchall()
         for row in session_rows:
-            token_value = str(row["token"] or "")
-            token_hash = _hash_session_token(token_value)
-            if row["token"] != token_hash or row["token_hash"] != token_hash:
-                conn.execute(
-                    "UPDATE sessions SET token = ?, token_hash = ? WHERE rowid = ?",
-                    (token_hash, token_hash, row["rowid"]),
-                )
+            token_hash = _hash_session_token(str(row["token"] or ""))  # plaintext → sha256 hex
+            conn.execute(
+                "UPDATE sessions SET token = ?, token_hash = ? WHERE rowid = ?",
+                (token_hash, token_hash, row["rowid"]),
+            )
 
         # Encrypt stored password hashes at rest when key is configured.
         if _get_fernet() is not None:

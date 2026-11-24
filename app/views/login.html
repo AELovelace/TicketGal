@@ -37,8 +37,12 @@
             <p class="muted auth-note">Uses your Microsoft 365 work account and can reuse your Edge sign-in session.</p>
           </div>
 
-          <div id="local-login-block">
+          <!-- Emergency password login: hidden by login.js unless Microsoft 365 sign-in is broken -->
+          <div id="local-login-block" class="hidden">
             <div id="local-login-divider" class="auth-divider"><span>or</span></div>
+            <p id="local-login-fallback-note" class="muted auth-note hidden" role="status">
+              Emergency access: use this only if Microsoft 365 sign-in isn't working.
+            </p>
             <label>
               Company Email
               <input id="login-email" type="email" required>
@@ -51,7 +55,7 @@
           </div>
 
           <p id="login-status" class="muted"></p>
-          <p id="register-link" class="muted register-link">Need an account? <a href="/register">Register here</a></p>
+          <p id="register-link" class="muted register-link hidden">Need an account? <a href="/register">Register here</a></p>
         </form>
       </div>
     </section>

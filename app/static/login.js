@@ -17,8 +17,13 @@ const brandAuthEyebrow = document.getElementById("brand-auth-eyebrow");
 const brandAuthTitle = document.getElementById("brand-auth-title");
 const brandAuthDescription = document.getElementById("brand-auth-description");
 
-let userPasswordAuthEnabled = true;
-let microsoftAuthEnabled = false;
+const localLoginFallbackNote = document.getElementById("local-login-fallback-note");
+
+let userPasswordAuthEnabled = true;  // server allows non-admin password accounts (register link)
+let microsoftAuthEnabled = false;    // M365 app registration is configured
+let passwordLoginVisible = false;    // server says M365 is broken/unconfigured, so show the emergency form
+let microsoftFlowFailed = false;     // we just came back from a Microsoft sign-in that errored
+const emergencyRequested = new URLSearchParams(window.location.search).get("emergency") === "1";  // manual escape hatch
 
 function safeText(value) {
   if (value === null || value === undefined) return "";
@@ -57,7 +62,9 @@ function applyBrandStripSlot(slotEl, fallbackText, imageSrc, imageAlt) {
 
 function applyAuthModeVisibility() {
   const showMicrosoft = microsoftAuthEnabled;
-  const showLocal = userPasswordAuthEnabled;
+  // Password form is an emergency fallback only: M365 unconfigured/unreachable, a failed M365 round trip,
+  // or ?emergency=1. The server still enforces who may actually log in with a password.
+  const showLocal = passwordLoginVisible || microsoftFlowFailed || emergencyRequested || !showMicrosoft;
   const showLocalDivider = showMicrosoft && showLocal;
 
   if (localLoginBlock) {
@@ -66,8 +73,12 @@ function applyAuthModeVisibility() {
   if (localLoginDivider) {
     localLoginDivider.classList.toggle("hidden", !showLocalDivider);
   }
+  if (localLoginFallbackNote) {
+    // Explain why the form appeared when M365 is supposed to be the way in.
+    localLoginFallbackNote.classList.toggle("hidden", !(showMicrosoft && showLocal));
+  }
   if (registerLink) {
-    registerLink.classList.toggle("hidden", !showLocal);
+    registerLink.classList.toggle("hidden", !(showLocal && userPasswordAuthEnabled));  // no self-signup in emergency-only mode
   }
   if (microsoftAuthBlock) {
     microsoftAuthBlock.classList.toggle("hidden", !showMicrosoft);
@@ -157,12 +168,10 @@ async function loadBranding() {
 async function checkSignupsEnabled() {
   if (!registerLink) return;
 
-  if (!userPasswordAuthEnabled) {
-    registerLink.classList.add("hidden");
+  // applyAuthModeVisibility already decided whether the link shows; only tweak its text here.
+  if (!userPasswordAuthEnabled || registerLink.classList.contains("hidden")) {
     return;
   }
-
-  registerLink.classList.remove("hidden");
 
   try {
     const result = await fetch("/api/settings/signups", { credentials: "include" });
@@ -182,7 +191,7 @@ async function loadAuthProviders() {
   try {
     const result = await fetch("/auth/providers", { credentials: "include" });
     if (!result.ok) {
-      microsoftAuthEnabled = false;
+      microsoftAuthEnabled = false;  // can't tell what's configured, so fall back to showing the password form
       applyAuthModeVisibility();
       return;
     }
@@ -190,6 +199,7 @@ async function loadAuthProviders() {
     const data = await result.json();
     microsoftAuthEnabled = Boolean(data?.microsoft_enabled);
     userPasswordAuthEnabled = data?.user_password_auth_enabled !== false;
+    passwordLoginVisible = data?.password_login_visible !== false;  // older servers without the field: keep showing it
 
     if (microsoftAuthEnabled && data?.microsoft_label) {
       microsoftLoginBtn.textContent = safeText(data.microsoft_label);
@@ -209,11 +219,8 @@ async function loadAuthProviders() {
 async function submitPasswordLogin(event) {
   event.preventDefault();
 
-  if (!userPasswordAuthEnabled) {
-    if (loginStatus) loginStatus.textContent = "Use Sign in with Microsoft 365.";
-    return;
-  }
-
+  // No client-side block here: when user password auth is off, the server still lets admins in
+  // (emergency access) and returns a clear error for everyone else.
   if (loginStatus) loginStatus.textContent = "Signing in...";
 
   try {
@@ -253,6 +260,8 @@ async function submitPasswordLogin(event) {
 
 function init() {
   const redirectState = readAuthRedirectState();
+  microsoftFlowFailed = Boolean(redirectState.error);  // M365 bounced us back with an error → reveal the fallback
+  // Visibility is applied once /auth/providers answers (loadAuthProviders), so the form never flashes.
   if (loginStatus) {
     if (redirectState.error) {
       loginStatus.textContent = redirectState.error;
