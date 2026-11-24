@@ -1,0 +1,14 @@
+#!/bin/sh
+# ticketgal-admin: the one command for looking after TicketGal on its server.
+#   sudo ticketgal-admin check-updates     what's new on GitHub and what an update would change
+#   sudo ticketgal-admin update [--yes]    back up, update the code, restart everything, health check; undo on failure
+#   sudo ticketgal-admin restart           restart TicketGal (and reload nginx), then health check
+#   sudo ticketgal-admin status            version, service state, health, backups
+#   sudo ticketgal-admin logs [N]          the last N lines of TicketGal's log (default 50)
+#   sudo ticketgal-admin backup            back up the databases now
+# The real work is in deploy/admin/ticketgal-admin.sh inside the app folder, so an update
+# brings the newest logic with it. This small wrapper only changes when it's re-installed.
+# Install: sudo install -m 755 /home/ticketgal/TicketGal/deploy/admin/ticketgal-admin /usr/local/bin/
+set -eu
+APP=${TICKETGAL_APP:-/home/ticketgal/TicketGal}   # where the TicketGal git checkout lives
+exec /bin/bash "$APP/deploy/admin/ticketgal-admin.sh" "$@"   # hand every command to the main script

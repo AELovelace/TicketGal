@@ -296,6 +296,17 @@ Android installation requires a valid HTTPS certificate in production. Plain HTT
 - audit events are stored locally and exposed through `GET /api/admin/audit-log`
 - login lockouts are visible and clearable through admin security endpoints
 
+### Server admin command
+
+On the server, `sudo ticketgal-admin` handles the day-to-day work (details: `deploy/admin/README.md`):
+
+```bash
+sudo ticketgal-admin check-updates   # what's new on GitHub
+sudo ticketgal-admin update          # back up DBs, fast-forward, pip if needed, restart, health check, undo on failure
+sudo ticketgal-admin status          # version, service state, health, backups
+sudo ticketgal-admin restart | logs [N] | backup
+```
+
 ## Ubuntu + Nginx Deployment
 
 The app already includes:

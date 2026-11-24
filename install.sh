@@ -226,6 +226,10 @@ systemctl daemon-reload
 systemctl enable ticketgal.service
 success "Service enabled (ticketgal.service)."
 
+# ── Admin command (updates, restarts, status, backups) ────────
+install -m 755 "${INSTALL_DIR}/deploy/admin/ticketgal-admin" /usr/local/bin/ticketgal-admin   # sudo ticketgal-admin <command>
+success "Installed /usr/local/bin/ticketgal-admin (try: sudo ticketgal-admin status)."
+
 # ── Done ──────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
@@ -240,5 +244,6 @@ echo -e "  1. Edit the config:  sudo nano ${ENV_FILE}"
 echo -e "  2. Start the app service: sudo systemctl start ticketgal"
 echo -e "  3. Optional reverse proxy: sudo bash ${INSTALL_DIR}/scripts/install_nginx_modsecurity.sh --server-name your-hostname"
 echo -e "  4. Check app status:     sudo systemctl status ticketgal"
-echo -e "  5. View logs:            sudo journalctl -u ticketgal -f"
+echo -e "  5. View logs:            sudo ticketgal-admin logs"
+echo -e "  6. Update later:         sudo ticketgal-admin update"
 echo ""

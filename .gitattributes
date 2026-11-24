@@ -2,3 +2,4 @@
 *.service text eol=lf
 deploy/nginx/*.template text eol=lf
 deploy/modsecurity/*.conf text eol=lf
+deploy/admin/ticketgal-admin text eol=lf
