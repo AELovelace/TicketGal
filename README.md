@@ -162,6 +162,15 @@ When Microsoft 365 is configured, the username/password form on `/login` is hidd
 
 Set `PASSWORD_LOGIN_FALLBACK_ONLY=0` to always show the form, as before. Hiding the form is only a UI change: `POST /auth/login` still works and is still rate-limited. When `USER_PASSWORD_AUTH_ENABLED=0`, only admins can sign in with a password.
 
+### Admin ticket list: staff vs automated tickets
+
+The admin **Ticket Statuses** list has a **Show** filter:
+- **Staff tickets** (the default): requests from people.
+- **Automated tickets only**: tickets whose end user is an automation address, such as work Lumi's tasklist-mirror tickets.
+- **All tickets**: everything.
+
+The automation addresses come from `AUTOMATED_TICKET_EMAILS`. It's comma-separated and case-insensitive, with `automated-tickets@eternalhotels.com` as the default. The list is sent to admins only, through `/auth/me`. Each browser remembers its own choice. When the Staff view hides automated tickets, the status line says how many.
+
 ## Branding
 
 Branding values are loaded from a separate file so deployments can be re-skinned without changing code.

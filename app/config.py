@@ -181,6 +181,13 @@ class Settings:
         # 1 (default) = hide the username/password form on /login unless Microsoft 365 sign-in is broken.
         # 0 = always show it (old behaviour).
         self.password_login_fallback_only = _flag("PASSWORD_LOGIN_FALLBACK_ONLY", "1")
+        # End-user emails whose tickets are automation-made (e.g. work Lumi's tasklist mirror tickets).
+        # The admin ticket list can hide them ("Show: Staff tickets"). Comma-separated, case-insensitive.
+        self.automated_ticket_emails = [
+            email.strip().lower()
+            for email in os.getenv("AUTOMATED_TICKET_EMAILS", "automated-tickets@eternalhotels.com").split(",")
+            if email.strip()
+        ]
 
         # Color theme — loaded from .env.coloring
         self.color_navy_900 = os.getenv("COLOR_NAVY_900", "#0e1c2f")

@@ -567,6 +567,21 @@ button:hover {
   min-width: min(360px, 100%);
 }
 
+/* Admin ticket list filter row (Refresh, search, Show, status checks). This used to be an inline style,
+   which the CSP (style-src 'self') silently blocks, so the row never wrapped and controls overlapped. */
+.ticket-filter-row {
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+/* TG-13: the "Show: Staff / Automated / All" dropdown sits next to the search box at its natural width */
+.ticket-source-field {
+  min-width: 0;
+}
+
 .report-custom-controls {
   display: flex;
   flex-wrap: wrap;

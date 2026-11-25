@@ -54,6 +54,9 @@ const adminStatusRefreshBtn = document.getElementById("admin-status-refresh-btn"
 const adminStatusCreateBtn = document.getElementById("admin-status-create-btn");
 const adminTicketSearchInput = document.getElementById("admin-ticket-search");
 const adminStatusFilter = document.getElementById("admin-status-filter");
+const adminTicketSourceFilter = document.getElementById("admin-ticket-source-filter");  // TG-13: Staff / Automated / All
+const ADMIN_TICKET_SOURCE_KEY = "ticketgal.adminTicketSource";  // remembers the dropdown choice per browser
+let automatedTicketEmails = new Set();  // lower-cased end-user emails that mark automation-made tickets (from /auth/me)
 
 const adminDropZone = document.getElementById("admin-drop-zone");
 const adminDropHint = document.getElementById("admin-drop-hint");
@@ -1409,6 +1412,48 @@ function ticketMatchesAdminSearch(ticket, query) {
   return searchableParts.some((value) => normalizeTicketSearchQuery(value).includes(query));
 }
 
+function isAutomatedTicket(ticket) {
+  // True when the ticket's end user is one of the configured automation addresses (AUTOMATED_TICKET_EMAILS).
+  const email = safeText(ticket?.EndUserEmail || ticket?.end_user_email).trim().toLowerCase();
+  return Boolean(email) && automatedTicketEmails.has(email);
+}
+
+function ticketMatchesAdminSource(ticket, source) {
+  // "staff" hides automated tickets, "automated" shows only them, "all" shows everything.
+  if (source === "automated") return isAutomatedTicket(ticket);
+  if (source === "all") return true;
+  return !isAutomatedTicket(ticket);
+}
+
+function getAdminTicketSource() {
+  // Current dropdown value, falling back to "staff" (the default view) for anything unexpected.
+  const value = safeText(adminTicketSourceFilter?.value).trim().toLowerCase();
+  return value === "automated" || value === "all" ? value : "staff";
+}
+
+function restoreAdminTicketSource() {
+  // Put back the choice saved in this browser, so the filter sticks between visits.
+  if (!adminTicketSourceFilter) return;
+  try {
+    const saved = safeText(localStorage.getItem(ADMIN_TICKET_SOURCE_KEY)).trim().toLowerCase();
+    if (saved === "staff" || saved === "automated" || saved === "all") {
+      adminTicketSourceFilter.value = saved;
+    }
+  } catch {
+    // localStorage can be blocked; the default "staff" view is fine.
+  }
+}
+
+function onAdminTicketSourceChange() {
+  // Save the new choice, then redraw the list from the tickets already loaded (no new Atera calls).
+  try {
+    localStorage.setItem(ADMIN_TICKET_SOURCE_KEY, getAdminTicketSource());
+  } catch {
+    // Ignore storage errors; the filter still applies for this page load.
+  }
+  renderTicketsFromCache();
+}
+
 function renderTicketsFromCache() {
   const statusFilterContainer = currentUser?.role === "admin"
     ? adminStatusFilter
@@ -1425,11 +1470,18 @@ function renderTicketsFromCache() {
   const userInProgressTickets = currentUser?.role === "admin"
     ? []
     : cachedTickets.filter((ticket) => isUserInProgressTicket(ticket));
+  const adminTicketSource = getAdminTicketSource();  // TG-13: staff / automated / all
+  let adminHiddenAutomatedCount = 0;  // automated tickets hidden by the "Staff tickets" view
   const adminVisibleTickets = currentUser?.role === "admin"
     ? cachedTickets.filter((ticket) => {
         const ticketStatus = safeText(ticket?.TicketStatus).trim().toLowerCase();
         const matchesStatus = Boolean(ticket?._queued) || selectedStatuses.size === 0 || selectedStatuses.has(ticketStatus);
-        return matchesStatus && ticketMatchesAdminSearch(ticket, adminSearchQuery);
+        if (!matchesStatus || !ticketMatchesAdminSearch(ticket, adminSearchQuery)) return false;
+        if (!ticketMatchesAdminSource(ticket, adminTicketSource)) {
+          if (adminTicketSource === "staff") adminHiddenAutomatedCount += 1;  // count only what the default view hides
+          return false;
+        }
+        return true;
       })
     : [];
 
@@ -1463,10 +1515,14 @@ function renderTicketsFromCache() {
     const queuedCount = adminVisibleTickets.filter((ticket) => Boolean(ticket?._queued)).length;
     if (adminVisibleTickets.length) {
       adminStatusMessage.textContent = `Loaded ${adminVisibleTickets.length} tickets from ${pagesText}.`;
-    } else if (adminSearchQuery) {
+    } else if (adminSearchQuery || adminTicketSource !== "all") {
       adminStatusMessage.textContent = "No tickets match the current filters.";
     } else {
       adminStatusMessage.textContent = "No tickets found.";
+    }
+    if (adminHiddenAutomatedCount > 0) {
+      // Say how many automated tickets the "Staff tickets" view is hiding, so nothing looks lost.
+      adminStatusMessage.textContent += ` ${adminHiddenAutomatedCount} automated ticket${adminHiddenAutomatedCount === 1 ? "" : "s"} hidden (Show: All tickets to see them).`;
     }
     if (queuedCount > 0) {
       adminStatusMessage.textContent += ` ${queuedCount} queued ticket${queuedCount === 1 ? " is" : "s are"} awaiting replay.`;
@@ -4557,6 +4613,10 @@ if (adminRescanKbBtn) {
 if (userStatusFilter) {
   userStatusFilter.addEventListener("change", renderTicketsFromCache);
 }
+if (adminTicketSourceFilter) {
+  restoreAdminTicketSource();  // TG-13: bring back this browser's last "Show" choice
+  adminTicketSourceFilter.addEventListener("change", onAdminTicketSourceChange);
+}
 if (adminStatusFilter) {
   adminStatusFilter.addEventListener("change", renderTicketsFromCache);
 }
@@ -5241,6 +5301,12 @@ async function refreshMe() {
   try {
     const result = await api("/auth/me");
     currentUser = result.user;
+    // TG-13: admins get the list of automation end-user emails for the ticket "Show" filter.
+    automatedTicketEmails = new Set(
+      (Array.isArray(result.automated_ticket_emails) ? result.automated_ticket_emails : [])
+        .map((email) => safeText(email).trim().toLowerCase())
+        .filter(Boolean)
+    );
     const targetPath = currentUser?.role === "admin" ? "/admin" : "/portal";
     if (window.location.pathname !== targetPath) {
       window.location.replace(targetPath);

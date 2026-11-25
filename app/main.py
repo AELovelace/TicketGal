@@ -2064,7 +2064,11 @@ def logout(request: Request, response: Response) -> Dict[str, str]:
 
 @app.get("/auth/me")
 def auth_me(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    return {"user": sanitize_user(user)}
+    response: Dict[str, Any] = {"user": sanitize_user(user)}
+    if user.get("role") == "admin":
+        # Admin-only UI hint: which end-user emails count as automated tickets (admin list filter, TG-13).
+        response["automated_ticket_emails"] = list(settings.automated_ticket_emails)
+    return response
 
 
 @app.get("/api/admin/users")
