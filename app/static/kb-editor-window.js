@@ -1,6 +1,17 @@
 function safeText(value) {
+  // Null-safe String(): fine for textContent, NOT safe inside HTML strings (use escapeHtml there).
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+function escapeHtml(value) {
+  // TG-04: make server text safe to drop into an innerHTML template or attribute value.
+  return safeText(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function readCookie(name) {
@@ -171,8 +182,11 @@ function renderPreview() {
 
   try {
     const rendered = parseMarkdown(content);
-    previewEl.innerHTML = typeof rendered === "string" ? rendered : content;
-    sanitizePreviewElement(previewEl);
+    // TG-04: parse into an inert <template>, clean it, then show it (never live before sanitizing).
+    const staging = document.createElement("template");
+    staging.innerHTML = typeof rendered === "string" ? rendered : escapeHtml(content);
+    sanitizePreviewElement(staging.content);
+    previewEl.replaceChildren(staging.content);
   } catch {
     previewEl.textContent = content;
   }
@@ -209,7 +223,7 @@ async function loadProperties() {
       .map((property) => {
         const customerId = property.customer_id ?? property.CustomerID ?? "";
         const customerName = property.customer_name ?? property.CustomerName ?? "";
-        return `<option value="${safeText(customerId)}">${safeText(customerName)}</option>`;
+        return `<option value="${escapeHtml(customerId)}">${escapeHtml(customerName)}</option>`;  // TG-04: Atera names escaped
       })
       .join("");
     customerSelect.innerHTML = '<option value="">-- Select a property --</option>' + options;

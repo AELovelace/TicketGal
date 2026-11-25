@@ -646,11 +646,14 @@ def _set_user_session(response: Response, request: Request, user: Dict[str, Any]
 
 
 def _get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()[:64]
+    """The client IP used for login rate limits, lockout exemptions and audit logs.
+
+    Don't parse X-Forwarded-For here (it is client-controlled). uvicorn runs with --proxy-headers,
+    which already resolves request.client from it right-to-left, trusting only FORWARDED_ALLOW_IPS
+    (default 127.0.0.1 = our nginx).
+    """
     if request.client and request.client.host:
-        return str(request.client.host).strip()[:64]
+        return str(request.client.host).strip()[:64]  # already proxy-resolved by uvicorn
     return "unknown"
 
 

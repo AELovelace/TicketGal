@@ -277,8 +277,19 @@ function dismissAlert(alertId) {
 }
 
 function safeText(value) {
+  // Null-safe String(): fine for textContent, NOT safe inside HTML strings (use escapeHtml there).
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+function escapeHtml(value) {
+  // TG-04: make any server/user text safe to drop into an innerHTML template or attribute value.
+  return safeText(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function normalizeBrandImageSrc(value) {
@@ -2256,11 +2267,11 @@ async function openTicketViewer(ticketId) {
     const historyFromCache = Boolean(result?.degraded) || safeText(result?.history_source).toLowerCase() === "cache";
 
     ticketViewerMeta.innerHTML = `
-      <strong>#${safeText(ticket.TicketID)} - ${safeText(ticket.TicketTitle)}</strong><br>
-      Status: ${safeText(ticket.TicketStatus || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
-      Company: ${safeText(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
-      End User: ${safeText(ticket.EndUserEmail || "")}
-    `;
+      <strong>#${escapeHtml(ticket.TicketID)} - ${escapeHtml(ticket.TicketTitle)}</strong><br>
+      Status: ${escapeHtml(ticket.TicketStatus || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
+      Company: ${escapeHtml(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
+      End User: ${escapeHtml(ticket.EndUserEmail || "")}
+    `;  // TG-04: ticket fields come from users/Atera, so they're escaped before going into HTML
     setTicketViewerDocumentTitle({
       ticketId: safeText(ticket.TicketID || ticketId),
       ticketTitle: safeText(ticket.TicketTitle),
@@ -2355,7 +2366,7 @@ async function openTicketViewer(ticketId) {
     }
   } catch (error) {
     ticketViewerMeta.innerHTML = "";
-    ticketViewerHistory.innerHTML = `<div class=\"history-entry\">Failed to load history: ${safeText(error.message)}</div>`;
+    ticketViewerHistory.innerHTML = `<div class=\"history-entry\">Failed to load history: ${escapeHtml(error.message)}</div>`;
     restoreBaseDocumentTitle();
   }
 }
@@ -2375,11 +2386,11 @@ async function openQueuedTicketViewer(queueId) {
     const pendingOps = Array.isArray(result?.pending_ops) ? result.pending_ops : [];
 
     ticketViewerMeta.innerHTML = `
-      <strong>Queued Ticket - ${safeText(ticket.TicketTitle)}</strong><br>
+      <strong>Queued Ticket - ${escapeHtml(ticket.TicketTitle)}</strong><br>
       Status: Queued&nbsp;&nbsp;|&nbsp;&nbsp;
-      Company: ${safeText(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
-      End User: ${safeText(ticket.EndUserEmail || "")}
-    `;
+      Company: ${escapeHtml(ticket.CustomerName || "")}&nbsp;&nbsp;|&nbsp;&nbsp;
+      End User: ${escapeHtml(ticket.EndUserEmail || "")}
+    `;  // TG-04: escaped, same as the live-ticket header above
     setTicketViewerDocumentTitle({
       queueId: safeText(queueId),
       ticketTitle: safeText(ticket.TicketTitle),
@@ -2437,7 +2448,7 @@ async function openQueuedTicketViewer(queueId) {
     });
   } catch (error) {
     ticketViewerMeta.innerHTML = "";
-    ticketViewerHistory.innerHTML = `<div class="history-entry">Failed to load queued ticket: ${safeText(error.message)}</div>`;
+    ticketViewerHistory.innerHTML = `<div class="history-entry">Failed to load queued ticket: ${escapeHtml(error.message)}</div>`;
     restoreBaseDocumentTitle();
   }
 }
@@ -3533,7 +3544,7 @@ async function loadUsers() {
       pendingItems.forEach((user) => {
         const row = document.createElement("div");
         row.className = "pending-row";
-        row.innerHTML = `<span>${safeText(user.email)}</span>`;
+        row.innerHTML = `<span>${escapeHtml(user.email)}</span>`;  // TG-04: email is user-supplied
         const approve = document.createElement("button");
         approve.type = "button";
         approve.textContent = "Approve";
@@ -5446,15 +5457,17 @@ async function loadKBArticles(target = null, search = "") {
       const badgeLabel = isPropertyAssigned
         ? `Property assigned: ${propertyName || "Unknown property"}`
         : safeText(article.visibility_type).replace(/_/g, " ");
+      // TG-04: the class suffix only keeps safe characters; title and label are escaped.
+      const badgeClass = safeText(article.visibility_type).toLowerCase().replace(/[^a-z0-9_-]/g, "");
       item.innerHTML = `
-        <div class="kb-article-title">${safeText(article.title)}</div>
-        <span class="kb-article-badge kb-badge-${article.visibility_type}">${badgeLabel}</span>
+        <div class="kb-article-title">${escapeHtml(article.title)}</div>
+        <span class="kb-article-badge kb-badge-${badgeClass}">${escapeHtml(badgeLabel)}</span>
       `;
       item.addEventListener("click", () => displayKBArticle(article.slug, context.target));
       context.articlesList.appendChild(item);
     });
   } catch (error) {
-    context.articlesList.innerHTML = `<p class="muted error">Failed to load articles: ${safeText(error.message)}</p>`;
+    context.articlesList.innerHTML = `<p class="muted error">Failed to load articles: ${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -5463,7 +5476,7 @@ async function displayKBArticle(slug, target = null) {
   if (!context.articleViewer) return;
 
   try {
-    const article = await api(`/api/knowledgebase/articles/${slug}`);
+    const article = await api(`/api/knowledgebase/articles/${encodeURIComponent(safeText(slug))}`);  // slug stays one URL segment
     kbCurrentArticle = article;
     
     Array.from(context.articlesList?.querySelectorAll(".kb-article-item") || []).forEach((item) => {
@@ -5476,7 +5489,7 @@ async function displayKBArticle(slug, target = null) {
     
     context.articleViewer.innerHTML = `
       <div class="kb-article-header">
-        <h1>${safeText(article.title)}</h1>
+        <h1>${escapeHtml(article.title)}</h1>
         <div class="kb-article-actions">
           ${editBtn}
         </div>
@@ -5497,8 +5510,11 @@ async function displayKBArticle(slug, target = null) {
       if (markedParse) {
         try {
           const rendered = markedParse(article.content || "");
-          markdownEl.innerHTML = typeof rendered === "string" ? rendered : (article.content || "");
-          sanitizeElement(markdownEl);
+          // TG-04: parse into an inert <template> (no image loads, nothing live), clean it, THEN show it.
+          const staging = document.createElement("template");
+          staging.innerHTML = typeof rendered === "string" ? rendered : escapeHtml(article.content || "");
+          sanitizeElement(staging.content);
+          markdownEl.replaceChildren(staging.content);
         } catch {
           markdownEl.textContent = article.content || "";
         }
@@ -5515,7 +5531,7 @@ async function displayKBArticle(slug, target = null) {
     }
   } catch (error) {
     context.articleViewer.classList.remove("hidden");
-    context.articleViewer.innerHTML = `<p class="muted error">Failed to load article: ${safeText(error.message)}</p>`;
+    context.articleViewer.innerHTML = `<p class="muted error">Failed to load article: ${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -5754,7 +5770,7 @@ async function loadKBProperties() {
         .map((property) => {
           const customerId = property.customer_id ?? property.CustomerID ?? "";
           const customerName = property.customer_name ?? property.CustomerName ?? "";
-          return `<option value="${customerId}">${safeText(customerName)}</option>`;
+          return `<option value="${escapeHtml(customerId)}">${escapeHtml(customerName)}</option>`;  // TG-04: Atera names escaped
         })
         .join("");
       kbEditorCustomerId.innerHTML = '<option value="">-- Select a property --</option>' + options;
@@ -5862,9 +5878,10 @@ function sanitizeElement(el) {
       });
       
       // Validate href for security
-      if (node.tagName.toLowerCase() === "a" && node.href) {
-        if (!isSafeCommentHref(node.href)) {
-          node.removeAttribute("href");
+      // Check the raw attribute: inside an inert <template>, node.href doesn't resolve against our URL.
+      if (node.tagName.toLowerCase() === "a" && node.hasAttribute("href")) {
+        if (!isSafeCommentHref(node.getAttribute("href"))) {
+          node.removeAttribute("href");  // javascript:, data: and other schemes are dropped
         }
       }
     }
