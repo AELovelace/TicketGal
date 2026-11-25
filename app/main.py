@@ -3227,6 +3227,7 @@ async def create_ticket(request: CreateTicketRequest, user: Dict[str, Any] = Dep
     else:
         effective_customer_id = user.get("property_customer_id")
 
+    is_admin = user["role"] == "admin"
     payload = {
         "TicketTitle": request.ticket_title,
         "Description": request.description,
@@ -3234,16 +3235,19 @@ async def create_ticket(request: CreateTicketRequest, user: Dict[str, Any] = Dep
         "TicketImpact": request.ticket_impact,
         "TicketStatus": requested_status,
         "TicketType": request.ticket_type,
-        "EndUserID": request.end_user_id,
+        # TG-06: only admins may pick the Atera contact or technician. For everyone else Atera matches
+        # (or creates) the contact from the signed-in user's own email, so a ticket can't be filed as,
+        # or assigned through, someone else. Names/phone only label a NEW contact for that same email.
+        "EndUserID": request.end_user_id if is_admin else None,
         "EndUserFirstName": request.end_user_first_name,
         "EndUserLastName": request.end_user_last_name,
-        "EndUserEmail": user["email"] if user["role"] != "admin" else request.end_user_email,
+        "EndUserEmail": request.end_user_email if is_admin else user["email"],
         "EndUserPhone": request.end_user_phone,
-        "TechnicianContactID": request.technician_contact_id,
-        "TechnicianEmail": request.technician_email,
+        "TechnicianContactID": request.technician_contact_id if is_admin else None,
+        "TechnicianEmail": request.technician_email if is_admin else None,
         "CustomerID": effective_customer_id,
     }
-    payload = {k: v for k, v in payload.items() if v is not None and v != ""}
+    payload = {k: v for k, v in payload.items() if v is not None and v != ""}  # drop empty fields before Atera
 
     try:
         return await client.create_ticket(payload)
