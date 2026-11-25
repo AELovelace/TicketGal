@@ -54,6 +54,9 @@ from .database import (
     get_session,
     grant_kb_article_access,
     claim_due_transactions,
+    backfill_ticket_cache_history,
+    recover_in_progress_report_jobs,
+    recover_stale_in_progress_transactions,
     enqueue_transaction,
     get_cached_ticket_by_id,
     get_pending_queue_create,
@@ -915,12 +918,98 @@ def _file_hash(path: Path) -> str:
 _ASSET_HASHES: Dict[str, str] = {}
 _QUEUE_WORKER_TASK: Optional[asyncio.Task[Any]] = None
 _REPORT_JOB_WORKER_TASK: Optional[asyncio.Task[Any]] = None
+_BACKGROUND_SUPERVISOR_TASK: Optional[asyncio.Task[Any]] = None
+_BACKGROUND_LOCK_HANDLE: Optional[Any] = None  # open lock file kept for this process's lifetime
+_BACKGROUND_LOCK_RETRY_SECONDS = 30  # how often a non-owner worker checks whether the owner went away
 views_dir = Path(__file__).parent / "views"
+
+try:  # fcntl exists on Linux (prod). On Windows dev there is only ever one worker, so locks are no-ops.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+
+
+def _lock_file_path(name: str) -> Path:
+    """Lock files live next to the databases, which every worker can write to."""
+    path = Path(settings.db_dir) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _run_init_db_serialized() -> None:
+    """Run init_db (schema migrations) in one worker at a time, so ALTER TABLEs never race (TG-07)."""
+    if _fcntl is None:
+        init_db()
+        return
+    with open(_lock_file_path("init-db.lock"), "a+") as handle:
+        _fcntl.flock(handle, _fcntl.LOCK_EX)  # blocks until the other worker has finished its init_db
+        try:
+            init_db()
+        finally:
+            _fcntl.flock(handle, _fcntl.LOCK_UN)
+
+
+def _try_acquire_background_lock() -> bool:
+    """True if this process now owns the background loops (TG-07).
+
+    Uses a non-blocking exclusive flock that is held for the life of the process: with
+    WEB_CONCURRENCY=2 exactly one worker gets it. The kernel drops the lock if that worker dies,
+    so another worker can take over (see _background_supervisor).
+    """
+    global _BACKGROUND_LOCK_HANDLE
+    if _BACKGROUND_LOCK_HANDLE is not None:
+        return True
+    if _fcntl is None:
+        _BACKGROUND_LOCK_HANDLE = True  # single-process dev: always the owner
+        return True
+    handle = open(_lock_file_path("background-workers.lock"), "a+")
+    try:
+        _fcntl.flock(handle, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except OSError:
+        handle.close()  # another worker owns the loops
+        return False
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()) + "\n")  # who owns it, for anyone looking at the file
+    handle.flush()
+    _BACKGROUND_LOCK_HANDLE = handle
+    return True
+
+
+def _start_background_loops() -> None:
+    """Owner only: recover work a dead process left behind, then start the queue and report loops."""
+    global _QUEUE_WORKER_TASK, _REPORT_JOB_WORKER_TASK
+    recover_stale_in_progress_transactions()  # items untouched for 10+ minutes go back to retry
+    recover_in_progress_report_jobs()  # report jobs only ever run in the owner, so all of them are orphans
+    if settings.queue_auto_process_enabled and (_QUEUE_WORKER_TASK is None or _QUEUE_WORKER_TASK.done()):
+        _QUEUE_WORKER_TASK = asyncio.create_task(_queue_worker_loop())
+    if _REPORT_JOB_WORKER_TASK is None or _REPORT_JOB_WORKER_TASK.done():
+        _REPORT_JOB_WORKER_TASK = asyncio.create_task(_report_job_worker_loop())
+
+
+async def _background_supervisor() -> None:
+    """Become the loop owner as soon as the lock is free; non-owners keep checking every 30 s."""
+    while True:
+        if _try_acquire_background_lock():
+            _start_background_loops()
+            return  # the loops run until shutdown; nothing left to supervise
+        await asyncio.sleep(_BACKGROUND_LOCK_RETRY_SECONDS)
+
+
+async def _cancel_task(task: Optional[asyncio.Task[Any]]) -> None:
+    """Cancel a background task and wait for it to finish."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 @app.on_event("startup")
 def startup() -> None:
-    init_db()
+    _run_init_db_serialized()
     if settings.admin_email and settings.admin_password:
         seed_admin(settings.admin_email, hash_password(settings.admin_password))
     _ASSET_HASHES["app.js"] = _file_hash(static_dir / "app.js")
@@ -929,49 +1018,21 @@ def startup() -> None:
 
 
 @app.on_event("startup")
-async def startup_queue_worker() -> None:
-    global _QUEUE_WORKER_TASK
-    if not settings.queue_auto_process_enabled:
-        return
-    if _QUEUE_WORKER_TASK and not _QUEUE_WORKER_TASK.done():
-        return
-    _QUEUE_WORKER_TASK = asyncio.create_task(_queue_worker_loop())
+async def startup_background_workers() -> None:
+    """Start the supervisor that gives the queue/report loops to exactly one worker (TG-07)."""
+    global _BACKGROUND_SUPERVISOR_TASK
+    if _BACKGROUND_SUPERVISOR_TASK is None or _BACKGROUND_SUPERVISOR_TASK.done():
+        _BACKGROUND_SUPERVISOR_TASK = asyncio.create_task(_background_supervisor())
 
 
 @app.on_event("shutdown")
-async def shutdown_queue_worker() -> None:
-    global _QUEUE_WORKER_TASK
-    if _QUEUE_WORKER_TASK is None:
-        return
-    _QUEUE_WORKER_TASK.cancel()
-    try:
-        await _QUEUE_WORKER_TASK
-    except asyncio.CancelledError:
-        pass
-    finally:
-        _QUEUE_WORKER_TASK = None
-
-
-@app.on_event("startup")
-async def startup_report_job_worker() -> None:
-    global _REPORT_JOB_WORKER_TASK
-    if _REPORT_JOB_WORKER_TASK and not _REPORT_JOB_WORKER_TASK.done():
-        return
-    _REPORT_JOB_WORKER_TASK = asyncio.create_task(_report_job_worker_loop())
-
-
-@app.on_event("shutdown")
-async def shutdown_report_job_worker() -> None:
-    global _REPORT_JOB_WORKER_TASK
-    if _REPORT_JOB_WORKER_TASK is None:
-        return
-    _REPORT_JOB_WORKER_TASK.cancel()
-    try:
-        await _REPORT_JOB_WORKER_TASK
-    except asyncio.CancelledError:
-        pass
-    finally:
-        _REPORT_JOB_WORKER_TASK = None
+async def shutdown_background_workers() -> None:
+    """Stop the supervisor and both loops; the lock file handle closes with the process."""
+    global _BACKGROUND_SUPERVISOR_TASK, _QUEUE_WORKER_TASK, _REPORT_JOB_WORKER_TASK
+    await _cancel_task(_BACKGROUND_SUPERVISOR_TASK)
+    await _cancel_task(_QUEUE_WORKER_TASK)
+    await _cancel_task(_REPORT_JOB_WORKER_TASK)
+    _BACKGROUND_SUPERVISOR_TASK = _QUEUE_WORKER_TASK = _REPORT_JOB_WORKER_TASK = None
 
 
 _CSS_VALUE_SAFE = re.compile(r'^[a-zA-Z0-9\s#.,()%\-+/]+$')
@@ -2300,9 +2361,9 @@ async def admin_sync_tickets(user: Dict[str, Any] = Depends(get_current_user)) -
         comments_cached_tickets += 1
         comments_cached_total += len(comments)
 
-    # Trigger backfill of dates and status history for newly synced tickets
-    # This re-runs the same logic from startup but is safe due to NOT EXISTS guards
-    init_db()
+    # Backfill dates and status history for the newly synced tickets. Only the backfills: a full
+    # init_db() here used to reset in-flight queue items and re-run migrations mid-request (TG-07).
+    backfill_ticket_cache_history()
 
     return {
         "status": "success",

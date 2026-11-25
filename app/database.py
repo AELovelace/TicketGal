@@ -308,19 +308,37 @@ def _ensure_report_jobs_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def _recover_in_progress_transactions() -> None:
-    now_iso = _utc_now_iso()
-    now_ts = datetime.now(timezone.utc).timestamp()
+def recover_stale_in_progress_transactions(stale_after_seconds: int = 600) -> int:
+    """Put queue items stuck in 'in_progress' back to 'retry' (TG-07).
+
+    Only items untouched for stale_after_seconds are recovered, so an item another process is
+    sending right now is never yanked back and sent twice. Called by the background-loop owner
+    at its start, not by init_db (which also runs on every Atera sync). Returns how many moved.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff_iso = (now - timedelta(seconds=max(60, int(stale_after_seconds)))).isoformat()  # same format as updated_at
     with get_transactions_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE transaction_queue
             SET status = 'retry', next_attempt_ts = ?, updated_at = ?
-            WHERE status = 'in_progress'
+            WHERE status = 'in_progress' AND updated_at < ?
             """,
-            (now_ts, now_iso),
+            (now.timestamp(), now.isoformat(), cutoff_iso),
         )
         conn.commit()
+    return int(cur.rowcount or 0)
+
+
+def recover_in_progress_report_jobs() -> None:
+    """Requeue report jobs left 'in_progress' by a previous process (TG-07: owner-only, at loop start)."""
+    _recover_in_progress_report_jobs()
+
+
+def backfill_ticket_cache_history() -> None:
+    """Re-run the ticket-cache date/status-history backfills after an Atera sync (instead of all of init_db)."""
+    _backfill_ticket_cache_dates()
+    _backfill_status_history()
 
 
 def _recover_in_progress_report_jobs() -> None:
@@ -807,8 +825,8 @@ def init_db() -> None:
     _backfill_ticket_cache_dates()
     _backfill_status_history()
     _create_transactions_schema()
-    _recover_in_progress_transactions()
-    _recover_in_progress_report_jobs()
+    # TG-07: in-progress recovery moved out of init_db. It now runs once, in the worker that owns the
+    # background loops (recover_stale_in_progress_transactions / recover_in_progress_report_jobs).
     _migrate_legacy_ticket_cache_to_dedicated_db()
     _create_knowledgebase_schema()
     _create_kb_access_audit_schema()
@@ -1354,9 +1372,12 @@ def claim_due_transactions(limit: int = 25) -> List[Dict[str, Any]]:
     now_ts = datetime.now(timezone.utc).timestamp()
 
     with get_transactions_conn() as conn:
+        # TG-07: BEGIN IMMEDIATE takes SQLite's write lock before reading, so two processes (two uvicorn
+        # workers, or the loop plus a manual "process queue" click) can never claim the same rows.
+        conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
-            SELECT *
+            SELECT id
             FROM transaction_queue
             WHERE status IN ('pending', 'retry')
               AND (next_attempt_ts IS NULL OR next_attempt_ts <= ?)
@@ -1367,20 +1388,23 @@ def claim_due_transactions(limit: int = 25) -> List[Dict[str, Any]]:
         ).fetchall()
 
         if not rows:
+            conn.commit()
             return []
 
         ids = [int(row["id"]) for row in rows]
         placeholders = ",".join(["?"] * len(ids))
         conn.execute(
-            f"UPDATE transaction_queue SET status = 'in_progress', updated_at = ? WHERE id IN ({placeholders})",
+            f"""
+            UPDATE transaction_queue SET status = 'in_progress', updated_at = ?
+            WHERE id IN ({placeholders}) AND status IN ('pending', 'retry')
+            """,  # the status guard is belt-and-braces on top of the write lock
             (now_iso, *ids),
         )
-        conn.commit()
-
         claimed = conn.execute(
-            f"SELECT * FROM transaction_queue WHERE id IN ({placeholders}) ORDER BY id ASC",
+            f"SELECT * FROM transaction_queue WHERE id IN ({placeholders}) AND status = 'in_progress' ORDER BY id ASC",
             tuple(ids),
         ).fetchall()
+        conn.commit()
 
     return [dict(row) for row in claimed]
 
